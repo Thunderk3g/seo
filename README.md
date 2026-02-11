@@ -27,7 +27,7 @@ The system follows a conceptual flow designed for high-depth reasoning and data-
 6. **Visualization**: Automatic chart selection and data shaping.
 7. **Narrative/Reporting**: Executive-level output generation.
 
-For more details, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+For more details, see [ARCHITECTURE.md](./ARCHITECTURE.md) and the [Agentic Flow Overview](./doc/AGENTIC_FLOW.md).
 
 ## 🛠 Getting Started
 
