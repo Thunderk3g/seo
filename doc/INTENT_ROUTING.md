@@ -1,4 +1,4 @@
-# Intent & Routing
+# Intent and Routing
 
 Phase 1 of the agentic flow focuses on understanding the user's objective and preparing the task queue.
 

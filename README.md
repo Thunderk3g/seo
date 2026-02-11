@@ -6,7 +6,7 @@
 
 An industrial-grade, production-ready backend implementing a sophisticated multi-agent pipeline using **LangGraph** and **FastAPI**.
 
-## 🚀 Features
+## Features
 
 - **Modular Agentic Pipeline**: Strict separation of concerns across specialized agents.
 - **LangGraph Master DAG**: Advanced control flow, state transitions, and retries.
@@ -15,7 +15,7 @@ An industrial-grade, production-ready backend implementing a sophisticated multi
 - **Pro-grade Observability**: Integrated with LangSmith for tracing and Prometheus for metrics.
 - **Hybrid Memory**: Built-in support for Working, Semantic, and Episodic memory.
 
-## 🏗 Architecture
+## Architecture
 
 The system follows a conceptual flow designed for high-depth reasoning and data-driven insights:
 
@@ -29,7 +29,7 @@ The system follows a conceptual flow designed for high-depth reasoning and data-
 
 For more details, see [ARCHITECTURE.md](./ARCHITECTURE.md) and the [Agentic Flow Overview](./doc/AGENTIC_FLOW.md).
 
-## 🛠 Getting Started
+## Getting Started
 
 ### Prerequisites
 - Python 3.10+
@@ -46,19 +46,19 @@ For more details, see [ARCHITECTURE.md](./ARCHITECTURE.md) and the [Agentic Flow
 uvicorn app.main:app --reload
 ```
 
-## 📡 API Endpoints
+## API Endpoints
 
 - `GET /api/v1/health`: Health status.
 - `POST /api/v1/agents/process`: Synchronous agent processing.
 - `POST /api/v1/stream`: Streaming agent updates.
 
-## 🐳 Docker Support
+## Docker Support
 
 Run with Docker Compose:
 ```bash
 docker-compose -f docker/docker-compose.yml up --build
 ```
 
-## 🔒 Security
+## Security
 - Role-based tool permissions.
 - Immutable audit logging for autonomous agent decisions.

@@ -8,30 +8,30 @@ This document illustrates the high-level workflow of the multi-agent system, fro
 graph TD
     User([User Prompt]) --> UIA[User Intent Agent]
     
-    subgraph Intent & Routing
+    subgraph "Intent and Routing"
         UIA --> ORCH[Orchestrator]
     end
 
-    subgraph Data Acquisition (Parallel)
+    subgraph "Data Acquisition"
         ORCH --> API_A[API A Adapter]
         ORCH --> API_B[API B Adapter]
         ORCH --> API_C[API C Adapter]
         ORCH --> API_D[API D Adapter]
     end
 
-    subgraph Data Normalization
+    subgraph "Data Normalization"
         API_A --> SO{Semantic Observations JSON}
         API_B --> SO
         API_C --> SO
         API_D --> SO
     end
 
-    subgraph Intelligent Synthesis
+    subgraph "Intelligent Synthesis"
         SO --> SUA[Semantic Umbrella Agent]
         SUA --> ARA[Analysis / Reasoning Agent]
     end
 
-    subgraph Output Generation
+    subgraph "Output Generation"
         ARA --> VA[Visualization Agent]
         VA --> RNA[Report / Narrative Agent]
     end
@@ -52,7 +52,7 @@ graph TD
 
 ## Workflow Components
 
-1. [**Intent & Routing**](./INTENT_ROUTING.md)
+1. [**Intent and Routing**](./INTENT_ROUTING.md)
 2. [**Data Acquisition**](./DATA_ACQUISITION.md)
 3. [**Data Normalization**](./DATA_NORMALIZATION.md)
 4. [**Intelligent Synthesis**](./INTELLIGENT_SYNTHESIS.md)
