@@ -172,7 +172,32 @@ Extract crawl-relevant elements from fetched pages (Raw HTML or Rendered DOM).
 
 ---
 
-## 13. Crawl Depth Management
+## 13. Breadth-First Search (BFS) and Coverage Strategy
+
+Implementing BFS allows the engine to crawl reachable links on a website systematically. However, coverage is subject to specific technical and environmental conditions.
+
+### Systematic Discovery
+BFS visits all discovered URLs level by level (Homepage → Internal Links → Deeper Links). This approach systematically covers the entire site graph that is discoverable and accessible to the crawler.
+
+### Coverage Limitations
+BFS does not guarantee 100% coverage of every possible server-side link due to:
+*   **Robots.txt Constraints:** Blocked paths and disallowed directories.
+*   **Authentication Barriers:** Pages requiring login or gated access.
+*   **Infinite URL Loops:** Dynamic pagination, calendar URLs, and complex query parameters.
+*   **User Interactions:** Links generated only after specific events (clicks, forms).
+*   **Orphan Pages:** Pages not linked internally that remain invisible unless listed in seeds or sitemaps.
+*   **JS-Heavy Architectures:** Links hidden deep within JavaScript logic without proper DOM rendering.
+
+### Enhancing Deep Coverage
+To achieve maximum reach beyond basic BFS, the engine must integrate:
+*   **Sitemap Crawling:** To capture orphan and hidden URLs.
+*   **JS Rendering:** To extract dynamically injected links.
+*   **URL Normalization & Deduplication:** To prevent redundant processing and infinite loops.
+*   **Depth Limits & Loop Detection:** To manage crawl scope and prevent resource exhaustion.
+
+---
+
+## 14. Crawl Depth Management
 
 *   **Rule Set:** Depth 0 (Homepage), Depth 1 (Navigation), Depth 2+ (Content).
 *   **Logic:** Prevents infinite loops and infinite scrolling traps.
