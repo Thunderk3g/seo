@@ -38,11 +38,11 @@ graph TD
 
 A web crawler is an automated system that systematically browses and fetches web pages to:
 
-*   **Discover** all URLs on a website
-*   **Crawl** internal and external links
-*   **Parse** HTML and rendered content
-*   **Extract** crawl-level signals (links, metadata, assets)
-*   **Monitor** site structure and changes over time
+*   **Discover** all URLs on a website.
+*   **Crawl** internal and external links.
+*   **Parse** HTML and rendered content.
+*   **Extract** crawl-level signals (links, metadata, assets).
+*   **Monitor** site structure and changes over time.
 
 This crawler is designed for deep website crawling similar to search engine bots.
 
@@ -67,11 +67,11 @@ The crawler begins with trusted seed sources to define the initial crawl surface
 Continuously discover new URLs from multiple crawl sources instead of relying only on hyperlinks.
 
 ### Discovery Sources
-*   XML sitemaps & Sitemap index files
-*   Internal anchor links (`<a href>`)
-*   Canonical tags & Pagination links
-*   Navigation menus & Footer links
-*   JavaScript-rendered links & Redirect targets
+*   XML sitemaps & Sitemap index files.
+*   Internal anchor links (`<a href>`).
+*   Canonical tags & Pagination links.
+*   Navigation menus & Footer links.
+*   JavaScript-rendered links & Redirect targets.
 
 ### Responsibilities
 *   **Extraction:** Identification of raw URLs.
@@ -109,9 +109,9 @@ Acts as the brain of the crawler, managing which URLs to crawl and when.
 
 Ensure ethical and rule-compliant crawling by fetching `/robots.txt` before any page requests.
 
-*   **Parse** disallowed paths.
-*   **Respect** crawl-delay directives.
-*   **Extract** sitemap locations declared in the file.
+*   **Parse** disallowed paths and directories.
+*   **Respect** crawl-delay directives to avoid server stress.
+*   **Extract** sitemap locations declared in the robots file.
 *   **User-Agent Rules:** Apply specific rules based on the crawler identity.
 
 ---
@@ -120,7 +120,7 @@ Ensure ethical and rule-compliant crawling by fetching `/robots.txt` before any 
 
 Supporting multiple sitemap types for exhaustive discovery.
 
-*   **Supported:** `sitemap.xml`, `sitemap_index.xml`, Image/Video sitemaps.
+*   **Supported Types:** `sitemap.xml`, `sitemap_index.xml`, Image/Video sitemaps.
 *   **Data Points:** Location (`loc`), Last Modified (`lastmod`), Change Frequency (`changefreq`), Priority.
 *   **Special Handling:** Recursive crawling of child sitemaps in index files.
 
@@ -174,26 +174,29 @@ Extract crawl-relevant elements from fetched pages (Raw HTML or Rendered DOM).
 
 ## 13. Breadth-First Search (BFS) and Coverage Strategy
 
-Implementing BFS allows the engine to crawl reachable links on a website systematically. However, coverage is subject to specific technical and environmental conditions.
+Implementing BFS allows the engine to crawl every reachable link on a website systematically, but only under specific discovery conditions.
 
 ### Systematic Discovery
-BFS visits all discovered URLs level by level (Homepage → Internal Links → Deeper Links). This approach systematically covers the entire site graph that is discoverable and accessible to the crawler.
+BFS systematically visits all discovered URLs level by level (Homepage → Internal Links → Deeper Links). In theory, this covers the entire site graph. However, it can only crawl links that are actually discoverable and accessible. This includes links in HTML, rendered DOM, sitemaps, and navigation structures, provided they are not blocked or hidden.
 
 ### Coverage Limitations
-BFS does not guarantee 100% coverage of every possible server-side link due to:
-*   **Robots.txt Constraints:** Blocked paths and disallowed directories.
-*   **Authentication Barriers:** Pages requiring login or gated access.
-*   **Infinite URL Loops:** Dynamic pagination, calendar URLs, and complex query parameters.
-*   **User Interactions:** Links generated only after specific events (clicks, forms).
-*   **Orphan Pages:** Pages not linked internally that remain invisible unless listed in seeds or sitemaps.
-*   **JS-Heavy Architectures:** Links hidden deep within JavaScript logic without proper DOM rendering.
+In practice, BFS does not guarantee 100% coverage of every possible link on a server because:
+*   **Robots.txt:** Paths may be explicitly blocked.
+*   **Authentication:** Pages requiring login (login walls) are inaccessible.
+*   **Infinite URLs:** Dynamic pagination, filters, and query parameters can create infinite traps.
+*   **User Interaction:** Certain links only generate after clicks or form submissions.
+*   **Orphan Pages:** Pages with no internal links remain invisible unless listed in sitemaps or seeds.
+*   **JS-Heavy Content:** JavaScript may hide links unless full DOM rendering is utilized.
 
-### Enhancing Deep Coverage
-To achieve maximum reach beyond basic BFS, the engine must integrate:
-*   **Sitemap Crawling:** To capture orphan and hidden URLs.
-*   **JS Rendering:** To extract dynamically injected links.
-*   **URL Normalization & Deduplication:** To prevent redundant processing and infinite loops.
-*   **Depth Limits & Loop Detection:** To manage crawl scope and prevent resource exhaustion.
+> **The Accurate Statement:**  
+> BFS can crawl every reachable and allowed link within the defined crawl scope, not literally every existing link on the server.
+
+### Strategies for Full Deep Coverage
+To achieve maximum reach, BFS must be combined with:
+*   **Sitemap Crawling:** To capture orphan or hidden URLs.
+*   **JS Rendering:** To extract dynamically generated links.
+*   **URL Normalization & Deduplication:** To ensure efficiency and prevent loops.
+*   **Depth Limits & Loop Detection:** To manage complexity and resource usage.
 
 ---
 
@@ -204,7 +207,7 @@ To achieve maximum reach beyond basic BFS, the engine must integrate:
 
 ---
 
-## 14. Crawl Politeness & Rate Limiting
+## 15. Crawl Politeness & Rate Limiting
 
 *   **Ethics:** Respect robots.txt `crawl-delay`.
 *   **Throttling:** Domain-based request limits to avoid server overload.
@@ -212,43 +215,43 @@ To achieve maximum reach beyond basic BFS, the engine must integrate:
 
 ---
 
-## 15. Duplicate Detection & Change Detection
+## 16. Duplicate Detection & Change Detection
 
-*   **Deduplication:** Maintain a set of visited/hashed URLs.
-*   **Change Detection:** Content hash comparison to identify page updates.
-
----
-
-## 16. Error Handling & Status Monitoring
-
-*   Track 404s, 500s, timeouts, and redirect loops.
-*   Log failures for potential retry cycles.
+*   **Deduplication:** Maintain a set of visited/hashed URLs to prevent redundant work.
+*   **Change Detection:** Content hash comparison to identify page updates for re-crawling.
 
 ---
 
-## 17. Asset & Resource Crawling (Advanced)
+## 17. Error Handling & Status Monitoring
+
+*   **Tracking:** Monitor 404s, 500s, timeouts, and redirect loops.
+*   **Logging:** Record failures for intelligent retry cycles.
+
+---
+
+## 18. Asset & Resource Crawling (Advanced)
 
 *   Detection and logging of Images, CSS, JS bundles, PDFs, and Fonts.
-*   Helps in mapping the full site surface area.
+*   Helps in mapping the full site surface area and resource dependencies.
 
 ---
 
-## 18. Continuous Crawling Strategy
+## 19. Continuous Crawling Strategy
 
 *   **Recrawl Logic:** Frequency based on priority and detected change signals.
-*   **Hints:** Utilizing `lastmod` from sitemaps for scheduling.
+*   **Hints:** Utilizing `lastmod` from sitemaps for smart scheduling.
 
 ---
 
-## 19. Key Design Principles
+## 20. Key Design Principles
 
-*   Modular and Asynchronous architecture.
-*   Ethical and Compliant (Robots/Sitemaps).
-*   Scalable discovery pipeline for deep site mapping.
+*   **Asynchronous:** Non-blocking crawl architecture.
+*   **Ethical:** Strict compliance with Robots.txt and Sitemaps.
+*   **Scalable:** Designed for massive URL discovery and deep site mapping.
 
 ---
 
-## 20. Final Summary
+## 21. Final Summary
 
 This web crawler engine is a deep, intelligent crawling system that:
 *   Discovers URLs from multiple sources.
@@ -257,4 +260,3 @@ This web crawler engine is a deep, intelligent crawling system that:
 *   Manages politeness and scheduling automatically.
 
 The system is focused purely on **comprehensive, structured, and scalable web crawling.**
-
