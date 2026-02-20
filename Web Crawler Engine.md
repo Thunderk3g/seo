@@ -260,3 +260,67 @@ This web crawler engine is a deep, intelligent crawling system that:
 *   Manages politeness and scheduling automatically.
 
 The system is focused purely on **comprehensive, structured, and scalable web crawling.**
+
+---
+
+## 22. Crawl Logging, Scope & Operational Controls (Addendum)
+
+### Crawl Logging & Observability
+The crawler maintains structured console logs for real-time crawl visibility and debugging.  
+Each crawl event should log:
+- Crawled URL and crawl depth
+- HTTP status code and fetch latency
+- Number of links discovered
+- Redirect chains and retries
+- Robots.txt blocked URLs
+- Errors (timeouts, parsing failures)
+
+**Log Example:**
+```text
+[CRAWL] URL: /blog | Depth: 2 | Status: 200 | Links: 28 | Time: 640ms
+[DISCOVERY] Added 12 new URLs to frontier
+[SKIP] Blocked by robots.txt: /admin
+[ERROR] Timeout: /products?page=10
+```
+
+---
+
+### Crawl Scope Definition
+To prevent uncontrolled crawling, the engine enforces strict scope rules:
+- **Default:** Same-domain crawling only.
+- **Optional:** Subdomain inclusion (configurable).
+- **External Links:** Discovered and logged, not recursively crawled (by default).
+- **Protocols:** Non-HTTP schemes (`mailto:`, `tel:`, `javascript:`) are ignored.
+
+---
+
+### Canonical URL Handling
+The crawler respects canonical signals to reduce duplicate crawling and improve structural accuracy:
+- Extract `<link rel="canonical">` from each page.
+- Avoid re-crawling duplicate canonical targets.
+- Normalize URLs before frontier insertion.
+- Treat canonical conflicts as separate crawl signals (not new discovery paths).
+
+---
+
+### Crawl Budget & Limits
+For stable deep crawling, the engine enforces crawl budget constraints:
+- Maximum crawl depth (configurable).
+- Maximum URLs per crawl session.
+- Domain-level rate limits.
+- Loop detection for pagination, filters, and infinite query URLs.
+
+These controls prevent infinite crawling traps and ensure efficient full-site coverage.
+
+---
+
+### Crawl Metrics Tracking
+The crawler continuously tracks operational metrics for coverage analysis:
+- Total URLs discovered
+- Total URLs crawled
+- Frontier (queue) size
+- Success vs failed crawl ratio
+- Average response time
+- Depth distribution of crawled pages
+
+This telemetry ensures transparent, debuggable, and scalable deep crawling operations.
