@@ -1,0 +1,1 @@
+"""Link extraction strategies."""
