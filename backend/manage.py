@@ -4,7 +4,16 @@ import os
 import sys
 
 def main():
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.base")
+    # Load environment variables from .env file
+    try:
+        from dotenv import load_dotenv
+        # Find .env at project root
+        env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+        load_dotenv(env_path)
+    except ImportError:
+        pass
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:

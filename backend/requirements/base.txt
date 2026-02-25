@@ -4,3 +4,6 @@ psycopg2-binary
 celery
 redis
 python-dotenv
+aiohttp>=3.9
+beautifulsoup4>=4.12
+lxml

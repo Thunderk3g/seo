@@ -1,0 +1,128 @@
+﻿======================================================================
+  SEO CRAWLER ENGINE - INTEGRATION TEST
+  Target: https://www.bajajlifeinsurance.com
+======================================================================
+
+----------------------------------------------------------------------
+  1. FETCHER TEST
+----------------------------------------------------------------------
+  URL:           https://www.bajajlifeinsurance.com/
+  Final URL:     https://www.bajajlifeinsurance.com/
+  Status:        200
+  Latency:       1063ms
+  Content Size:  1,092,427 bytes
+  Is HTML:       True
+  Is HTTPS:      True
+  Redirects:     0
+
+----------------------------------------------------------------------
+  2. ROBOTS.TXT TEST
+----------------------------------------------------------------------
+  No robots.txt found
+
+----------------------------------------------------------------------
+  3. HTML PARSER TEST
+----------------------------------------------------------------------
+  Title:           Life Insurance Plan: Buy Best Life Insurance Online in 2026 | Bajaj Life Insuran
+  Meta Desc:       Secure your familyÆs future with the best life insurance plans by Bajaj Life Ins
+  H1:              Life Insurance
+  H2 Count:        9
+  H3 Count:        86
+  Canonical:       https://www.bajajlifeinsurance.com/
+  Robots Meta:     (none)
+  Word Count:      109
+  Content Size:    1,092,427 bytes
+  Page Hash:       e94d7cb9f82518f1...
+  Total Images:    181
+  Imgs w/o Alt:    74
+  Scripts:         0
+  Stylesheets:     35
+  JSON-LD Blocks:  0
+  Raw Links:       417
+  Language:        en
+  OG Title:        Life Insurance Plan: Buy Best Life Insurance Online in 2026 
+  Pagination Next: (none)
+
+----------------------------------------------------------------------
+  4. METADATA EXTRACTION TEST
+----------------------------------------------------------------------
+  Is Noindex:      False
+  Is Nofollow:     False
+  Has Canonical:   True
+  Thin Content:    True
+  Soft 404:        False
+
+----------------------------------------------------------------------
+  5. LINK EXTRACTION TEST
+----------------------------------------------------------------------
+  Total Links:     254
+  Internal:        202
+  External:        36
+  Media:           0
+  Resource:        16
+  Navigation:      0
+  Nofollow:        31
+
+  Crawlable Links: 202
+    -> https://www.bajajlifeinsurance.com/term-insurance-plans/term-insurance-calculator.html?utm_theme=2cr
+    -> https://www.bajajlifeinsurance.com/term-insurance-plans/term-insurance-calculator.html?utm_theme=1cr
+    -> https://www.bajajlifeinsurance.com/funds/bse-500-enhanced-value-50-index-fund.html
+    -> https://www.bajajlifeinsurance.com/term-insurance-plans/diabetic-term-insurance-plan.html%20
+    -> https://www.bajajlifeinsurance.com/nri-investment-plans.html
+    -> https://www.bajajlifeinsurance.com/term-insurance-plans/super-woman-term-plan.html
+    -> https://www.bajajlifeinsurance.com/etouch/onboard-faster?productUrl=%2Fcontent%2Fdam%2Fbuy-journey%2FetouchII.json
+    -> https://www.bajajlifeinsurance.com/goal-assure?productUrl=%2Fcontent%2Fdam%2Fbuy-journey%2FgoalAssure.json
+    -> https://www.bajajlifeinsurance.com/life-insurance-claim-assistance.html
+    -> https://www.bajajlifeinsurance.com/retirement-pension-plans/guaranteed-pension-goal.html
+    ... and 192 more
+
+  External Links (top 5):
+    -> https://la.bajajlife.com/pre-login-services/policy-statement [Downloads]
+    -> https://www.youtube.com/embed/7urK9dW9Xgg?si=1vbCAecfXr2AB3pw [Autopay | Life Insurance Made Easy]
+    -> https://www.youtube.com/embed/ZvBTE87baw0?si=eK1b9ACkOD1HQawI [Nominee | Life Insurance Made Easy]
+    -> https://www.youtube.com/embed/zsUDiIo2Emc?si=t-uS1m-Nh2qZAHkB [Compound Reversionary Bonus | Life Insur]
+    -> https://www.youtube.com/embed/6IwH-fbZe3Q?si=uj1FucR6iqFWkeWF [Riders | Life Insurance Made Easy]
+
+----------------------------------------------------------------------
+  6. STRUCTURED DATA TEST
+----------------------------------------------------------------------
+  No structured data found
+
+----------------------------------------------------------------------
+  7. URL NORMALIZATION TEST
+----------------------------------------------------------------------
+  /about-us                                          -> https://www.bajajlifeinsurance.com/about-us
+  /products?utm_source=google&id=123                 -> https://www.bajajlifeinsurance.com/products?id=123
+  //www.bajajlifeinsurance.com/plans/                -> https://www.bajajlifeinsurance.com/plans
+  mailto:info@bajaj.com                              -> (filtered out)
+  tel:+911234567890                                  -> (filtered out)
+  /path/../other/page                                -> https://www.bajajlifeinsurance.com/other/page
+  https://www.bajajlifeinsurance.com/PAGE/           -> https://www.bajajlifeinsurance.com/PAGE
+  javascript:void(0)                                 -> (filtered out)
+  /blog/?page=1&sort=date&fbclid=abc123              -> https://www.bajajlifeinsurance.com/blog?page=1&sort=date
+
+  Domain Checks:
+  https://www.bajajlifeinsurance.com/page            internal=True (with_subs=True)
+  https://bajajlifeinsurance.com/page                internal=True (with_subs=True)
+  https://blog.bajajlifeinsurance.com/page           internal=False (with_subs=True)
+  https://www.google.com/page                        internal=False (with_subs=False)
+
+----------------------------------------------------------------------
+  8. FRONTIER MANAGER TEST
+----------------------------------------------------------------------
+  Queue Size:      5
+  Total Seen:      5
+  Duplicate Block:  True
+
+  Priority Order (pop sequence):
+    1. [sitemap ] depth=1 priority=0.95 -> https://www.bajajlifeinsurance.com/products
+    2. [seed    ] depth=0 priority=0.90 -> https://www.bajajlifeinsurance.com/
+    3. [link    ] depth=1 priority=0.45 -> https://www.bajajlifeinsurance.com/about
+    4. [link    ] depth=2 priority=0.40 -> https://www.bajajlifeinsurance.com/blog
+    5. [link    ] depth=3 priority=0.35 -> https://www.bajajlifeinsurance.com/blog/post-1
+
+  Final Metrics: {'total_discovered': 5, 'total_crawled': 5, 'total_failed': 0, 'queue_size': 0, 'unique_patterns': 5}
+
+======================================================================
+  ALL TESTS COMPLETED in 2.0s
+======================================================================
