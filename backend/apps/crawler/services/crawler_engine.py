@@ -56,7 +56,13 @@ class CrawlResult:
         self.structured_data: list[dict] = []
         self.classifications: list[dict] = []
         self.errors: list[dict] = []
-        self.metrics: dict = {}
+        self.metrics: dict = {
+            "total_urls_queued": 0,
+            "total_urls_rendered": 0,
+            "total_index_eligible": 0,
+            "total_excluded": 0,
+            "exclusion_breakdown": {},
+        }
 
     @property
     def total_pages(self) -> int:
@@ -420,6 +426,21 @@ class CrawlerEngine:
             # ── Extract Structured Data ────────────────────────
             schema_items = self.schema_extractor.extract(parse_result.json_ld)
 
+            # ── Classify URL ───────────────────────────────────
+            classification = self._classify_url(
+                url=url,
+                fetch_result=fetch_result,
+                metadata=metadata,
+                parse_result=parse_result,
+            )
+            lifecycle_state = classification.get("lifecycle_state", constants.LIFECYCLE_STATE_DISCOVERED)
+            self._add_classification(
+                url, 
+                classification["type"], 
+                classification["reason"],
+                lifecycle_state,
+            )
+
             # ── Build Page Record ──────────────────────────────
             page_record = self._build_page_record(
                 url=url,
@@ -428,6 +449,7 @@ class CrawlerEngine:
                 depth=depth,
                 source=source,
                 links_count=len(extracted_links),
+                lifecycle_state=classification.get("lifecycle_state", constants.LIFECYCLE_STATE_DISCOVERED),
             )
             self.result.pages.append(page_record)
 
@@ -452,14 +474,7 @@ class CrawlerEngine:
                     "error_message": schema.error_message,
                 })
 
-            # ── Classify URL ───────────────────────────────────
-            classification = self._classify_url(
-                url=url,
-                fetch_result=fetch_result,
-                metadata=metadata,
-                parse_result=parse_result,
-            )
-            self._add_classification(url, classification["type"], classification["reason"])
+            # Classification was done and stored above.
 
             # ── Feed new internal links to frontier ────────────
             crawlable = self.link_extractor.filter_crawlable(extracted_links)
@@ -502,6 +517,19 @@ class CrawlerEngine:
     # ────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _extract_directory_segment(url: str) -> str:
+        """Extract the top-level directory segment from a URL."""
+        try:
+            from urllib.parse import urlparse
+            path = urlparse(url).path
+            if not path or path == "/":
+                return "/"
+            parts = [p for p in path.split("/") if p]
+            return f"/{parts[0]}/" if parts else "/"
+        except Exception:
+            return "/"
+
+    @staticmethod
     def _build_page_record(
         url: str,
         fetch_result: FetchResult,
@@ -509,8 +537,10 @@ class CrawlerEngine:
         depth: int,
         source: str,
         links_count: int,
+        lifecycle_state: str = "",
     ) -> dict:
         """Build a page data dict for session storage."""
+        directory = CrawlerEngine._extract_directory_segment(url)
         return {
             "url": url,
             "normalized_url": url,
@@ -523,6 +553,8 @@ class CrawlerEngine:
             "h2_list": metadata.h2_list,
             "h3_list": metadata.h3_list,
             "canonical_url": metadata.canonical_url,
+            "canonical_resolved": metadata.canonical_url or url, # Basic resolution for now
+            "canonical_match": metadata.canonical_url in ("", url),
             "robots_meta": metadata.robots_meta,
             "crawl_depth": depth,
             "load_time_ms": fetch_result.latency_ms,
@@ -531,6 +563,11 @@ class CrawlerEngine:
             "is_https": fetch_result.is_https,
             "page_hash": metadata.page_hash,
             "source": source,
+            "discovery_source_first": source,
+            "discovery_sources_all": [source],
+            "directory_segment": directory,
+            "page_template": "default", # Will group later
+            "lifecycle_state": lifecycle_state,
             "total_images": metadata.total_images,
             "images_without_alt": metadata.images_without_alt,
         }
@@ -546,16 +583,14 @@ class CrawlerEngine:
         metadata,
         parse_result,
     ) -> dict:
-        """Classify a URL into a GSC-style coverage bucket.
-
-        Based on the URL Classifications table in the DB design doc.
-        """
+        """Classify a URL into a GSC-style coverage bucket."""
         status = fetch_result.status_code
 
         # Server errors
         if status >= 500:
             return {
                 "type": constants.CLASSIFICATION_SERVER_ERROR,
+                "lifecycle_state": constants.LIFECYCLE_STATE_SERVER_ERROR,
                 "reason": f"Server returned {status}",
             }
 
@@ -563,6 +598,7 @@ class CrawlerEngine:
         if status == 404:
             return {
                 "type": constants.CLASSIFICATION_NOT_FOUND,
+                "lifecycle_state": constants.LIFECYCLE_STATE_NOT_FOUND,
                 "reason": "Page returned 404 Not Found",
             }
 
@@ -570,6 +606,7 @@ class CrawlerEngine:
         if self.metadata_extractor.detect_soft_404(parse_result, status):
             return {
                 "type": constants.CLASSIFICATION_SOFT_404,
+                "lifecycle_state": constants.LIFECYCLE_STATE_SOFT_404,
                 "reason": "Page appears to be a soft 404 (200 status but error content)",
             }
 
@@ -577,6 +614,7 @@ class CrawlerEngine:
         if fetch_result.redirect_chain:
             return {
                 "type": constants.CLASSIFICATION_REDIRECTED,
+                "lifecycle_state": constants.LIFECYCLE_STATE_REDIRECT,
                 "reason": f"Redirected via {len(fetch_result.redirect_chain)} hop(s) to {fetch_result.final_url}",
             }
 
@@ -584,6 +622,7 @@ class CrawlerEngine:
         if metadata.is_noindex:
             return {
                 "type": constants.CLASSIFICATION_NOINDEX,
+                "lifecycle_state": constants.LIFECYCLE_STATE_NOINDEX,
                 "reason": "Page has noindex meta directive",
             }
 
@@ -591,6 +630,7 @@ class CrawlerEngine:
         if metadata.has_canonical and metadata.canonical_url != url:
             return {
                 "type": constants.CLASSIFICATION_ALTERNATE_CANONICAL,
+                "lifecycle_state": constants.LIFECYCLE_STATE_ALTERNATE_CANONICAL,
                 "reason": f"Canonical points to {metadata.canonical_url}",
             }
 
@@ -598,21 +638,24 @@ class CrawlerEngine:
         if 200 <= status < 300:
             return {
                 "type": constants.CLASSIFICATION_INDEXED,
+                "lifecycle_state": constants.LIFECYCLE_STATE_INDEX_ELIGIBLE,
                 "reason": "Valid indexable page",
             }
 
         # Fallback
         return {
             "type": constants.CLASSIFICATION_CRAWLED_NOT_INDEXED,
+            "lifecycle_state": constants.LIFECYCLE_STATE_CRAWLED,
             "reason": f"Status {status} – classification uncertain",
         }
 
-    def _add_classification(self, url: str, cls_type: str, reason: str):
+    def _add_classification(self, url: str, cls_type: str, reason: str, lifecycle_state: str = ""):
         """Store a URL classification record."""
         self.result.classifications.append({
             "url": url,
             "classification": cls_type,
             "reason": reason,
+            "lifecycle_state": lifecycle_state,
         })
 
     # ────────────────────────────────────────────────────────────
@@ -622,7 +665,7 @@ class CrawlerEngine:
     def _compile_metrics(self):
         """Compile crawl session metrics."""
         frontier_metrics = self.frontier.get_metrics()
-
+        
         avg_response = 0.0
         if self._response_times:
             avg_response = sum(self._response_times) / len(self._response_times)
@@ -645,10 +688,30 @@ class CrawlerEngine:
             sc = page.get("http_status_code", 0)
             status_dist[sc] = status_dist.get(sc, 0) + 1
 
+        # GSC Coverage metrics
+        total_index_eligible = 0
+        total_excluded = 0
+        exclusion_breakdown: dict[str, int] = {}
+        
+        for cls in self.result.classifications:
+            state = cls.get("lifecycle_state")
+            if state == constants.LIFECYCLE_STATE_INDEX_ELIGIBLE:
+                total_index_eligible += 1
+            elif state != constants.LIFECYCLE_STATE_DISCOVERED:
+                # Anything crawled but not eligible is excluded
+                total_excluded += 1
+                if state:
+                    exclusion_breakdown[state] = exclusion_breakdown.get(state, 0) + 1
+
         self.result.metrics = {
             "total_urls_discovered": frontier_metrics["total_discovered"],
             "total_urls_crawled": frontier_metrics["total_crawled"],
             "total_urls_failed": frontier_metrics["total_failed"],
+            "total_urls_queued": frontier_metrics["queue_size"],
+            "total_urls_rendered": 0, # To be implemented when Playwright integrates
+            "total_index_eligible": total_index_eligible,
+            "total_excluded": total_excluded,
+            "exclusion_breakdown": exclusion_breakdown,
             "total_pages_stored": len(self.result.pages),
             "total_links_stored": len(self.result.links),
             "total_sitemap_entries": len(self.result.sitemap_entries),
