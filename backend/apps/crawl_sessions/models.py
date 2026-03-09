@@ -51,6 +51,17 @@ class CrawlSession(UUIDPrimaryKeyMixin, TimestampMixin):
     total_urls_failed = models.PositiveIntegerField(default=0)
     total_urls_skipped = models.PositiveIntegerField(default=0)
 
+    # ── Coverage Metrics ───────────────────────────────────────
+    total_urls_queued = models.PositiveIntegerField(default=0)
+    total_urls_rendered = models.PositiveIntegerField(default=0)
+    total_index_eligible = models.PositiveIntegerField(default=0)
+    total_excluded = models.PositiveIntegerField(default=0)
+    exclusion_breakdown = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Count of excluded URLs by lifecycle state",
+    )
+
     # ── Operational Metadata ───────────────────────────────────
     max_depth_reached = models.PositiveIntegerField(default=0)
     avg_response_time_ms = models.FloatField(default=0.0)
@@ -110,6 +121,14 @@ class Page(UUIDPrimaryKeyMixin):
     url = models.URLField(max_length=2048, db_index=True)
     normalized_url = models.URLField(max_length=2048, blank=True, default="")
 
+    # ── GSC Lifecycle State ────────────────────────────────────
+    url_lifecycle_state = models.CharField(
+        max_length=40,
+        choices=constants.LIFECYCLE_STATE_CHOICES,
+        default=constants.LIFECYCLE_STATE_DISCOVERED,
+        db_index=True,
+    )
+
     # ── Response Signals ───────────────────────────────────────
     http_status_code = models.PositiveSmallIntegerField(
         null=True, blank=True,
@@ -130,6 +149,14 @@ class Page(UUIDPrimaryKeyMixin):
     h2_list = models.JSONField(default=list, blank=True)
     h3_list = models.JSONField(default=list, blank=True)
     canonical_url = models.URLField(max_length=2048, blank=True, default="")
+    canonical_resolved = models.URLField(
+        max_length=2048, blank=True, default="",
+        help_text="The true canonical resolved by the crawler",
+    )
+    canonical_match = models.BooleanField(
+        default=True,
+        help_text="Does declared match resolved canonical?",
+    )
     robots_meta = models.CharField(
         max_length=200, blank=True, default="",
         help_text="Robots meta tag directives (e.g. noindex, nofollow)",
@@ -155,6 +182,22 @@ class Page(UUIDPrimaryKeyMixin):
         max_length=20,
         choices=constants.SOURCE_CHOICES,
         default=constants.SOURCE_LINK,
+    )
+    discovery_source_first = models.CharField(
+        max_length=50, blank=True, default="",
+        help_text="Where this URL was initially discovered",
+    )
+    discovery_sources_all = models.JSONField(
+        default=list, blank=True,
+        help_text="All methods by which this URL was discovered",
+    )
+    directory_segment = models.CharField(
+        max_length=200, blank=True, default="",
+        db_index=True, help_text="Top-level subfolder path",
+    )
+    page_template = models.CharField(
+        max_length=100, blank=True, default="",
+        help_text="Identified page layout or framework template",
     )
     crawl_timestamp = models.DateTimeField(auto_now_add=True)
 
@@ -314,6 +357,15 @@ class StructuredData(UUIDPrimaryKeyMixin):
         help_text="Raw JSON-LD data block",
     )
     is_valid = models.BooleanField(default=True)
+    validation_state = models.CharField(
+        max_length=20,
+        choices=constants.VALIDATION_STATE_CHOICES,
+        default=constants.VALIDATION_STATE_VALID,
+    )
+    validation_errors = models.JSONField(
+        default=list, blank=True,
+        help_text="List of missing/invalid schema properties",
+    )
     error_message = models.TextField(blank=True, default="")
     detected_at = models.DateTimeField(auto_now_add=True)
 

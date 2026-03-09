@@ -113,6 +113,37 @@ CLASSIFICATION_CHOICES = [
 ]
 
 # ─────────────────────────────────────────────────────────────
+# Lifecycle States (GSC Official Coverage States)
+# ─────────────────────────────────────────────────────────────
+LIFECYCLE_STATE_DISCOVERED = "discovered_not_crawled"
+LIFECYCLE_STATE_CRAWLED = "crawled_not_indexed"
+LIFECYCLE_STATE_INDEX_ELIGIBLE = "index_eligible"
+LIFECYCLE_STATE_ALTERNATE_CANONICAL = "alternate_with_canonical"
+LIFECYCLE_STATE_DUPLICATE_NOT_SELECTED = "duplicate_not_selected"
+LIFECYCLE_STATE_NOT_FOUND = "not_found"
+LIFECYCLE_STATE_SOFT_404 = "soft_404"
+LIFECYCLE_STATE_BLOCKED_ROBOTS = "blocked_by_robots"
+LIFECYCLE_STATE_NOINDEX = "excluded_by_noindex"
+LIFECYCLE_STATE_SERVER_ERROR = "server_error"
+LIFECYCLE_STATE_REDIRECT = "redirect"
+LIFECYCLE_STATE_ANOMALY = "crawl_anomaly"
+
+LIFECYCLE_STATE_CHOICES = [
+    (LIFECYCLE_STATE_DISCOVERED, "Discovered – currently not crawled"),
+    (LIFECYCLE_STATE_CRAWLED, "Crawled – currently not indexed"),
+    (LIFECYCLE_STATE_INDEX_ELIGIBLE, "Indexable / Indexed Candidate"),
+    (LIFECYCLE_STATE_ALTERNATE_CANONICAL, "Alternate page with proper canonical tag"),
+    (LIFECYCLE_STATE_DUPLICATE_NOT_SELECTED, "Duplicate without user-selected canonical"),
+    (LIFECYCLE_STATE_NOT_FOUND, "Not found (404)"),
+    (LIFECYCLE_STATE_SOFT_404, "Soft 404"),
+    (LIFECYCLE_STATE_BLOCKED_ROBOTS, "Blocked by robots.txt"),
+    (LIFECYCLE_STATE_NOINDEX, "Excluded by ‘noindex’ tag"),
+    (LIFECYCLE_STATE_SERVER_ERROR, "Server error (5xx)"),
+    (LIFECYCLE_STATE_REDIRECT, "Page with redirect"),
+    (LIFECYCLE_STATE_ANOMALY, "Crawl anomaly"),
+]
+
+# ─────────────────────────────────────────────────────────────
 # Crawl Budget & Limits (Defaults)
 # ─────────────────────────────────────────────────────────────
 DEFAULT_MAX_DEPTH = 7
@@ -158,6 +189,19 @@ SCHEMA_TYPES = [
     "Recipe",
     "JobPosting",
     "Other",
+]
+
+# ─────────────────────────────────────────────────────────────
+# Structured Data Validation States
+# ─────────────────────────────────────────────────────────────
+VALIDATION_STATE_VALID = "valid"
+VALIDATION_STATE_WARNING = "warning"
+VALIDATION_STATE_INVALID = "invalid"
+
+VALIDATION_STATE_CHOICES = [
+    (VALIDATION_STATE_VALID, "Valid"),
+    (VALIDATION_STATE_WARNING, "Valid with Warnings"),
+    (VALIDATION_STATE_INVALID, "Invalid"),
 ]
 
 # ─────────────────────────────────────────────────────────────

@@ -137,6 +137,8 @@ class SessionManager:
                 h2_list=page_data.get("h2_list", []),
                 h3_list=page_data.get("h3_list", []),
                 canonical_url=page_data.get("canonical_url", ""),
+                canonical_resolved=page_data.get("canonical_resolved", ""),
+                canonical_match=page_data.get("canonical_match", True),
                 robots_meta=page_data.get("robots_meta", ""),
                 crawl_depth=page_data.get("crawl_depth", 0),
                 load_time_ms=page_data.get("load_time_ms"),
@@ -145,6 +147,11 @@ class SessionManager:
                 is_https=page_data.get("is_https", False),
                 page_hash=page_data.get("page_hash", ""),
                 source=page_data.get("source", constants.SOURCE_LINK),
+                discovery_source_first=page_data.get("discovery_source_first", ""),
+                discovery_sources_all=page_data.get("discovery_sources_all", []),
+                directory_segment=page_data.get("directory_segment", ""),
+                page_template=page_data.get("page_template", ""),
+                url_lifecycle_state=page_data.get("lifecycle_state", constants.LIFECYCLE_STATE_DISCOVERED),
                 total_images=page_data.get("total_images", 0),
                 images_without_alt=page_data.get("images_without_alt", 0),
             )
@@ -213,6 +220,8 @@ class SessionManager:
                         schema_type=sd_data["schema_type"],
                         raw_json=sd_data.get("raw_json", {}),
                         is_valid=sd_data.get("is_valid", True),
+                        validation_state=sd_data.get("validation_state", constants.VALIDATION_STATE_VALID),
+                        validation_errors=sd_data.get("validation_errors", []),
                         error_message=sd_data.get("error_message", ""),
                     )
                 )
@@ -223,13 +232,21 @@ class SessionManager:
         session.total_urls_discovered = metrics.get("total_urls_discovered", 0)
         session.total_urls_crawled = metrics.get("total_urls_crawled", 0)
         session.total_urls_failed = metrics.get("total_urls_failed", 0)
+        session.total_urls_queued = metrics.get("total_urls_queued", 0)
+        session.total_urls_rendered = metrics.get("total_urls_rendered", 0)
+        session.total_index_eligible = metrics.get("total_index_eligible", 0)
+        session.total_excluded = metrics.get("total_excluded", 0)
+        session.exclusion_breakdown = metrics.get("exclusion_breakdown", {})
         session.max_depth_reached = metrics.get("max_depth_reached", 0)
         session.avg_response_time_ms = metrics.get("avg_response_time_ms", 0.0)
         session.error_summary = metrics.get("error_summary", {})
         session.save(update_fields=[
             "total_urls_discovered", "total_urls_crawled",
-            "total_urls_failed", "max_depth_reached",
-            "avg_response_time_ms", "error_summary", "updated_at",
+            "total_urls_failed", "total_urls_queued",
+            "total_urls_rendered", "total_index_eligible",
+            "total_excluded", "exclusion_breakdown",
+            "max_depth_reached", "avg_response_time_ms",
+            "error_summary", "updated_at",
         ])
 
         log_session_event(str(session.id), "PERSISTED")

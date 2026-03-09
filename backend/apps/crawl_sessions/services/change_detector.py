@@ -21,6 +21,12 @@ class ChangeReport:
     removed_urls: list[str] = field(default_factory=list)
     modified_urls: list[str] = field(default_factory=list)
     unchanged_urls: list[str] = field(default_factory=list)
+    
+    # ── Session-to-Session Intelligence ────────────────────────
+    status_regressions: list[dict] = field(default_factory=list)
+    status_recoveries: list[dict] = field(default_factory=list)
+    lifecycle_transitions: list[dict] = field(default_factory=list)
+    canonical_drifts: list[dict] = field(default_factory=list)
 
     @property
     def total_new(self) -> int:
@@ -48,6 +54,10 @@ class ChangeReport:
             "removed": self.total_removed,
             "modified": self.total_modified,
             "unchanged": self.total_unchanged,
+            "status_regressions": len(self.status_regressions),
+            "status_recoveries": len(self.status_recoveries),
+            "lifecycle_transitions": len(self.lifecycle_transitions),
+            "canonical_drifts": len(self.canonical_drifts),
         }
 
 
@@ -83,17 +93,17 @@ class ChangeDetector:
 
         # Get page data from both sessions
         current_pages = {
-            page.url: page.page_hash
+            page.url: page
             for page in Page.objects.filter(
                 crawl_session=current_session,
-            ).only("url", "page_hash")
+            ).only("url", "page_hash", "http_status_code", "url_lifecycle_state", "canonical_resolved")
         }
 
         previous_pages = {
-            page.url: page.page_hash
+            page.url: page
             for page in Page.objects.filter(
                 crawl_session=previous_session,
-            ).only("url", "page_hash")
+            ).only("url", "page_hash", "http_status_code", "url_lifecycle_state", "canonical_resolved")
         }
 
         current_urls = set(current_pages.keys())
@@ -108,10 +118,44 @@ class ChangeDetector:
         # ── Modified vs Unchanged (in both sessions) ───────────
         common_urls = current_urls & previous_urls
         for url in sorted(common_urls):
-            if current_pages[url] != previous_pages[url]:
+            curr = current_pages[url]
+            prev = previous_pages[url]
+            
+            # Content changes
+            if curr.page_hash != prev.page_hash:
                 report.modified_urls.append(url)
             else:
                 report.unchanged_urls.append(url)
+                
+            # Status regressions & recoveries
+            if prev.http_status_code == 200 and curr.http_status_code != 200:
+                report.status_regressions.append({
+                    "url": url,
+                    "previous_status": prev.http_status_code,
+                    "current_status": curr.http_status_code,
+                })
+            elif prev.http_status_code != 200 and curr.http_status_code == 200:
+                report.status_recoveries.append({
+                    "url": url,
+                    "previous_status": prev.http_status_code,
+                    "current_status": curr.http_status_code,
+                })
+                
+            # Lifecycle transitions
+            if curr.url_lifecycle_state != prev.url_lifecycle_state:
+                report.lifecycle_transitions.append({
+                    "url": url,
+                    "previous_state": prev.url_lifecycle_state,
+                    "current_state": curr.url_lifecycle_state,
+                })
+                
+            # Canonical drift
+            if prev.canonical_resolved and curr.canonical_resolved and prev.canonical_resolved != curr.canonical_resolved:
+                report.canonical_drifts.append({
+                    "url": url,
+                    "previous_canonical": prev.canonical_resolved,
+                    "current_canonical": curr.canonical_resolved,
+                })
 
         session_logger.info(
             "Change detection complete: %s", report.summary(),
