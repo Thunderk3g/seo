@@ -1,3 +1,8 @@
+# NOTE (Day 0, Stream C):
+# - playwright: install browser binaries via `python -m playwright install chromium` post-pip-install.
+# - whitenoise: requires settings wiring (MIDDLEWARE + STATICFILES_STORAGE). DEFERRED — Day 1+.
+# - django-cors-headers: requires settings wiring (INSTALLED_APPS + MIDDLEWARE + CORS_ALLOWED_ORIGINS). DEFERRED — Day 0 frontend stream uses Vite proxy in dev, so CORS isn't required immediately.
+# - anthropic: SDK only. Used by IndexingIntelligenceAgent (Day 5).
 Django>=4.2
 djangorestframework
 psycopg2-binary
@@ -7,3 +12,7 @@ python-dotenv
 aiohttp>=3.9
 beautifulsoup4>=4.12
 lxml
+anthropic>=0.40.0
+playwright>=1.45.0
+whitenoise>=6.6.0
+django-cors-headers>=4.3.0

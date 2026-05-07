@@ -53,6 +53,21 @@ class WebsiteCreateSerializer(serializers.ModelSerializer):
             "max_depth", "max_urls_per_session", "concurrency",
         ]
 
+    def validate_domain(self, value):
+        """Normalise the user-supplied domain and store the bare host.
+
+        Defends against the duplicated-scheme bug (e.g. ``https://https://x.com``)
+        that previously caused the crawler to construct invalid URLs.
+        """
+        from apps.common.url_utils import normalize_seed_url
+        from urllib.parse import urlsplit
+
+        try:
+            normalized = normalize_seed_url(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+        return urlsplit(normalized).netloc.lower()
+
     def create(self, validated_data):
         config_data = {
             "max_depth": validated_data.pop("max_depth", 7),

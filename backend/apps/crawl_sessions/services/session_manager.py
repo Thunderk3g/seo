@@ -97,14 +97,26 @@ class SessionManager:
         return session
 
     @staticmethod
-    def cancel_session(session: CrawlSession) -> CrawlSession:
-        """Cancel a running session."""
+    def cancel_session(session: CrawlSession) -> bool:
+        """Mark a session cancelled. No-op if it's already terminal.
+
+        Returns True if the session was transitioned to cancelled,
+        False if it was already in a terminal state (completed,
+        failed, or cancelled).
+        """
+        if session.status in (
+            constants.SESSION_STATUS_COMPLETED,
+            constants.SESSION_STATUS_FAILED,
+            constants.SESSION_STATUS_CANCELLED,
+        ):
+            return False
+
         session.status = constants.SESSION_STATUS_CANCELLED
         session.finished_at = timezone.now()
         session.save(update_fields=["status", "finished_at", "updated_at"])
 
         log_session_event(str(session.id), "CANCELLED")
-        return session
+        return True
 
     @staticmethod
     @transaction.atomic

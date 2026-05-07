@@ -9,9 +9,12 @@ Usage:
 """
 
 import asyncio
+from urllib.parse import urlsplit
+
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.common import constants
+from apps.common.url_utils import normalize_seed_url
 from apps.crawler.models import Website, CrawlConfig
 from apps.crawler.services.crawler_engine import CrawlerEngine
 from apps.crawl_sessions.services.session_manager import SessionManager
@@ -64,7 +67,16 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        domain = options["domain"].strip().lower()
+        # Normalise the user-supplied domain (defends against the duplicated
+        # scheme bug, e.g. ``https://https://...``). The bare-host form is
+        # used for the Website row; the full canonical URL is what the
+        # CrawlerEngine receives as its seed.
+        try:
+            seed_url = normalize_seed_url(options["domain"])
+        except ValueError as exc:
+            raise CommandError(f"Invalid domain: {exc}")
+
+        domain = urlsplit(seed_url).netloc.lower()
         session_type = options["type"]
 
         # Get or create website
@@ -104,7 +116,7 @@ class Command(BaseCommand):
 
             try:
                 engine = CrawlerEngine(
-                    domain=f"https://{domain}",
+                    domain=seed_url,
                     enable_js_rendering=enable_js,
                     user_agent=config.effective_user_agent,
                     session_id=str(session.id),
@@ -127,7 +139,7 @@ class Command(BaseCommand):
         # Full / Sectional Crawl
         try:
             engine = CrawlerEngine(
-                domain=f"https://{domain}",
+                domain=seed_url,
                 max_depth=max_depth,
                 max_urls=max_urls,
                 concurrency=config.concurrency,

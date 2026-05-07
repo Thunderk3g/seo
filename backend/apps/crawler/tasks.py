@@ -13,6 +13,7 @@ from celery import shared_task
 
 from apps.common import constants
 from apps.common.logging import log_session_event
+from apps.common.url_utils import normalize_seed_url
 
 logger = logging.getLogger("seo.crawler.tasks")
 
@@ -53,9 +54,20 @@ def run_scheduled_crawl(self, website_id: str):
     SessionManager.start_session(session)
 
     try:
+        seed_url = normalize_seed_url(website.domain)
+    except ValueError as exc:
+        logger.error("Invalid domain for website %s: %s", website.domain, exc)
+        SessionManager.fail_session(session, str(exc))
+        return {
+            "session_id": str(session.id),
+            "status": "failed",
+            "error": str(exc),
+        }
+
+    try:
         # Build and run engine
         engine = CrawlerEngine(
-            domain=f"https://{website.domain}",
+            domain=seed_url,
             max_depth=config.max_depth,
             max_urls=config.max_urls_per_session,
             concurrency=config.concurrency,
@@ -128,8 +140,19 @@ def run_on_demand_crawl(
     SessionManager.start_session(session)
 
     try:
+        seed_url = normalize_seed_url(website.domain)
+    except ValueError as exc:
+        logger.error("Invalid domain for website %s: %s", website.domain, exc)
+        SessionManager.fail_session(session, str(exc))
+        return {
+            "session_id": str(session.id),
+            "status": "failed",
+            "error": str(exc),
+        }
+
+    try:
         engine = CrawlerEngine(
-            domain=f"https://{website.domain}",
+            domain=seed_url,
             max_depth=config.max_depth,
             max_urls=config.max_urls_per_session,
             concurrency=config.concurrency,
@@ -197,8 +220,19 @@ def run_url_inspection(website_id: str, target_url: str):
     SessionManager.start_session(session)
 
     try:
+        seed_url = normalize_seed_url(website.domain)
+    except ValueError as exc:
+        logger.error("Invalid domain for website %s: %s", website.domain, exc)
+        SessionManager.fail_session(session, str(exc))
+        return {
+            "session_id": str(session.id),
+            "status": "failed",
+            "error": str(exc),
+        }
+
+    try:
         engine = CrawlerEngine(
-            domain=f"https://{website.domain}",
+            domain=seed_url,
             enable_js_rendering=config.enable_js_rendering,
             user_agent=config.effective_user_agent,
             session_id=str(session.id),

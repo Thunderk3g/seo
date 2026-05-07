@@ -141,6 +141,21 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
         overview = SnapshotService.get_session_overview(session)
         return Response(overview)
 
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        """Cancel a running or pending crawl session."""
+        from apps.crawl_sessions.services.session_manager import SessionManager
+
+        session = self.get_object()
+        cancelled = SessionManager.cancel_session(session)
+        if not cancelled:
+            return Response(
+                {"detail": f"Session is already {session.status} and cannot be cancelled."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        serializer = CrawlSessionDetailSerializer(session)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=["get"], url_path="pages")
     def pages(self, request, pk=None):
         """List pages in this session with optional filtering."""
