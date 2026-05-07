@@ -7,13 +7,13 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../client';
-import type { Website } from '../types';
+import type { Website, PaginatedResponse } from '../types';
 
 export const websitesQueryKey = ['websites'] as const;
 
 export function useWebsites() {
   return useQuery({
     queryKey: websitesQueryKey,
-    queryFn: () => api.get<Website[]>('/websites/'),
+    queryFn: () => api.get<PaginatedResponse<Website>>('/websites/'),
   });
 }

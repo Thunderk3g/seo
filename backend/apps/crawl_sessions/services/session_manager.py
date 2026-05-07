@@ -16,6 +16,7 @@ from apps.common.logging import log_session_event
 from apps.common.exceptions import SessionNotFoundError
 from apps.crawl_sessions.models import (
     CrawlSession,
+    CrawlEvent,
     Page,
     Link,
     URLClassification,
@@ -23,6 +24,29 @@ from apps.crawl_sessions.models import (
     StructuredData,
 )
 from apps.crawler.models import Website, CrawlConfig
+
+
+import logging
+
+_event_logger = logging.getLogger("seo.crawl_events")
+
+
+def _record_event(session: CrawlSession, kind: str, message: str = "", url: str = "", metadata: dict | None = None) -> None:
+    """Best-effort CrawlEvent writer. Never raises — activity feed must
+    not break the crawl pipeline. Failures are logged so misconfiguration
+    surfaces in worker logs (e.g., missing migration, table renamed)."""
+    try:
+        CrawlEvent.objects.create(
+            crawl_session=session,
+            kind=kind,
+            url=url,
+            message=message,
+            metadata=metadata or {},
+        )
+    except Exception:
+        _event_logger.exception(
+            "Failed to write CrawlEvent (session=%s, kind=%s)", session.id, kind,
+        )
 
 
 class SessionManager:
@@ -60,6 +84,12 @@ class SessionManager:
             "CREATED",
             f"Type: {session_type} | Website: {website.domain}",
         )
+        _record_event(
+            session,
+            CrawlEvent.KIND_SESSION,
+            message=f"Session created — {session_type}",
+            metadata={"event": "created", "session_type": session_type},
+        )
 
         return session
 
@@ -71,6 +101,12 @@ class SessionManager:
         session.save(update_fields=["status", "started_at", "updated_at"])
 
         log_session_event(str(session.id), "STARTED")
+        _record_event(
+            session,
+            CrawlEvent.KIND_SESSION,
+            message="Crawl started",
+            metadata={"event": "started"},
+        )
         return session
 
     @staticmethod
@@ -84,6 +120,12 @@ class SessionManager:
             str(session.id), "COMPLETED",
             f"Duration: {session.duration_seconds:.1f}s" if session.duration_seconds else "",
         )
+        _record_event(
+            session,
+            CrawlEvent.KIND_SESSION,
+            message=f"Crawl completed in {session.duration_seconds:.1f}s" if session.duration_seconds else "Crawl completed",
+            metadata={"event": "completed", "duration_seconds": session.duration_seconds},
+        )
         return session
 
     @staticmethod
@@ -94,6 +136,12 @@ class SessionManager:
         session.save(update_fields=["status", "finished_at", "updated_at"])
 
         log_session_event(str(session.id), "FAILED", error)
+        _record_event(
+            session,
+            CrawlEvent.KIND_ERROR,
+            message=error or "Crawl failed",
+            metadata={"event": "failed"},
+        )
         return session
 
     @staticmethod
@@ -116,6 +164,12 @@ class SessionManager:
         session.save(update_fields=["status", "finished_at", "updated_at"])
 
         log_session_event(str(session.id), "CANCELLED")
+        _record_event(
+            session,
+            CrawlEvent.KIND_SESSION,
+            message="Crawl cancelled",
+            metadata={"event": "cancelled"},
+        )
         return True
 
     @staticmethod

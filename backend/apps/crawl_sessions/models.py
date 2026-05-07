@@ -374,3 +374,60 @@ class StructuredData(UUIDPrimaryKeyMixin):
 
     def __str__(self):
         return f"{self.schema_type} on {self.page.url}"
+
+
+class CrawlEvent(UUIDPrimaryKeyMixin):
+    """Lightweight per-session activity feed entry.
+
+    Powers the Dashboard "Live activity" widget. Written from the engine's
+    log helpers (apps.common.logging) when they are passed a session_id.
+    Capped at 5,000 rows per session via a post-crawl cleanup task.
+    """
+
+    KIND_CRAWL = "crawl"
+    KIND_DISCOVERY = "discovery"
+    KIND_SKIP = "skip"
+    KIND_ERROR = "error"
+    KIND_BLOCKED = "blocked"
+    KIND_REDIRECT = "redirect"
+    KIND_SESSION = "session"
+
+    KIND_CHOICES = [
+        (KIND_CRAWL, "Crawled"),
+        (KIND_DISCOVERY, "Discovery"),
+        (KIND_SKIP, "Skipped"),
+        (KIND_ERROR, "Error"),
+        (KIND_BLOCKED, "Blocked"),
+        (KIND_REDIRECT, "Redirect"),
+        (KIND_SESSION, "Session"),
+    ]
+
+    crawl_session = models.ForeignKey(
+        CrawlSession,
+        on_delete=models.CASCADE,
+        related_name="events",
+        db_index=True,
+    )
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    kind = models.CharField(
+        max_length=20,
+        choices=KIND_CHOICES,
+        db_index=True,
+    )
+    url = models.CharField(
+        max_length=2048, blank=True, default="",
+        help_text="Target URL for the event (empty for session-level events)",
+    )
+    message = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "crawl_events"
+        indexes = [
+            models.Index(fields=["crawl_session", "-timestamp"]),
+        ]
+        ordering = ["-timestamp"]
+
+    def __str__(self):
+        return f"[{self.kind}] {self.url or self.message}"
+

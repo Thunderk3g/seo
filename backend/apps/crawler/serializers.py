@@ -5,6 +5,7 @@ from rest_framework import serializers
 from apps.crawler.models import Website, CrawlConfig
 from apps.crawl_sessions.models import (
     CrawlSession,
+    CrawlEvent,
     Page,
     Link,
     URLClassification,
@@ -161,6 +162,19 @@ class URLClassificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = URLClassification
         fields = ["url", "classification", "reason", "classified_at"]
+
+
+# ─────────────────────────────────────────────────────────────
+# Activity Feed Serializer
+# ─────────────────────────────────────────────────────────────
+
+class CrawlEventSerializer(serializers.ModelSerializer):
+    """Activity-feed entry. Persisted CrawlEvent rows use this directly;
+    synthesized per-URL events from the Page table use the same shape."""
+
+    class Meta:
+        model = CrawlEvent
+        fields = ["id", "timestamp", "kind", "url", "message", "metadata"]
 
 
 # ─────────────────────────────────────────────────────────────

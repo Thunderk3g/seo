@@ -23,10 +23,10 @@ export default function Topbar() {
   const websites = useWebsites();
   const startCrawl = useStartCrawl();
 
-  const activeSite = websites.data?.find((w) => w.id === activeSiteId) ?? null;
+  const activeSite = websites.data?.results?.find((w) => w.id === activeSiteId) ?? null;
   const displayDomain = activeSite?.domain ?? '';
   const hasNoSites =
-    !websites.isLoading && (websites.data?.length ?? 0) === 0;
+    !websites.isLoading && (websites.data?.results?.length ?? 0) === 0;
 
   function handleStartCrawl() {
     if (!activeSiteId) return;

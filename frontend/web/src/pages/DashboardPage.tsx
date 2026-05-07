@@ -1,10 +1,15 @@
-// DashboardPage.tsx — Day 0 placeholder.
-// Renders the 5-card KPI strip from .design-ref/project/dashboard.jsx with
-// hardcoded numbers from data.js (lumen.travel sample). All other dashboard
-// cards (SEO health, issue donut, activity feed, etc.) are still on the
-// design-ref but live behind chart components we haven't ported yet.
+// DashboardPage — KPI strip + live activity feed for the active site's
+// most-recent crawl session.
 //
-// TODO: replace with real data via TanStack Query (Day 5)
+// KPIs are still placeholder values (Day 5 will wire SnapshotService /
+// /sessions/:id/overview/). The Activity feed (right column) is real:
+// `useActivity` polls `/sessions/:id/activity/` every 1.5s while the session
+// is running and renders a rolling 14-row buffer via <ActivityFeed/>.
+
+import { useActiveSite } from '../api/hooks/useActiveSite';
+import { useSessions } from '../api/hooks/useSessions';
+import { useActivity } from '../api/hooks/useActivity';
+import ActivityFeed from '../components/ActivityFeed';
 
 interface KpiCard {
   label: string;
@@ -15,7 +20,9 @@ interface KpiCard {
 }
 
 // Numbers lifted verbatim from .design-ref/project/app.jsx (initial crawl state)
-// and .design-ref/project/dashboard.jsx (StatCard sub-text formulas).
+// and .design-ref/project/dashboard.jsx (StatCard sub-text formulas). These
+// remain hardcoded until Day 5 wires /sessions/:id/overview/ for the SEO
+// Health gauge / KPI strip.
 const KPIS: KpiCard[] = [
   { label: 'Total URLs', value: 2310, color: '#a78bfa', sub: '+18.7% vs last crawl' },
   { label: 'Crawled', value: 1842, color: 'var(--accent)', sub: '79.7% of total' },
@@ -33,7 +40,6 @@ function StatCard({ label, value, color, sub, dim }: KpiCard) {
       </div>
       <div className="stat-value-row">
         <div className="stat-value">{value.toLocaleString()}</div>
-        {/* TODO: Sparkline (Day 1+ — needs charts/Sparkline port). */}
         <div style={{ width: 110, height: 36 }} aria-hidden="true" />
       </div>
       <div className={'stat-sub ' + (dim ? 'dim' : '')}>{sub}</div>
@@ -42,6 +48,18 @@ function StatCard({ label, value, color, sub, dim }: KpiCard) {
 }
 
 export default function DashboardPage() {
+  const { activeSiteId } = useActiveSite();
+  const sessionsQuery = useSessions(activeSiteId);
+  // Most-recent session — sessions are returned ordered by -started_at.
+  const session = sessionsQuery.data?.[0] ?? null;
+
+  const activity = useActivity({
+    sessionId: session?.id ?? null,
+    status: session?.status ?? null,
+  });
+
+  const isLive = session?.status === 'running' || session?.status === 'pending';
+
   return (
     <div className="page-grid">
       <div className="row stat-row">
@@ -56,11 +74,18 @@ export default function DashboardPage() {
             <h3>SEO Health Score</h3>
           </div>
           <p className="text-muted">
-            Gauge, donut, crawl overview, activity feed, system metrics, top
-            issues and site-structure cards arrive in Days 1–4 once their
-            backing endpoints land. Layout shell is live now.
+            Gauge, donut, crawl overview, system metrics, top issues and
+            site-structure cards arrive in Days 3–5 once their backing
+            endpoints land. Live activity feed is wired now (right) — start a
+            crawl from the topbar to populate it.
           </p>
         </div>
+
+        <ActivityFeed
+          events={activity.data}
+          isLoading={activity.isPending}
+          isLive={isLive}
+        />
       </div>
     </div>
   );

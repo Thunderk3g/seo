@@ -103,3 +103,34 @@ export interface CrawlTriggeredResponse {
 
 // DRF validation error shape: { field_name: ["error msg"] } or { detail: "msg" }.
 export type DrfFieldErrors = Record<string, string[]>;
+
+// DRF PageNumberPagination response shape.
+export interface PaginatedResponse<T> {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+}
+
+// Activity-feed entry. Backend returns a merged list of:
+//   - persisted CrawlEvent rows (lifecycle events)
+//   - synthesized per-URL events from the Page table
+// The shape is identical for both. `id` may be a UUID (for persisted rows)
+// or a synthetic key like "page-<uuid>" for derived rows.
+export type CrawlEventKind =
+  | 'crawl'
+  | 'discovery'
+  | 'skip'
+  | 'error'
+  | 'blocked'
+  | 'redirect'
+  | 'session';
+
+export interface CrawlEvent {
+  id: string;
+  timestamp: string; // ISO-8601
+  kind: CrawlEventKind;
+  url: string;
+  message: string;
+  metadata: Record<string, unknown>;
+}

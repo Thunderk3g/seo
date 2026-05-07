@@ -48,8 +48,7 @@ export default function Sidebar() {
   const [showAddSite, setShowAddSite] = useState(false);
   const { activeSiteId, setActiveSite } = useActiveSite();
   const websites = useWebsites();
-
-  const sites = websites.data ?? [];
+  const sites = websites.data?.results ?? [];
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? null;
 
   return (
