@@ -1,10 +1,14 @@
 // ExportsPage — generate + list export artifacts for the active site's
 // latest crawl session.
 //
-// Layout (per spec §5.4.6):
-//   TOP    .card  — six "Generate export" buttons in a grid.
-//   BOTTOM .card  — "Recent exports" table (Filename, Kind, Rows, Size,
-//                   Generated, Download).
+// Layout (per spec §5.4.6 / .design-ref/project/pages.jsx:584–615):
+//   PAGE HEADER  — title + subtitle + "New export" primary button.
+//   TOP REGION   — .row .exports-row 2-col grid of .export-card panels,
+//                  one per ExportKind. Each card shows label, description,
+//                  last-generated meta (rows + size), and a Generate button
+//                  wired to useCreateExport.
+//   BOTTOM       — .card "Recent exports" table (Filename, Kind, Rows,
+//                  Size, Generated, Download).
 //
 // Page state machine mirrors IssuesPage: useActiveSite → useSessions →
 // pick sessions[0] → useExports(sessionId).
@@ -16,25 +20,55 @@
 //     browser opens its native save dialog directly.
 //   - No JS allocation for large files; no need to revoke object URLs.
 
+import { useRef } from 'react';
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useSessions } from '../api/hooks/useSessions';
 import { useExports, useCreateExport } from '../api/hooks/useExports';
 import type { ExportKind, ExportRecordSummary } from '../api/types';
+import PageHeader from '../components/PageHeader';
+import Icon from '../components/icons/Icon';
 
 interface ExportKindMeta {
   kind: ExportKind;
   label: string;
+  description: string;
 }
 
 // Display labels mirror the backend KIND_CHOICES tuple in
 // backend/apps/crawl_sessions/models.py around line 449.
+// Descriptions kept ~12 words to fit the .export-desc one/two-line slot.
 const EXPORT_KINDS: ExportKindMeta[] = [
-  { kind: 'urls.csv', label: 'URLs (CSV)' },
-  { kind: 'issues.xlsx', label: 'Issues (XLSX)' },
-  { kind: 'sitemap.xml', label: 'Sitemap (XML)' },
-  { kind: 'broken-links.csv', label: 'Broken Links (CSV)' },
-  { kind: 'redirects.csv', label: 'Redirects (CSV)' },
-  { kind: 'metadata.json', label: 'Metadata (JSON)' },
+  {
+    kind: 'urls.csv',
+    label: 'URLs (CSV)',
+    description:
+      'All discovered URLs with status, depth, response time, size, source.',
+  },
+  {
+    kind: 'issues.xlsx',
+    label: 'Issues (XLSX)',
+    description: 'Per-category issue summary as an Excel workbook.',
+  },
+  {
+    kind: 'sitemap.xml',
+    label: 'Sitemap (XML)',
+    description: 'Generated sitemap.xml of all index-eligible pages.',
+  },
+  {
+    kind: 'broken-links.csv',
+    label: 'Broken Links (CSV)',
+    description: 'All 4xx/5xx/blocked targets with their inbound source URLs.',
+  },
+  {
+    kind: 'redirects.csv',
+    label: 'Redirects (CSV)',
+    description: 'All 3xx pages with redirect chain.',
+  },
+  {
+    kind: 'metadata.json',
+    label: 'Metadata (JSON)',
+    description: 'Full crawl run metadata: session, config, summary stats.',
+  },
 ];
 
 const KIND_LABEL: Record<ExportKind, string> = EXPORT_KINDS.reduce(
@@ -45,7 +79,7 @@ const KIND_LABEL: Record<ExportKind, string> = EXPORT_KINDS.reduce(
   {} as Record<ExportKind, string>,
 );
 
-// 7-column grid: Filename | Kind | Rows | Size | Generated | Download.
+// 7-column grid: # | Filename | Kind | Rows | Size | Generated | Download.
 // Matches the .bt-row / big-url-table styles already used by PagesTable.
 const RECENT_GRID = '36px 2fr 1.4fr 90px 100px 170px 110px';
 
@@ -74,6 +108,18 @@ function downloadHref(sessionId: string, exportId: string): string {
   return `/api/v1/sessions/${sessionId}/exports/${exportId}/download/`;
 }
 
+// Pick the most recent record of `kind` (records arrive sorted newest-first
+// from /sessions/{id}/exports/). Returns null if none exist yet.
+function latestRecordForKind(
+  records: ExportRecordSummary[],
+  kind: ExportKind,
+): ExportRecordSummary | null {
+  for (const r of records) {
+    if (r.kind === kind) return r;
+  }
+  return null;
+}
+
 export default function ExportsPage() {
   const { activeSiteId } = useActiveSite();
   const sessionsQuery = useSessions(activeSiteId);
@@ -86,13 +132,15 @@ export default function ExportsPage() {
 
   const records: ExportRecordSummary[] = exportsQuery.data ?? [];
 
+  // Anchor for the "New export" header button — scrolls back to the cards.
+  const cardsRef = useRef<HTMLDivElement | null>(null);
+
   const subtitle = (() => {
     if (!activeSiteId) return 'No site selected';
     if (sessionsQuery.isPending) return 'Loading sessions…';
     if (!session) return 'No crawl sessions yet — start one from the topbar';
     if (exportsQuery.isPending) return 'Loading exports…';
-    const n = records.length;
-    return `${n.toLocaleString()} export${n === 1 ? '' : 's'} on file`;
+    return 'Download crawl data in any format — CSV, JSON, XML, XLSX.';
   })();
 
   // Track which kind is currently being generated so we can disable just
@@ -110,14 +158,28 @@ export default function ExportsPage() {
     createMutation.mutate({ sessionId, kind });
   }
 
+  function handleNewExport() {
+    cardsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   return (
     <div className="page-grid">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Exports</h1>
-          <div className="page-subtitle">{subtitle}</div>
-        </div>
-      </div>
+      <PageHeader
+        title="Exports"
+        subtitle={subtitle}
+        actions={
+          <button
+            type="button"
+            className="btn primary"
+            onClick={handleNewExport}
+            disabled={!session}
+            title="Jump to export generators"
+          >
+            <Icon name="plus" size={11} />
+            <span>New export</span>
+          </button>
+        }
+      />
 
       {!activeSiteId && (
         <div className="card" style={{ padding: 'var(--pad)' }}>
@@ -138,58 +200,54 @@ export default function ExportsPage() {
 
       {session && (
         <>
-          {/* TOP — generate-export panel */}
-          <div className="card">
-            <div className="card-head">
-              <h3>Generate export</h3>
-            </div>
-            <div
-              style={{
-                padding: 'var(--pad)',
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                gap: 12,
-              }}
-            >
-              {EXPORT_KINDS.map((meta) => {
-                const busy = pendingKind === meta.kind;
-                return (
-                  <div
-                    key={meta.kind}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 4,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={busy || createMutation.isPending}
-                      onClick={() => handleGenerate(meta.kind)}
-                      title={`Generate ${meta.label}`}
-                      style={{ width: '100%', justifyContent: 'center' }}
-                    >
-                      <span>{busy ? 'Generating…' : meta.label}</span>
-                    </button>
+          {/* TOP — 2-col .exports-row grid of .export-card panels. */}
+          <div className="row exports-row" ref={cardsRef}>
+            {EXPORT_KINDS.map((meta) => {
+              const busy = pendingKind === meta.kind;
+              const latest = latestRecordForKind(records, meta.kind);
+              const metaText = latest
+                ? `${latest.row_count.toLocaleString()} rows · ${formatBytes(latest.size_bytes)}`
+                : '— rows · — KB';
+              return (
+                <div key={meta.kind} className="card export-card">
+                  <div className="export-icon">
+                    <Icon name="file" size={20} />
                   </div>
-                );
-              })}
-            </div>
-            {createError && (
-              <div
-                style={{
-                  padding: '0 var(--pad) var(--pad)',
-                  color: 'var(--error, #f87171)',
-                  fontSize: 12,
-                }}
-              >
-                Failed to generate export: {createError}
-              </div>
-            )}
+                  <div className="export-body">
+                    <div className="export-name">{meta.label}</div>
+                    <div className="export-desc">{meta.description}</div>
+                    <div className="export-meta">
+                      <span>{metaText}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => handleGenerate(meta.kind)}
+                    disabled={busy || createMutation.isPending}
+                    title={`Generate ${meta.label}`}
+                  >
+                    <span>{busy ? 'Generating…' : 'Generate'}</span>
+                  </button>
+                </div>
+              );
+            })}
           </div>
 
-          {/* BOTTOM — recent exports table */}
+          {createError && (
+            <div
+              className="card"
+              style={{
+                padding: 'var(--pad)',
+                color: 'var(--error, #f87171)',
+                fontSize: 12,
+              }}
+            >
+              Failed to generate export: {createError}
+            </div>
+          )}
+
+          {/* BOTTOM — recent exports table. */}
           <div className="card">
             <div className="card-head">
               <h3>Recent exports</h3>

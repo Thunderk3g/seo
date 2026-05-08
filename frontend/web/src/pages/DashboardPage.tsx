@@ -1,11 +1,17 @@
-// DashboardPage — KPI strip + SEO Health gauge + system metrics + live
-// activity feed for the active site's most-recent crawl session.
+// DashboardPage — 4-row composition over the active site's most-recent
+// crawl session. Mirrors `.design-ref/project/dashboard.jsx` (lines 200–
+// 238).
 //
-// Day 5: KPIs and the SEO Health Score card are now real. The KPI cards
-// read from /sessions/<id>/overview/ via `useOverview`, the health gauge
-// is rendered from `data.health`, and the system-metrics card uses
-// `data.system_metrics`. Activity feed (right column) remains real and
-// polls every 1.5s while the session is running.
+//   Row 1 .stat-row     — 5 KPI cards (StatCard with Sparkline)
+//   Row 2 .dash-row-2   — SeoHealthCard | IssueDistributionCard | CrawlOverviewCard
+//   Row 3 .dash-row-3   — UrlMiniTable | ActivityFeed
+//   Row 4 .dash-row-4   — SystemMetricsCard | TopIssuesCard | SiteStructureMini
+//
+// All KPI/health data comes from `useOverview`; activity from `useActivity`;
+// pages/issues/tree from their dedicated hooks consumed inside each card.
+// `useSessions` is the single source of truth for `sessionId`; sparklines
+// for the KPI strip are derived from the last 5 sessions' totals (newest
+// last) so the trend reads left-to-right.
 
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useSessions } from '../api/hooks/useSessions';
@@ -13,22 +19,38 @@ import { useActivity } from '../api/hooks/useActivity';
 import { useOverview } from '../api/hooks/useOverview';
 import ActivityFeed from '../components/ActivityFeed';
 import HealthGauge from '../components/charts/HealthGauge';
+import Meter from '../components/charts/Meter';
 import SystemMetricsCard from '../components/charts/SystemMetricsCard';
-import type { OverviewKpis } from '../api/types';
+import StatCard, {
+  type StatCardProps,
+} from '../components/dashboard/StatCard';
+import IssueDistributionCard from '../components/dashboard/IssueDistributionCard';
+import CrawlOverviewCard from '../components/dashboard/CrawlOverviewCard';
+import TopIssuesCard from '../components/dashboard/TopIssuesCard';
+import UrlMiniTable from '../components/dashboard/UrlMiniTable';
+import SiteStructureMini from '../components/dashboard/SiteStructureMini';
+import type {
+  CrawlSessionListItem,
+  OverviewKpis,
+  OverviewSnapshot,
+} from '../api/types';
 
-interface KpiCard {
-  label: string;
-  value: number;
-  color: string;
-  sub: string;
-  dim?: boolean;
+// Pull a per-KPI sparkline series out of the recent sessions list. Sessions
+// arrive newest-first; we reverse so the latest point sits on the right
+// (the conventional read direction for trend lines).
+function sparkSeries(
+  sessions: CrawlSessionListItem[] | undefined,
+  pick: (s: CrawlSessionListItem) => number,
+  count = 5,
+): number[] {
+  if (!sessions || sessions.length === 0) return [];
+  return sessions.slice(0, count).map(pick).reverse();
 }
 
-// Map the server-side `kpis` payload into the design's 5-card layout.
-// Colors and ordering match the original hardcoded KPIS array verbatim
-// so the visual stays stable; only the numbers (and sub-text) move to
-// being computed from real data.
-function buildKpiCards(kpis: OverviewKpis): KpiCard[] {
+function buildKpiCards(
+  kpis: OverviewKpis,
+  sessions: CrawlSessionListItem[] | undefined,
+): StatCardProps[] {
   const total = kpis.total_urls;
   const pct = (n: number) =>
     total > 0 ? `${((n / total) * 100).toFixed(1)}% of total` : '—';
@@ -43,12 +65,14 @@ function buildKpiCards(kpis: OverviewKpis): KpiCard[] {
       value: kpis.total_urls,
       color: '#a78bfa',
       sub: 'discovered in this session',
+      sparkData: sparkSeries(sessions, (s) => s.total_urls_discovered),
     },
     {
       label: 'Crawled',
       value: kpis.crawled,
       color: 'var(--accent)',
       sub: pct(kpis.crawled),
+      sparkData: sparkSeries(sessions, (s) => s.total_urls_crawled),
     },
     {
       label: 'Pending',
@@ -56,12 +80,17 @@ function buildKpiCards(kpis: OverviewKpis): KpiCard[] {
       color: '#fbbf24',
       sub: pct(kpis.pending),
       dim: true,
+      // No `pending`-equivalent on the list serializer; a derived
+      // discovered-minus-crawled would ignore excluded/failed and be
+      // misleading. Leave empty so Sparkline renders its placeholder.
+      sparkData: [],
     },
     {
       label: 'Failed',
       value: kpis.failed,
       color: '#f87171',
       sub: errorRate,
+      sparkData: sparkSeries(sessions, (s) => s.total_urls_failed),
     },
     {
       label: 'Excluded',
@@ -69,30 +98,14 @@ function buildKpiCards(kpis: OverviewKpis): KpiCard[] {
       color: '#60a5fa',
       sub: 'by robots.txt & rules',
       dim: true,
+      // No `excluded` field on the list serializer — leave empty so the
+      // Sparkline renders its empty placeholder.
+      sparkData: [],
     },
   ];
 }
 
-function StatCard({ label, value, color, sub, dim }: KpiCard) {
-  return (
-    <div className="card stat-card">
-      <div className="stat-head">
-        <div className="stat-dot" style={{ background: color }} />
-        <span className="stat-label">{label}</span>
-      </div>
-      <div className="stat-value-row">
-        <div className="stat-value">{value.toLocaleString()}</div>
-        <div style={{ width: 110, height: 36 }} aria-hidden="true" />
-      </div>
-      <div className={'stat-sub ' + (dim ? 'dim' : '')}>{sub}</div>
-    </div>
-  );
-}
-
-// Render the five KPI cards as zero-valued placeholders while the
-// overview query is loading or hasn't fired yet — keeps the layout
-// stable instead of collapsing to a spinner.
-const PLACEHOLDER_KPIS: KpiCard[] = [
+const PLACEHOLDER_KPIS: StatCardProps[] = [
   { label: 'Total URLs', value: 0, color: '#a78bfa', sub: '—' },
   { label: 'Crawled', value: 0, color: 'var(--accent)', sub: '—' },
   { label: 'Pending', value: 0, color: '#fbbf24', sub: '—', dim: true },
@@ -103,7 +116,6 @@ const PLACEHOLDER_KPIS: KpiCard[] = [
 export default function DashboardPage() {
   const { activeSiteId } = useActiveSite();
   const sessionsQuery = useSessions(activeSiteId);
-  // Most-recent session — sessions are returned ordered by -started_at.
   const session = sessionsQuery.data?.[0] ?? null;
   const sessionId = session?.id ?? null;
 
@@ -116,176 +128,33 @@ export default function DashboardPage() {
   const isLive = session?.status === 'running' || session?.status === 'pending';
 
   const kpiCards = overview.data
-    ? buildKpiCards(overview.data.kpis)
+    ? buildKpiCards(overview.data.kpis, sessionsQuery.data)
     : PLACEHOLDER_KPIS;
 
   return (
     <div className="page-grid">
+      {/* Row 1 — 5 KPI tiles */}
       <div className="row stat-row">
         {kpiCards.map((k) => (
           <StatCard key={k.label} {...k} />
         ))}
       </div>
 
+      {/* Row 2 — Health | Issue distribution | Crawl overview */}
       <div className="row dash-row-2">
-        <div
-          className="card"
-          style={{
-            padding: 'var(--pad)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 14,
-          }}
-        >
-          <div className="card-head">
-            <h3>SEO Health Score</h3>
-          </div>
+        <SeoHealthCard
+          overview={overview.data ?? null}
+          loading={Boolean(sessionId) && overview.isPending}
+          error={Boolean(sessionId) && overview.isError}
+          hasSession={Boolean(sessionId)}
+        />
+        <IssueDistributionCard sessionId={sessionId} />
+        <CrawlOverviewCard session={session} />
+      </div>
 
-          {/* Loading and error states mirror the IssuesPage convention. */}
-          {!sessionId && (
-            <p className="text-muted">
-              No crawl sessions yet — start one from the topbar.
-            </p>
-          )}
-          {sessionId && overview.isPending && (
-            <p className="text-muted">Loading overview…</p>
-          )}
-          {sessionId && overview.isError && (
-            <p style={{ color: 'var(--error, #f87171)' }}>
-              Failed to load overview
-              {overview.error instanceof Error
-                ? `: ${overview.error.message}`
-                : '.'}
-            </p>
-          )}
-
-          {overview.data && (
-            <>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingTop: 6,
-                }}
-              >
-                <HealthGauge
-                  score={overview.data.health.score}
-                  band={overview.data.health.band}
-                />
-              </div>
-
-              {/* Spec §5.4.1 — three sub-scores rendered as compact bars
-                  below the gauge. Optional for backwards-compat: only
-                  render when the backend supplies sub_scores. */}
-              {overview.data.health.sub_scores && (
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(3, 1fr)',
-                    gap: 8,
-                    marginTop: 4,
-                  }}
-                >
-                  <SubScoreBar
-                    label="Technical"
-                    value={overview.data.health.sub_scores.technical}
-                  />
-                  <SubScoreBar
-                    label="Content"
-                    value={overview.data.health.sub_scores.content}
-                  />
-                  <SubScoreBar
-                    label="Performance"
-                    value={overview.data.health.sub_scores.performance}
-                  />
-                </div>
-              )}
-
-              <ul
-                style={{
-                  listStyle: 'none',
-                  padding: 0,
-                  margin: 0,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                  fontSize: 12,
-                }}
-              >
-                {overview.data.health.reasons.map((r) => (
-                  <li
-                    key={r.label}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      color: 'var(--text-2)',
-                    }}
-                  >
-                    <span>{r.label}</span>
-                    <span
-                      className="num"
-                      style={{
-                        color:
-                          r.delta < 0
-                            ? '#f87171'
-                            : r.delta > 0
-                              ? '#6ee7b7'
-                              : 'var(--text-3)',
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    >
-                      {r.delta > 0 ? '+' : ''}
-                      {r.delta}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-
-              {/* Crawl performance metrics — about the crawl itself
-                  (response times, depth, issue density). Distinct from
-                  the host-level System Metrics card below the row, which
-                  shows CPU/memory/Redis queue depth/Celery RPS. */}
-              <div
-                style={{
-                  borderTop: '1px solid var(--border, rgba(255,255,255,0.08))',
-                  paddingTop: 12,
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '8px 16px',
-                  fontSize: 12,
-                }}
-              >
-                <SystemMetric
-                  label="Avg response"
-                  value={`${Math.round(overview.data.system_metrics.avg_response_time_ms)}ms`}
-                />
-                <SystemMetric
-                  label="p95 response"
-                  value={
-                    overview.data.system_metrics.p95_response_time_ms != null
-                      ? `${Math.round(overview.data.system_metrics.p95_response_time_ms)}ms`
-                      : '—'
-                  }
-                />
-                <SystemMetric
-                  label="Median depth"
-                  value={overview.data.system_metrics.median_depth.toLocaleString()}
-                />
-                <SystemMetric
-                  label="Max depth"
-                  value={overview.data.system_metrics.max_depth_reached.toLocaleString()}
-                />
-                <SystemMetric
-                  label="Pages with issues"
-                  value={overview.data.system_metrics.pages_with_issues.toLocaleString()}
-                />
-              </div>
-            </>
-          )}
-        </div>
-
+      {/* Row 3 — URL preview | Activity feed */}
+      <div className="row dash-row-3">
+        <UrlMiniTable sessionId={sessionId} />
         <ActivityFeed
           events={activity.data}
           isLoading={activity.isPending}
@@ -293,82 +162,117 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="row">
+      {/* Row 4 — System | Top issues | Site structure */}
+      <div className="row dash-row-4">
         <SystemMetricsCard />
+        <TopIssuesCard sessionId={sessionId} />
+        <SiteStructureMini sessionId={sessionId} />
       </div>
     </div>
   );
 }
 
-// Compact sub-score row: label + a horizontal bar + numeric value.
-// Color matches the SEO Health gauge bands for a visual link with the
-// top score. Bar is filled to ``value%`` (0..100, clamped defensively).
-function SubScoreBar({ label, value }: { label: string; value: number }) {
+// ─────────────────────────────────────────────────────────────────
+// SeoHealthCard — gauge on the left, three Meter sub-score rows on
+// the right. Drops the embedded crawl-perf footer (those metrics now
+// live on CrawlOverviewCard / SystemMetricsCard) and the inline
+// SubScoreBar from the previous implementation in favour of the
+// shared <Meter> primitive.
+// ─────────────────────────────────────────────────────────────────
+
+interface SeoHealthCardProps {
+  overview: OverviewSnapshot | null;
+  loading: boolean;
+  error: boolean;
+  hasSession: boolean;
+}
+
+const SUB_COLORS = {
+  technical: 'var(--accent)',
+  content: '#fbbf24',
+  performance: '#60a5fa',
+} as const;
+
+function SeoHealthCard({
+  overview,
+  loading,
+  error,
+  hasSession,
+}: SeoHealthCardProps) {
+  return (
+    <div className="card health-card">
+      <div className="card-head">
+        <h3>SEO Health Score</h3>
+        <a className="link-btn" href="#analytics">View report</a>
+      </div>
+
+      {!hasSession && (
+        <p className="text-muted" style={{ fontSize: 12 }}>
+          No crawl sessions yet — start one from the topbar.
+        </p>
+      )}
+      {hasSession && loading && (
+        <p className="text-muted" style={{ fontSize: 12 }}>Loading overview…</p>
+      )}
+      {hasSession && error && (
+        <p style={{ color: '#f87171', fontSize: 12 }}>
+          Failed to load overview.
+        </p>
+      )}
+
+      {overview && (
+        <div className="health-body">
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <HealthGauge
+              score={overview.health.score}
+              band={overview.health.band}
+              size={160}
+              thickness={14}
+            />
+          </div>
+          <div className="health-subs">
+            <SubScoreRow
+              label="Technical SEO"
+              value={overview.health.sub_scores?.technical ?? 0}
+              color={SUB_COLORS.technical}
+            />
+            <SubScoreRow
+              label="Content SEO"
+              value={overview.health.sub_scores?.content ?? 0}
+              color={SUB_COLORS.content}
+            />
+            <SubScoreRow
+              label="Performance"
+              value={overview.health.sub_scores?.performance ?? 0}
+              color={SUB_COLORS.performance}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubScoreRow({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color: string;
+}) {
   const safe = Math.max(0, Math.min(100, value));
-  const color =
-    safe >= 80 ? '#6ee7b7' : safe >= 50 ? '#fbbf24' : '#f87171';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          fontSize: 11,
-          color: 'var(--text-3)',
-        }}
-      >
+    <div className="health-sub">
+      <div className="health-sub-row">
         <span>{label}</span>
-        <span
-          className="num"
-          style={{
-            color: 'var(--text-1)',
-            fontVariantNumeric: 'tabular-nums',
-          }}
-        >
+        <b>
           {safe}
-        </span>
+          <span className="text-muted">/100</span>
+        </b>
       </div>
-      <div
-        style={{
-          height: 4,
-          borderRadius: 2,
-          background: 'rgba(255,255,255,0.06)',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: `${safe}%`,
-            height: '100%',
-            background: color,
-            transition: 'width 200ms ease',
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function SystemMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 2,
-      }}
-    >
-      <span style={{ color: 'var(--text-3)' }}>{label}</span>
-      <span
-        className="num"
-        style={{
-          color: 'var(--text-1)',
-          fontWeight: 500,
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {value}
-      </span>
+      <Meter value={safe} color={color} height={5} />
     </div>
   );
 }

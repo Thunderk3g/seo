@@ -19,6 +19,8 @@ import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useSessions } from '../api/hooks/useSessions';
 import { useIssues, useIssueDetail } from '../api/hooks/useIssues';
 import type { IssueSeverity, IssueSummary } from '../api/types';
+import PageHeader from '../components/PageHeader';
+import Icon from '../components/icons/Icon';
 
 type SevFilter = 'all' | IssueSeverity;
 
@@ -71,12 +73,7 @@ export default function IssuesPage() {
 
   return (
     <div className="page-grid">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Issues</h1>
-          <div className="page-subtitle">{subtitle}</div>
-        </div>
-      </div>
+      <PageHeader title="Issues" subtitle={subtitle} />
 
       {!activeSiteId && (
         <div className="card" style={{ padding: 'var(--pad)' }}>
@@ -269,7 +266,17 @@ export default function IssuesPage() {
                               ? `${Math.round(u.load_time_ms)}ms`
                               : '—'}
                           </div>
-                          <div></div>
+                          <div>
+                            <a
+                              href={u.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="icon-btn"
+                              title="Open URL"
+                            >
+                              <Icon name="external" size={12} />
+                            </a>
+                          </div>
                         </div>
                       );
                     })}

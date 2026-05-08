@@ -1,19 +1,22 @@
-// HealthGauge — minimal SVG semicircle gauge for the SEO Health Score.
+// HealthGauge — full-ring SVG gauge for the SEO Health Score.
 //
-// Renders a 180° track from -90° (left) to +90° (right) plus a colored
-// fill arc proportional to `score`. Mirrors MiniDonut's stroke-dasharray
-// trick: the path's `pathLength` is set to 100 so we can express the
-// fill length as `score`/(100 - score) directly without recomputing the
-// arc length. SVG plumbing only — no chart library.
+// Mirrors .design-ref/project/charts.jsx Gauge (lines 89-119): a 360° track
+// rotated -90° so the fill begins at 12 o'clock and sweeps clockwise. The
+// score value is tweened from 0 → score over 800ms with an easeOutCubic
+// curve. `pathLength=100` keeps the static fallback dasharray of
+// `${score} ${100 - score}` working when animation is disabled.
 //
-// Color palette matches the spec:
+// Color palette stays band-driven so the calling sites don't need to change:
 //   good (≥80) → #6ee7b7   warn (≥50) → #fbbf24   poor → #f87171
+
+import { useEffect, useState } from 'react';
 
 interface Props {
   score: number;            // 0..100
   band: 'good' | 'warn' | 'poor';
-  size?: number;            // pixel width (height ≈ size/2 + label room)
+  size?: number;            // pixel width/height
   thickness?: number;       // arc stroke width
+  animate?: boolean;
 }
 
 const BAND_COLOR: Record<Props['band'], string> = {
@@ -28,11 +31,17 @@ const BAND_LABEL: Record<Props['band'], string> = {
   poor: 'Poor',
 };
 
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 export default function HealthGauge({
   score,
   band,
   size = 200,
   thickness = 16,
+  animate = true,
 }: Props) {
   // Clamp defensively even though the backend already does it.
   const safe = Math.max(0, Math.min(100, score));
@@ -41,21 +50,34 @@ export default function HealthGauge({
   const cy = size / 2;
   const r = (size - thickness) / 2;
 
-  // Two endpoints of the semicircle on the X-axis (y = cy).
-  // Start at (cx - r, cy), end at (cx + r, cy), sweep over the top.
-  const startX = cx - r;
-  const endX = cx + r;
-  const arcY = cy;
-
-  // SVG arc command for the full 180° track. `large-arc-flag=0` and
-  // `sweep-flag=1` draws the upper semicircle.
-  const trackPath = `M ${startX} ${arcY} A ${r} ${r} 0 0 1 ${endX} ${arcY}`;
-
-  // Total visual height = top of the arc (cy - r) down to label area.
-  const heightPx = cy + thickness; // semicircle + a little padding
-
   const color = BAND_COLOR[band];
   const label = BAND_LABEL[band];
+
+  const shouldAnimate = animate && !prefersReducedMotion();
+  const [v, setV] = useState(shouldAnimate ? 0 : safe);
+
+  useEffect(() => {
+    if (!shouldAnimate) {
+      setV(safe);
+      return;
+    }
+    let raf = 0;
+    const start = performance.now();
+    const from = 0;
+    const step = (now: number) => {
+      const k = Math.min(1, (now - start) / 800);
+      const eased = 1 - Math.pow(1 - k, 3);
+      setV(from + (safe - from) * eased);
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [safe, shouldAnimate]);
+
+  // pathLength=100 lets us keep the static fallback dasharray of
+  // `${safe} ${100 - safe}` while the animated path uses the real circumference.
+  const c = 2 * Math.PI * r;
+  const len = (v / 100) * c;
 
   return (
     <div
@@ -68,34 +90,39 @@ export default function HealthGauge({
     >
       <svg
         width={size}
-        height={heightPx}
-        viewBox={`0 0 ${size} ${heightPx}`}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
         role="img"
         aria-label={`SEO Health score ${safe} of 100, ${label}`}
+        style={{ display: 'block' }}
       >
-        {/* Track */}
-        <path
-          d={trackPath}
+        {/* Track — full ring */}
+        <circle
+          cx={cx}
+          cy={cy}
+          r={r}
           fill="none"
           stroke="rgba(255,255,255,0.06)"
           strokeWidth={thickness}
-          strokeLinecap="round"
           pathLength={100}
         />
-        {/* Fill — pathLength=100 lets us use score directly. */}
-        <path
-          d={trackPath}
-          fill="none"
-          stroke={color}
-          strokeWidth={thickness}
-          strokeLinecap="round"
-          pathLength={100}
-          strokeDasharray={`${safe} ${100 - safe}`}
-        />
+        {/* Fill arc — rotated -90° so it starts at 12 o'clock. */}
+        <g transform={`rotate(-90 ${cx} ${cy})`}>
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill="none"
+            stroke={color}
+            strokeWidth={thickness}
+            strokeDasharray={`${len} ${c - len}`}
+            strokeLinecap="round"
+          />
+        </g>
         {/* Center number */}
         <text
           x={cx}
-          y={cy - thickness / 2}
+          y={cy - 2}
           textAnchor="middle"
           fontSize={size * 0.28}
           fontWeight={600}
@@ -108,7 +135,7 @@ export default function HealthGauge({
         {/* Subtitle (band name) */}
         <text
           x={cx}
-          y={cy + thickness / 2 + 4}
+          y={cy + size * 0.18}
           textAnchor="middle"
           fontSize={size * 0.075}
           fill={color}

@@ -34,6 +34,13 @@ const ICON_PATHS: Record<string, string> = {
   chevRight: 'M9 6l6 6-6 6',
   plus: 'M12 5v14M5 12h14',
   arrowUp: 'M12 19V5 M5 12l7-7 7 7',
+  external:
+    'M14 3h7v7 M21 3l-9 9 M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5',
+
+  // Tree-row glyphs (folder/file ports of .design-ref/project/icons.jsx)
+  folder:
+    'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6l2 3h8a2 2 0 0 1 2 2z',
+  file: 'M14 3v5h5M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z',
 };
 
 export interface IconProps {

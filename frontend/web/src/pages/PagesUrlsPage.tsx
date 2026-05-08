@@ -7,6 +7,11 @@
 // Behaviour cuts (per spec §5.4.3): "Advanced filters" and "Export CSV"
 // buttons are omitted in v1 — Export lands on Day 4. "Re-crawl" is wired to
 // the existing useStartCrawl mutation.
+//
+// Tab counts: only the "All" tab shows a count (the total from the current
+// paginated response). Status/content-type bucket counts are intentionally
+// omitted — the backend doesn't expose per-bucket counts and we don't want
+// to fabricate them. See spec note on this file's brief.
 
 import { useState } from 'react';
 import { useActiveSite } from '../api/hooks/useActiveSite';
@@ -17,6 +22,8 @@ import {
   type StatusClass,
 } from '../api/hooks/usePages';
 import { useStartCrawl } from '../api/hooks/useStartCrawl';
+import PageHeader from '../components/PageHeader';
+import Icon from '../components/icons/Icon';
 import PagesTable from '../components/tables/PagesTable';
 
 const TABS: { id: ContentTypeBucket | StatusClass; label: string; kind: 'content' | 'status' }[] = [
@@ -67,6 +74,9 @@ export default function PagesUrlsPage() {
     ordering,
   });
 
+  // Total count across the active filter — used to badge the "All" tab.
+  const totalCount = pagesQuery.data?.count ?? null;
+
   const subtitle = (() => {
     if (!activeSiteId) return 'No site selected';
     if (sessionsQuery.isPending) return 'Loading sessions…';
@@ -76,23 +86,23 @@ export default function PagesUrlsPage() {
 
   return (
     <div className="page-grid">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Pages / URLs</h1>
-          <div className="page-subtitle">{subtitle}</div>
-        </div>
-        <div className="page-actions">
+      <PageHeader
+        title="Pages / URLs"
+        subtitle={subtitle}
+        actions={
           <button
             type="button"
             className="btn primary"
             disabled={!activeSiteId || startCrawl.isPending}
             onClick={() => activeSiteId && startCrawl.mutate(activeSiteId)}
-            title={activeSiteId ? 'Start a fresh crawl on the active site' : 'No active site'}
+            title={
+              activeSiteId ? 'Start a fresh crawl on the active site' : 'No active site'
+            }
           >
             <span>{startCrawl.isPending ? 'Starting…' : 'Re-crawl'}</span>
           </button>
-        </div>
-      </div>
+        }
+      />
 
       {!activeSiteId && (
         <div className="card" style={{ padding: 'var(--pad)' }}>
@@ -115,19 +125,32 @@ export default function PagesUrlsPage() {
         <div className="card big-table">
           <div className="card-head card-head-flex">
             <div className="tabs">
-              {TABS.map((t) => (
-                <button
-                  key={t.label}
-                  type="button"
-                  className={'tab ' + (t.id === activeTab ? 'active' : '')}
-                  onClick={() => handleTab(t.id, t.kind)}
-                >
-                  {t.label}
-                </button>
-              ))}
+              {TABS.map((t) => {
+                const isAll = t.id === '' && t.kind === 'content';
+                const showCount = isAll && totalCount !== null;
+                return (
+                  <button
+                    key={t.label}
+                    type="button"
+                    className={'tab ' + (t.id === activeTab ? 'active' : '')}
+                    onClick={() => handleTab(t.id, t.kind)}
+                  >
+                    {t.label}
+                    {showCount && (
+                      <>
+                        {' '}
+                        <span className="tab-count">
+                          {totalCount.toLocaleString()}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                );
+              })}
             </div>
             <div className="table-toolbar">
               <div className="search-field small">
+                <Icon name="search" size={13} />
                 <input
                   type="text"
                   value={q}

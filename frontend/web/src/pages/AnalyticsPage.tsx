@@ -161,7 +161,7 @@ function AnalyticsCharts({
       <div className="row analytics-row">
         <div className="card" style={{ padding: 'var(--pad)' }}>
           <div className="card-head">
-            <h3>Status codes</h3>
+            <h3>Status code distribution</h3>
           </div>
           <div className="analytics-chart-body">
             <MiniDonut
@@ -177,7 +177,7 @@ function AnalyticsCharts({
 
         <div className="card" style={{ padding: 'var(--pad)' }}>
           <div className="card-head">
-            <h3>Crawl depth</h3>
+            <h3>Crawl depth distribution</h3>
           </div>
           <MiniBars entries={depthEntries} height={210} />
         </div>

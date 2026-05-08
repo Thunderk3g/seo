@@ -24,6 +24,19 @@
 // JSON string lists — server validates ≤100 entries, ≤200 chars each, no
 // empty entries. Rendered as two textareas (one entry per non-empty line).
 // Engine-side enforcement is a follow-up; the API+UI here is storage only.
+//
+// Layout (post-refactor): the page is a 2-up `.settings-row` grid of
+// `.settings-card` blocks, with each row inside a card rendered through
+// the shared `SettingRow` primitive. Toggles use `TogglePill` rather than
+// native checkboxes so the pill background animates with the active
+// accent. Pairings (left, right):
+//   • Identity (full-width)
+//   • Crawl behaviour            | Crawl scope
+//   • Networking                 | User agent
+//   • Excluded paths             | Schedule (coming-soon)
+//   • Appearance                 | API & integrations (coming-soon)
+// The Save / Discard bar is lifted out of the form flow into a fixed
+// bottom-right widget so it stays visible across long settings pages.
 
 import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
@@ -34,11 +47,14 @@ import {
   useUpdateSettings,
 } from '../api/hooks/useSettings';
 import type { LatticePrefs, SettingsDict, SettingsUpdate } from '../api/types';
+import SettingRow from '../components/SettingRow';
 
 // ─────────────────────────────────────────────────────────────────
 // Appearance preferences (spec §5.4.8/§5.4.9). Client-only — stored
-// in localStorage under `lattice.prefs`, applied to <html>/<body>
-// via a CSS variable (--accent) plus density/theme body classes.
+// in localStorage under `lattice.prefs`, applied to <html> via a
+// CSS variable (--accent) and `data-theme` / `data-density`
+// dataset attributes so the reference [data-theme="light"] selectors
+// in lattice.css actually match.
 // ─────────────────────────────────────────────────────────────────
 
 const LATTICE_PREFS_KEY = 'lattice.prefs';
@@ -74,12 +90,13 @@ function loadPrefs(): LatticePrefs {
 
 function applyPrefs(prefs: LatticePrefs): void {
   if (typeof document === 'undefined') return;
+  const root = document.documentElement;
   // Accent → CSS custom property on <html>. Glow/hover variants stay
   // baked-in (lattice.css uses --accent-glow, --accent-hover); we
   // recompute those here so the whole UI tracks the new accent.
   const hex = ACCENT_HEX[prefs.accent];
-  document.documentElement.style.setProperty('--accent', hex);
-  document.documentElement.style.setProperty('--accent-hover', hex);
+  root.style.setProperty('--accent', hex);
+  root.style.setProperty('--accent-hover', hex);
   // accent-glow = same hex at ~18% alpha; pre-baked rgba per accent.
   const glow: Record<LatticePrefs['accent'], string> = {
     amber: 'rgba(251, 191, 36, 0.18)',
@@ -87,15 +104,23 @@ function applyPrefs(prefs: LatticePrefs): void {
     cyan: 'rgba(34, 211, 238, 0.18)',
     emerald: 'rgba(110, 231, 183, 0.18)',
   };
-  document.documentElement.style.setProperty('--accent-glow', glow[prefs.accent]);
-  // Density + theme → body classes (toggled, not appended).
-  const body = document.body;
-  body.classList.toggle('density-compact', prefs.density === 'compact');
-  body.classList.toggle('density-comfortable', prefs.density === 'comfortable');
-  body.classList.toggle('theme-light', prefs.theme === 'light');
-  // 'system' and 'dark' both leave the .theme-light class off; the
-  // base stylesheet is dark and 'system' inherits OS-level prefs via
-  // existing media queries (if any) on the host page.
+  root.style.setProperty('--accent-glow', glow[prefs.accent]);
+  // Theme + density → dataset attributes on <html>. The reference
+  // stylesheet's light-mode tweaks are scoped under `[data-theme="light"]`
+  // (lattice.css:1278), so toggling a body class never matched. Dark is
+  // the default with no attribute — we *delete* the attribute when the
+  // theme isn't 'light' rather than setting it to '' (which would leave
+  // a `data-theme=""` in the DOM and fail attribute-presence checks).
+  if (prefs.theme === 'light') {
+    root.dataset.theme = 'light';
+  } else {
+    delete root.dataset.theme;
+  }
+  if (prefs.density === 'compact') {
+    root.dataset.density = 'compact';
+  } else {
+    delete root.dataset.density;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -203,25 +228,26 @@ function formatLineList(items: readonly string[]): string {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Inline error helper.
+// Shared inline styles for the textual <input>/<textarea> elements
+// dropped into SettingRow.value slots. Centralising means a single
+// place to tune surface/border/padding when the design tightens.
 // ─────────────────────────────────────────────────────────────────
 
-function FieldError({ message }: { message: string | undefined }) {
-  if (!message) return null;
-  return (
-    <div
-      role="alert"
-      style={{
-        color: 'var(--error, #f87171)',
-        fontSize: 11,
-        marginTop: 4,
-        paddingLeft: 4,
-      }}
-    >
-      {message}
-    </div>
-  );
-}
+const INPUT_STYLE = {
+  background: 'var(--surface)',
+  color: 'var(--text-1)',
+  border: '0.5px solid var(--border)',
+  borderRadius: 6,
+  padding: '6px 10px',
+  fontFamily: 'inherit',
+  fontSize: 12,
+} as const;
+
+const TEXTAREA_STYLE = {
+  ...INPUT_STYLE,
+  padding: '8px 10px',
+  resize: 'vertical',
+} as const;
 
 // ─────────────────────────────────────────────────────────────────
 // Page.
@@ -351,6 +377,8 @@ export default function SettingsPage() {
   const topLevelError = parsedError && parsedError.field === null
     ? parsedError.message
     : null;
+  const fieldErr = (k: keyof SettingsDict): string | undefined =>
+    parsedError?.field === k ? parsedError.message : undefined;
 
   function patchField<K extends keyof SettingsDict>(key: K, value: SettingsDict[K]) {
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -398,8 +426,42 @@ export default function SettingsPage() {
       : `Editing ${form.domain}`;
   })();
 
+  // ── Right-hand value-slot builders ─────────────────────────────
+  // Defined inline so they close over `form`/handlers without
+  // shuttling props through. Each returns a ReactNode suitable for
+  // the SettingRow `value` prop.
+  const numberInput = (
+    id: keyof SettingsDict,
+    onChange: (e: ChangeEvent<HTMLInputElement>) => void,
+    opts: { min?: number; max?: number; step?: number; width?: number } = {},
+  ) => (
+    <input
+      id={id}
+      type="number"
+      value={form ? (form[id] as number) : 0}
+      min={opts.min}
+      max={opts.max}
+      step={opts.step}
+      onChange={onChange}
+      aria-invalid={Boolean(fieldErr(id)) || undefined}
+      style={{ ...INPUT_STYLE, width: opts.width ?? 180 }}
+    />
+  );
+
   return (
-    <div className="page-grid">
+    // Wrapping the entire page-grid in <form> (rather than just the
+    // editable card cluster) lets the 2-up `.settings-row` flow include
+    // non-form cards (Schedule, API & integrations, Appearance) without
+    // breaking the grid pairing. All "Coming soon" buttons are
+    // type="button" so they don't accidentally submit, and the toggle
+    // pills render as type="button" too.
+    <form
+      onSubmit={handleSubmit}
+      className="page-grid"
+      // The fixed save bar sits 56px tall at bottom-right; keep the page
+      // bottom-padded so the last card never hides under it.
+      style={{ paddingBottom: 72 }}
+    >
       <div className="page-header">
         <div>
           <h1 className="page-title">Settings</h1>
@@ -433,240 +495,241 @@ export default function SettingsPage() {
       )}
 
       {activeSiteId && form && base && (
-        <form
-          onSubmit={handleSubmit}
-          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
-        >
-          {/* ── Identity ─────────────────────────────────────────────── */}
-          <section className="card" style={{ padding: 'var(--pad)' }}>
-            <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
-              <h3>Identity</h3>
-            </div>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <ReadOnlyRow label="Domain" value={form.domain} />
-              <ReadOnlyRow label="Website ID" value={form.website_id} mono small />
-            </div>
+        <>
+          {/* ── Identity (full-width) ─────────────────────────── */}
+          <section className="card settings-card">
+            <h3>Identity</h3>
+            <SettingRow label="Domain" value={form.domain} />
+            <SettingRow label="Website ID" value={form.website_id} mono />
           </section>
 
-          {/* ── Crawl behaviour ──────────────────────────────────────── */}
-          <section className="card" style={{ padding: 'var(--pad)' }}>
-            <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
+          {/* ── Crawl behaviour | Crawl scope ─────────────────── */}
+          <div className="row settings-row">
+            <section className="card settings-card">
               <h3>Crawl behaviour</h3>
-            </div>
-            <div style={{ display: 'grid', gap: 8 }}>
-              <ToggleRow
-                id="is_active"
+              <SettingRow
                 label="Active"
                 hint="Inactive sites are skipped by scheduled crawls."
-                checked={form.is_active}
-                onChange={(v) => patchField('is_active', v)}
-                error={parsedError?.field === 'is_active' ? parsedError.message : undefined}
+                toggle={{
+                  checked: form.is_active,
+                  onChange: (v) => patchField('is_active', v),
+                  ariaLabel: 'Active',
+                }}
+                error={fieldErr('is_active')}
               />
-              <ToggleRow
-                id="include_subdomains"
+              <SettingRow
                 label="Include subdomains"
                 hint="Follow links to other subdomains of the same registered domain."
-                checked={form.include_subdomains}
-                onChange={(v) => patchField('include_subdomains', v)}
-                error={parsedError?.field === 'include_subdomains' ? parsedError.message : undefined}
+                toggle={{
+                  checked: form.include_subdomains,
+                  onChange: (v) => patchField('include_subdomains', v),
+                  ariaLabel: 'Include subdomains',
+                }}
+                error={fieldErr('include_subdomains')}
               />
-              <ToggleRow
-                id="enable_js_rendering"
+              <SettingRow
                 label="JavaScript rendering"
                 hint="Render pages in a headless browser before extracting links."
-                checked={form.enable_js_rendering}
-                onChange={(v) => patchField('enable_js_rendering', v)}
-                error={parsedError?.field === 'enable_js_rendering' ? parsedError.message : undefined}
+                toggle={{
+                  checked: form.enable_js_rendering,
+                  onChange: (v) => patchField('enable_js_rendering', v),
+                  ariaLabel: 'JavaScript rendering',
+                }}
+                error={fieldErr('enable_js_rendering')}
               />
-              <ToggleRow
-                id="respect_robots_txt"
+              <SettingRow
                 label="Respect robots.txt"
                 hint="Skip URLs disallowed by the site's robots.txt."
-                checked={form.respect_robots_txt}
-                onChange={(v) => patchField('respect_robots_txt', v)}
-                error={parsedError?.field === 'respect_robots_txt' ? parsedError.message : undefined}
+                toggle={{
+                  checked: form.respect_robots_txt,
+                  onChange: (v) => patchField('respect_robots_txt', v),
+                  ariaLabel: 'Respect robots.txt',
+                }}
+                error={fieldErr('respect_robots_txt')}
               />
-            </div>
-          </section>
+            </section>
 
-          {/* ── Crawl scope ──────────────────────────────────────────── */}
-          <section className="card" style={{ padding: 'var(--pad)' }}>
-            <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
+            <section className="card settings-card">
               <h3>Crawl scope</h3>
-            </div>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <NumberRow
-                id="max_depth"
+              <SettingRow
                 label="Max depth"
                 hint="0–50. How many link-hops deep the crawler will follow."
-                value={form.max_depth}
-                min={0}
-                max={50}
-                onChange={handleNumberChange('max_depth')}
-                error={parsedError?.field === 'max_depth' ? parsedError.message : undefined}
+                value={numberInput('max_depth', handleNumberChange('max_depth'), {
+                  min: 0, max: 50,
+                })}
+                error={fieldErr('max_depth')}
               />
-              <NumberRow
-                id="max_urls_per_session"
+              <SettingRow
                 label="Max URLs per session"
                 hint="1–1,000,000. Hard cap on total URLs visited per crawl."
-                value={form.max_urls_per_session}
-                min={1}
-                max={1_000_000}
-                onChange={handleNumberChange('max_urls_per_session')}
-                error={parsedError?.field === 'max_urls_per_session' ? parsedError.message : undefined}
+                value={numberInput(
+                  'max_urls_per_session',
+                  handleNumberChange('max_urls_per_session'),
+                  { min: 1, max: 1_000_000 },
+                )}
+                error={fieldErr('max_urls_per_session')}
               />
-              <NumberRow
-                id="concurrency"
+              <SettingRow
                 label="Concurrency"
                 hint="1–100. Number of parallel fetcher workers."
-                value={form.concurrency}
-                min={1}
-                max={100}
-                onChange={handleNumberChange('concurrency')}
-                error={parsedError?.field === 'concurrency' ? parsedError.message : undefined}
+                value={numberInput('concurrency', handleNumberChange('concurrency'), {
+                  min: 1, max: 100,
+                })}
+                error={fieldErr('concurrency')}
               />
-            </div>
-          </section>
+            </section>
+          </div>
 
-          {/* ── Networking ───────────────────────────────────────────── */}
-          <section className="card" style={{ padding: 'var(--pad)' }}>
-            <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
+          {/* ── Networking | User agent ───────────────────────── */}
+          <div className="row settings-row">
+            <section className="card settings-card">
               <h3>Networking</h3>
-            </div>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <NumberRow
-                id="request_delay"
+              <SettingRow
                 label="Request delay (s)"
                 hint="0.0–60.0. Pause between requests; useful for polite crawls."
-                value={form.request_delay}
-                min={0}
-                max={60}
-                step={0.1}
-                onChange={handleFloatChange}
-                error={parsedError?.field === 'request_delay' ? parsedError.message : undefined}
+                value={numberInput('request_delay', handleFloatChange, {
+                  min: 0, max: 60, step: 0.1,
+                })}
+                error={fieldErr('request_delay')}
               />
-              <NumberRow
-                id="request_timeout"
+              <SettingRow
                 label="Request timeout (s)"
                 hint="1–300. Per-URL HTTP timeout before the request is abandoned."
-                value={form.request_timeout}
-                min={1}
-                max={300}
-                onChange={handleNumberChange('request_timeout')}
-                error={parsedError?.field === 'request_timeout' ? parsedError.message : undefined}
+                value={numberInput(
+                  'request_timeout',
+                  handleNumberChange('request_timeout'),
+                  { min: 1, max: 300 },
+                )}
+                error={fieldErr('request_timeout')}
               />
-              <NumberRow
-                id="max_retries"
+              <SettingRow
                 label="Max retries"
                 hint="0–10. Number of retry attempts on transient failures."
-                value={form.max_retries}
-                min={0}
-                max={10}
-                onChange={handleNumberChange('max_retries')}
-                error={parsedError?.field === 'max_retries' ? parsedError.message : undefined}
+                value={numberInput('max_retries', handleNumberChange('max_retries'), {
+                  min: 0, max: 10,
+                })}
+                error={fieldErr('max_retries')}
               />
-            </div>
-          </section>
+            </section>
 
-          {/* ── User agent ───────────────────────────────────────────── */}
-          <section className="card" style={{ padding: 'var(--pad)' }}>
-            <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
+            <section className="card settings-card">
               <h3>User agent</h3>
-            </div>
-            <div style={{ display: 'grid', gap: 6 }}>
-              <label htmlFor="custom_user_agent" style={{ fontSize: 12 }}>
-                Custom user-agent string
-              </label>
-              <textarea
-                id="custom_user_agent"
-                value={form.custom_user_agent}
-                onChange={(e) => patchField('custom_user_agent', e.target.value)}
-                maxLength={500}
-                rows={2}
-                aria-invalid={parsedError?.field === 'custom_user_agent' || undefined}
-                style={{
-                  background: 'var(--surface)',
-                  color: 'var(--text-1)',
-                  border: '0.5px solid var(--border)',
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  fontFamily: 'inherit',
-                  fontSize: 12,
-                  resize: 'vertical',
-                }}
+              <SettingRow
+                label="Custom UA"
+                hint={`${form.custom_user_agent.length}/500 chars. Leave blank to use the default crawler UA.`}
+                value={(
+                  <textarea
+                    id="custom_user_agent"
+                    value={form.custom_user_agent}
+                    onChange={(e) =>
+                      patchField('custom_user_agent', e.target.value)
+                    }
+                    maxLength={500}
+                    rows={3}
+                    aria-invalid={
+                      parsedError?.field === 'custom_user_agent' || undefined
+                    }
+                    style={{ ...TEXTAREA_STYLE, width: '100%' }}
+                  />
+                )}
+                error={fieldErr('custom_user_agent')}
               />
-              <div className="text-muted" style={{ fontSize: 11 }}>
-                {form.custom_user_agent.length}/500 chars. Leave blank to use the
-                default crawler UA.
-              </div>
-              <FieldError
-                message={
-                  parsedError?.field === 'custom_user_agent'
-                    ? parsedError.message
-                    : undefined
-                }
-              />
-            </div>
-          </section>
+            </section>
+          </div>
 
-          {/* ── Excluded paths & params (spec §5.4.8) ────────────────── */}
-          {/* Storage only — engine enforcement is a follow-up. Each non-
-              empty line becomes one entry; the server caps at 100 entries
-              and 200 chars per entry. */}
-          <section className="card" style={{ padding: 'var(--pad)' }}>
-            <div
-              className="card-head"
-              style={{
-                padding: 0,
-                marginBottom: 10,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'baseline',
-                gap: 12,
-              }}
-            >
-              <h3>Excluded paths &amp; params</h3>
-              <span className="text-muted" style={{ fontSize: 11 }}>
-                {parsedExcludedPaths.length}{' '}
-                {parsedExcludedPaths.length === 1 ? 'path' : 'paths'}
-                {' · '}
-                {parsedExcludedParams.length}{' '}
-                {parsedExcludedParams.length === 1 ? 'param' : 'params'}
-              </span>
-            </div>
-            <div style={{ display: 'grid', gap: 14 }}>
-              <LineListField
-                id="excluded_paths"
+          {/* ── Excluded paths/params | Schedule (coming soon) ─ */}
+          <div className="row settings-row">
+            <section className="card settings-card">
+              <h3>Inclusions / exclusions</h3>
+              <SettingRow
                 label="Excluded paths"
                 hint='URL path prefixes to skip. One per line, e.g. "/admin" or "/private". Storage only — engine enforcement is a follow-up.'
-                value={excludedPathsText}
-                count={parsedExcludedPaths.length}
-                countLabel={parsedExcludedPaths.length === 1 ? 'path' : 'paths'}
-                onChange={(e) => setExcludedPathsText(e.target.value)}
-                error={
-                  parsedError?.field === 'excluded_paths'
-                    ? parsedError.message
-                    : undefined
+                badge={
+                  parsedExcludedPaths.length === 1
+                    ? '1 path'
+                    : `${parsedExcludedPaths.length} paths`
                 }
+                value={(
+                  <textarea
+                    id="excluded_paths"
+                    value={excludedPathsText}
+                    onChange={(e) => setExcludedPathsText(e.target.value)}
+                    rows={5}
+                    spellCheck={false}
+                    aria-invalid={
+                      parsedError?.field === 'excluded_paths' || undefined
+                    }
+                    style={{
+                      ...TEXTAREA_STYLE,
+                      width: '100%',
+                      minHeight: 96,
+                      fontFamily:
+                        'var(--font-mono, ui-monospace, monospace)',
+                    }}
+                  />
+                )}
+                error={fieldErr('excluded_paths')}
               />
-              <LineListField
-                id="excluded_params"
-                label="Excluded query params"
+              <SettingRow
+                label="Excluded params"
                 hint='Query-string keys to strip before deduplication. One per line, e.g. "utm_source" or "fbclid".'
-                value={excludedParamsText}
-                count={parsedExcludedParams.length}
-                countLabel={parsedExcludedParams.length === 1 ? 'param' : 'params'}
-                onChange={(e) => setExcludedParamsText(e.target.value)}
-                error={
-                  parsedError?.field === 'excluded_params'
-                    ? parsedError.message
-                    : undefined
+                badge={
+                  parsedExcludedParams.length === 1
+                    ? '1 param'
+                    : `${parsedExcludedParams.length} params`
                 }
+                value={(
+                  <textarea
+                    id="excluded_params"
+                    value={excludedParamsText}
+                    onChange={(e) => setExcludedParamsText(e.target.value)}
+                    rows={5}
+                    spellCheck={false}
+                    aria-invalid={
+                      parsedError?.field === 'excluded_params' || undefined
+                    }
+                    style={{
+                      ...TEXTAREA_STYLE,
+                      width: '100%',
+                      minHeight: 96,
+                      fontFamily:
+                        'var(--font-mono, ui-monospace, monospace)',
+                    }}
+                  />
+                )}
+                error={fieldErr('excluded_params')}
               />
-            </div>
-          </section>
+            </section>
 
-          {/* ── Action bar ───────────────────────────────────────────── */}
+            {/* Schedule — coming-soon panel paired with the
+                exclusions card so the 2-up grid stays balanced. */}
+            <section
+              className="card settings-card coming-soon"
+              aria-disabled="true"
+              style={{ opacity: 0.6 }}
+            >
+              <h3>Crawl schedule</h3>
+              <SettingRow
+                label="Cron"
+                value={<span className="mono">0 * * * *</span>}
+                hint="Scheduled crawls (Celery beat) are not enabled in v1."
+              />
+              <SettingRow
+                label="Timezone"
+                value="UTC"
+              />
+              <SettingRow
+                label="Status"
+                value={(
+                  <button type="button" className="btn ghost" disabled>
+                    Coming soon
+                  </button>
+                )}
+                off
+              />
+            </section>
+          </div>
+
           {topLevelError && (
             <div
               role="alert"
@@ -680,464 +743,230 @@ export default function SettingsPage() {
               {topLevelError}
             </div>
           )}
-
-          <div
-            style={{
-              display: 'flex',
-              gap: 8,
-              justifyContent: 'flex-end',
-              alignItems: 'center',
-            }}
-          >
-            {hasChanges && !update.isPending && (
-              <span className="text-muted" style={{ fontSize: 11 }}>
-                {Object.keys(dirty).length} unsaved change
-                {Object.keys(dirty).length === 1 ? '' : 's'}
-              </span>
-            )}
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={handleDiscard}
-              disabled={!hasChanges || update.isPending}
-            >
-              Discard
-            </button>
-            <button
-              type="submit"
-              className="btn primary"
-              disabled={!hasChanges || update.isPending}
-            >
-              {update.isPending ? 'Saving…' : 'Save changes'}
-            </button>
-          </div>
-        </form>
+        </>
       )}
 
-      {/* ── Appearance (spec §5.4.8 + §5.4.9) ──────────────────────────
-          Client-only prefs persisted to localStorage under
-          `lattice.prefs`. Renders regardless of active-site selection
-          since these are user-scoped, not site-scoped. */}
-      <section className="card" style={{ padding: 'var(--pad)' }}>
-        <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
+      {/* ── Appearance | API & integrations ─────────────────────────
+          Renders regardless of active-site selection — Appearance is
+          user-scoped (localStorage), and the API integrations panel
+          is informational. Pairing them keeps the 2-up grid balanced
+          on the bottom row of the page. */}
+      <div className="row settings-row">
+        <section className="card settings-card">
           <h3>Appearance</h3>
-        </div>
-        <div className="text-muted" style={{ fontSize: 11, marginBottom: 12 }}>
-          Stored in your browser only — no backend round-trip.
-        </div>
-        <div style={{ display: 'grid', gap: 14 }}>
-          <SegmentedRow<LatticePrefs['accent']>
+          <SettingRow
             label="Accent"
             hint="Primary highlight colour across the UI."
-            value={prefs.accent}
-            options={[
-              { value: 'emerald', label: 'Emerald' },
-              { value: 'amber', label: 'Amber' },
-              { value: 'violet', label: 'Violet' },
-              { value: 'cyan', label: 'Cyan' },
-            ]}
-            swatch={(v) => ACCENT_HEX[v]}
-            onChange={(v) => updatePrefs({ accent: v })}
+            value={(
+              <SegmentedControl<LatticePrefs['accent']>
+                ariaLabel="Accent"
+                value={prefs.accent}
+                options={[
+                  { value: 'emerald', label: 'Emerald' },
+                  { value: 'amber', label: 'Amber' },
+                  { value: 'violet', label: 'Violet' },
+                  { value: 'cyan', label: 'Cyan' },
+                ]}
+                swatch={(v) => ACCENT_HEX[v]}
+                onChange={(v) => updatePrefs({ accent: v })}
+              />
+            )}
           />
-          <SegmentedRow<LatticePrefs['density']>
+          <SettingRow
             label="Density"
             hint="Comfortable for browsing, compact for dense data tables."
-            value={prefs.density}
-            options={[
-              { value: 'comfortable', label: 'Comfortable' },
-              { value: 'compact', label: 'Compact' },
-            ]}
-            onChange={(v) => updatePrefs({ density: v })}
+            value={(
+              <SegmentedControl<LatticePrefs['density']>
+                ariaLabel="Density"
+                value={prefs.density}
+                options={[
+                  { value: 'comfortable', label: 'Comfortable' },
+                  { value: 'compact', label: 'Compact' },
+                ]}
+                onChange={(v) => updatePrefs({ density: v })}
+              />
+            )}
           />
-          <SegmentedRow<LatticePrefs['theme']>
+          <SettingRow
             label="Theme"
             hint="System follows your OS-level light/dark setting."
-            value={prefs.theme}
-            options={[
-              { value: 'dark', label: 'Dark' },
-              { value: 'light', label: 'Light' },
-              { value: 'system', label: 'System' },
-            ]}
-            onChange={(v) => updatePrefs({ theme: v })}
+            value={(
+              <SegmentedControl<LatticePrefs['theme']>
+                ariaLabel="Theme"
+                value={prefs.theme}
+                options={[
+                  { value: 'dark', label: 'Dark' },
+                  { value: 'light', label: 'Light' },
+                  { value: 'system', label: 'System' },
+                ]}
+                onChange={(v) => updatePrefs({ theme: v })}
+              />
+            )}
           />
-        </div>
-      </section>
+          <SettingRow
+            label="Storage"
+            hint="Stored in your browser only — no backend round-trip."
+            value={<span className="text-muted">localStorage</span>}
+          />
+        </section>
 
-      {/* ── Crawl schedule (coming soon — spec §5.4.8) ─────────────────
-          Spec calls for a visually-consistent informational panel;
-          Celery beat is out of scope for v1. */}
-      <section
-        className="card coming-soon"
-        style={{ padding: 'var(--pad)', opacity: 0.6 }}
-        aria-disabled="true"
-      >
-        <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
-          <h3>Crawl schedule</h3>
-        </div>
-        <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
-          Scheduled crawls (Celery beat) are not enabled in v1. Trigger manual
-          crawls from the topbar.
-        </p>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(5, max-content)',
-            gap: 8,
-            alignItems: 'center',
-            pointerEvents: 'none',
-          }}
+        <section
+          className="card settings-card coming-soon"
+          aria-disabled="true"
+          style={{ opacity: 0.6 }}
         >
-          <span className="text-muted" style={{ fontSize: 11 }}>Cron</span>
-          <input
-            type="text"
-            value="0 * * * *"
-            readOnly
-            disabled
-            aria-label="Cron expression (disabled)"
-            style={{
-              background: 'var(--surface)',
-              color: 'var(--text-1)',
-              border: '0.5px solid var(--border)',
-              borderRadius: 6,
-              padding: '6px 10px',
-              fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-              fontSize: 12,
-              width: 140,
-            }}
-          />
-          <span className="text-muted" style={{ fontSize: 11 }}>Timezone</span>
-          <input
-            type="text"
-            value="UTC"
-            readOnly
-            disabled
-            aria-label="Timezone (disabled)"
-            style={{
-              background: 'var(--surface)',
-              color: 'var(--text-1)',
-              border: '0.5px solid var(--border)',
-              borderRadius: 6,
-              padding: '6px 10px',
-              fontSize: 12,
-              width: 80,
-            }}
-          />
-          <button type="button" className="btn ghost" disabled>
-            Coming soon
-          </button>
-        </div>
-      </section>
-
-      {/* ── API & integrations (coming soon — spec §5.4.8) ─────────── */}
-      <section
-        className="card coming-soon"
-        style={{ padding: 'var(--pad)', opacity: 0.6 }}
-        aria-disabled="true"
-      >
-        <div className="card-head" style={{ padding: 0, marginBottom: 10 }}>
           <h3>API &amp; integrations</h3>
-        </div>
-        <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
-          Slack, GA4, and webhook integrations are out-of-scope for v1.
-        </p>
-        <div
-          style={{
-            display: 'flex',
-            gap: 8,
-            flexWrap: 'wrap',
-            pointerEvents: 'none',
-          }}
-        >
-          <button type="button" className="btn ghost" disabled>
-            Connect Slack
-          </button>
-          <button type="button" className="btn ghost" disabled>
-            Link GA4 property
-          </button>
-          <button type="button" className="btn ghost" disabled>
-            Add webhook
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Small row primitives — keeps the page body readable.
-// ─────────────────────────────────────────────────────────────────
-
-interface ReadOnlyRowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  small?: boolean;
-}
-
-function ReadOnlyRow({ label, value, mono, small }: ReadOnlyRowProps) {
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '180px 1fr',
-        alignItems: 'center',
-        gap: 12,
-      }}
-    >
-      <div style={{ fontSize: 12 }}>{label}</div>
-      <div
-        className="text-muted"
-        style={{
-          fontFamily: mono ? 'var(--font-mono, ui-monospace, monospace)' : undefined,
-          fontSize: small ? 11 : 12,
-          wordBreak: 'break-all',
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-interface ToggleRowProps {
-  id: string;
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  error?: string;
-}
-
-function ToggleRow({ id, label, hint, checked, onChange, error }: ToggleRowProps) {
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '180px 1fr auto',
-        alignItems: 'start',
-        gap: 12,
-        paddingTop: 6,
-        paddingBottom: 6,
-        borderTop: '0.5px dashed var(--border)',
-      }}
-    >
-      <label htmlFor={id} style={{ fontSize: 12, paddingTop: 2 }}>
-        {label}
-      </label>
-      <div>
-        <div className="text-muted" style={{ fontSize: 11 }}>{hint}</div>
-        <FieldError message={error} />
-      </div>
-      <input
-        id={id}
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        aria-invalid={Boolean(error) || undefined}
-      />
-    </div>
-  );
-}
-
-interface LineListFieldProps {
-  id: string;
-  label: string;
-  hint: string;
-  value: string;
-  count: number;
-  countLabel: string;
-  onChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
-  error?: string;
-}
-
-function LineListField({
-  id, label, hint, value, count, countLabel, onChange, error,
-}: LineListFieldProps) {
-  return (
-    <div style={{ display: 'grid', gap: 6 }}>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'baseline',
-          gap: 12,
-        }}
-      >
-        <label htmlFor={id} style={{ fontSize: 12 }}>
-          {label}
-        </label>
-        <span className="text-muted" style={{ fontSize: 11 }}>
-          {count} {countLabel}
-        </span>
-      </div>
-      <textarea
-        id={id}
-        value={value}
-        onChange={onChange}
-        rows={5}
-        spellCheck={false}
-        aria-invalid={Boolean(error) || undefined}
-        style={{
-          background: 'var(--surface)',
-          color: 'var(--text-1)',
-          border: '0.5px solid var(--border)',
-          borderRadius: 6,
-          padding: '8px 10px',
-          fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-          fontSize: 12,
-          resize: 'vertical',
-          minHeight: 96,
-        }}
-      />
-      <div className="text-muted" style={{ fontSize: 11 }}>
-        {hint}
-      </div>
-      <FieldError message={error} />
-    </div>
-  );
-}
-
-interface NumberRowProps {
-  id: string;
-  label: string;
-  hint: string;
-  value: number;
-  min?: number;
-  max?: number;
-  step?: number;
-  onChange: (e: ChangeEvent<HTMLInputElement>) => void;
-  error?: string;
-}
-
-function NumberRow({
-  id, label, hint, value, min, max, step, onChange, error,
-}: NumberRowProps) {
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '180px 1fr',
-        alignItems: 'start',
-        gap: 12,
-        paddingTop: 6,
-        paddingBottom: 6,
-        borderTop: '0.5px dashed var(--border)',
-      }}
-    >
-      <label htmlFor={id} style={{ fontSize: 12, paddingTop: 6 }}>
-        {label}
-      </label>
-      <div>
-        <input
-          id={id}
-          type="number"
-          value={value}
-          min={min}
-          max={max}
-          step={step}
-          onChange={onChange}
-          aria-invalid={Boolean(error) || undefined}
-          style={{
-            background: 'var(--surface)',
-            color: 'var(--text-1)',
-            border: '0.5px solid var(--border)',
-            borderRadius: 6,
-            padding: '6px 10px',
-            width: 180,
-            fontFamily: 'inherit',
-            fontSize: 12,
-          }}
-        />
-        <div className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
-          {hint}
-        </div>
-        <FieldError message={error} />
-      </div>
-    </div>
-  );
-}
-
-// Generic segmented control — used by the Appearance card. Each option
-// renders as a button that visually highlights when active. Optional
-// `swatch` paints a small colour dot (used by the accent picker).
-interface SegmentedRowOption<T extends string> {
-  value: T;
-  label: string;
-}
-interface SegmentedRowProps<T extends string> {
-  label: string;
-  hint: string;
-  value: T;
-  options: ReadonlyArray<SegmentedRowOption<T>>;
-  swatch?: (v: T) => string;
-  onChange: (v: T) => void;
-}
-
-function SegmentedRow<T extends string>({
-  label, hint, value, options, swatch, onChange,
-}: SegmentedRowProps<T>) {
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '180px 1fr',
-        alignItems: 'start',
-        gap: 12,
-        paddingTop: 6,
-        paddingBottom: 6,
-        borderTop: '0.5px dashed var(--border)',
-      }}
-    >
-      <div style={{ fontSize: 12, paddingTop: 6 }}>{label}</div>
-      <div>
-        <div
-          role="radiogroup"
-          aria-label={label}
-          style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}
-        >
-          {options.map((opt) => {
-            const active = opt.value === value;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => onChange(opt.value)}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  background: active ? 'var(--accent-glow)' : 'var(--surface)',
-                  color: active ? 'var(--accent)' : 'var(--text-1)',
-                  border: `0.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                  borderRadius: 6,
-                  padding: '5px 10px',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                }}
-              >
-                {swatch && (
-                  <span
-                    aria-hidden
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: '50%',
-                      background: swatch(opt.value),
-                      boxShadow: '0 0 0 0.5px rgba(0, 0, 0, 0.25)',
-                    }}
-                  />
-                )}
-                {opt.label}
+          <SettingRow
+            label="Slack"
+            value={(
+              <button type="button" className="btn ghost" disabled>
+                Connect Slack
               </button>
-            );
-          })}
-        </div>
-        <div className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
-          {hint}
-        </div>
+            )}
+            off
+          />
+          <SettingRow
+            label="GA4"
+            value={(
+              <button type="button" className="btn ghost" disabled>
+                Link GA4 property
+              </button>
+            )}
+            off
+          />
+          <SettingRow
+            label="Webhooks"
+            value={(
+              <button type="button" className="btn ghost" disabled>
+                Add webhook
+              </button>
+            )}
+            off
+          />
+          <SettingRow
+            label="Status"
+            hint="Slack, GA4, and webhook integrations are out-of-scope for v1."
+            value={<span className="text-muted">Coming soon</span>}
+          />
+        </section>
       </div>
+
+      {/* ── Save bar (fixed) ──────────────────────────────────────
+          Pinned to bottom-right of the viewport with a high
+          z-index so it floats over scrolling content on long
+          settings pages. Only renders when there's something to
+          save — keeps the chrome clean for read-only / loading
+          states. */}
+      {activeSiteId && form && base && (
+        <div
+          className="card"
+          style={{
+            position: 'fixed',
+            right: 16,
+            bottom: 16,
+            zIndex: 50,
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.35)',
+          }}
+        >
+          {hasChanges && !update.isPending && (
+            <span className="text-muted" style={{ fontSize: 11 }}>
+              {Object.keys(dirty).length} unsaved change
+              {Object.keys(dirty).length === 1 ? '' : 's'}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={handleDiscard}
+            disabled={!hasChanges || update.isPending}
+          >
+            Discard
+          </button>
+          <button
+            type="submit"
+            className="btn primary"
+            disabled={!hasChanges || update.isPending}
+          >
+            {update.isPending ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SegmentedControl — buttons-only segmented input. Lives in
+// SettingRow.value rather than owning its own row grid (the prior
+// SegmentedRow nested a 180px/1fr grid inside the parent setting-row,
+// which made the column widths fight). Each option is a button with
+// an optional colour swatch (for the accent picker).
+// ─────────────────────────────────────────────────────────────────
+
+interface SegmentedOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+interface SegmentedControlProps<T extends string> {
+  value: T;
+  options: ReadonlyArray<SegmentedOption<T>>;
+  onChange: (v: T) => void;
+  swatch?: (v: T) => string;
+  ariaLabel?: string;
+}
+
+function SegmentedControl<T extends string>({
+  value, options, onChange, swatch, ariaLabel,
+}: SegmentedControlProps<T>) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={ariaLabel}
+      style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(opt.value)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              background: active ? 'var(--accent-glow)' : 'var(--surface)',
+              color: active ? 'var(--accent)' : 'var(--text-1)',
+              border: `0.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+              borderRadius: 6,
+              padding: '5px 10px',
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            {swatch && (
+              <span
+                aria-hidden
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: '50%',
+                  background: swatch(opt.value),
+                  boxShadow: '0 0 0 0.5px rgba(0, 0, 0, 0.25)',
+                }}
+              />
+            )}
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

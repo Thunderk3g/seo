@@ -1,15 +1,19 @@
 // SessionsTable.tsx — Crawl Sessions list for the active website.
 //
-// Reuses the design-ref `.sessions-table` / `.sess-row` styles from
-// lattice.css but with a 7-column override (Status, Type, Started, Duration,
-// URLs Crawled, URLs Failed, Actions) because the backend serializer
-// (CrawlSessionListSerializer) does not expose a "warnings" count distinct
-// from `total_urls_failed`. The original 9-col design-ref grid is therefore
-// replaced inline.
+// Column order matches `.design-ref/project/pages.jsx:271–294`:
+//   Session | Started | Type | Status | URLs | Errors | Warnings | Duration | actions
+//
+// Backend constraint: CrawlSessionListSerializer exposes only
+// `total_urls_failed` and not a separate "warnings" count. Errors renders
+// `total_urls_failed`; Warnings shows `—` with a tooltip explaining the
+// serializer gap. URLs renders `crawled/discovered` so the operator can see
+// crawl progress at a glance.
 //
 // Per-row action:
 //   pending | running   → "Cancel" (POST /sessions/:id/cancel/)
 //   completed | failed | cancelled → "Re-run" (via useStartCrawl)
+// (The design ref shows only an icon-button "more" menu; we keep functional
+// inline buttons because they actually work.)
 
 import { useCancelSession } from '../../api/hooks/useCancelSession';
 import { useStartCrawl } from '../../api/hooks/useStartCrawl';
@@ -23,9 +27,9 @@ interface SessionsTableProps {
   activeSiteId: string | null;
 }
 
-// 7 columns: Status | Type | Started | Duration | URLs Crawled | URLs Failed | Actions.
-// Overrides the .sess-row 9-column default in lattice.css.
-const GRID_COLUMNS = '120px 110px 170px 90px 110px 90px 110px';
+// 9 columns: Session | Started | Type | Status | URLs | Errors | Warnings | Duration | Actions
+const GRID_COLUMNS =
+  '110px 170px 110px 120px 120px 70px 80px 90px 110px';
 
 const TYPE_LABEL: Record<CrawlSessionListItem['session_type'], string> = {
   scheduled: 'Scheduled',
@@ -102,21 +106,23 @@ function SessionRow({
 
   return (
     <div className="sess-row" style={{ gridTemplateColumns: GRID_COLUMNS }}>
+      <div className="sess-id" title={session.id}>
+        {session.id.slice(0, 8)}
+      </div>
+      <div className="text-muted-2">{formatStarted(session.started_at)}</div>
+      <div className="text-muted-2">{TYPE_LABEL[session.session_type]}</div>
       <div>
         <span className={`sess-status ${statusClass(session.status)}`}>
           <span className="state-dot" />
           {STATUS_LABEL[session.status]}
         </span>
       </div>
-      <div className="text-muted-2">{TYPE_LABEL[session.session_type]}</div>
-      <div className="text-muted-2">{formatStarted(session.started_at)}</div>
-      <div
-        className="text-muted-2"
-        style={{ fontVariantNumeric: 'tabular-nums' }}
-      >
-        {formatDuration(session.duration_seconds)}
+      <div className="num">
+        {session.total_urls_crawled.toLocaleString()}
+        <span className="text-muted">
+          /{session.total_urls_discovered.toLocaleString()}
+        </span>
       </div>
-      <div className="num">{session.total_urls_crawled.toLocaleString()}</div>
       <div className="num">
         <span
           style={{
@@ -125,6 +131,18 @@ function SessionRow({
         >
           {session.total_urls_failed.toLocaleString()}
         </span>
+      </div>
+      <div
+        className="num text-muted"
+        title="Backend serializer does not yet split errors/warnings"
+      >
+        —
+      </div>
+      <div
+        className="text-muted-2"
+        style={{ fontVariantNumeric: 'tabular-nums' }}
+      >
+        {formatDuration(session.duration_seconds)}
       </div>
       <div>
         {live ? (
@@ -212,8 +230,8 @@ export default function SessionsTable({
     return (
       <div className="card" style={{ padding: 'var(--pad)' }}>
         <p className="text-muted">
-          No crawl sessions yet. Use the topbar Start Crawl button to launch
-          the first one.
+          No crawl sessions yet. Use the <strong>New crawl</strong> button
+          above to launch the first one.
         </p>
       </div>
     );
@@ -226,12 +244,14 @@ export default function SessionsTable({
           className="sess-row sess-head"
           style={{ gridTemplateColumns: GRID_COLUMNS }}
         >
-          <div>Status</div>
-          <div>Type</div>
+          <div>Session</div>
           <div>Started</div>
+          <div>Type</div>
+          <div>Status</div>
+          <div className="num">URLs</div>
+          <div className="num">Errors</div>
+          <div className="num">Warnings</div>
           <div>Duration</div>
-          <div className="num">URLs crawled</div>
-          <div className="num">Failed</div>
           <div>Actions</div>
         </div>
         {sessions.map((s) => (

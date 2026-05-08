@@ -54,6 +54,21 @@ function nextOrderingFor(field: SortField, ordering: string): string {
   return asc;
 }
 
+// Compact pager: ports `pagerNumbers()` from
+// `.design-ref/project/pages.jsx:151`. Returns the page numbers to render
+// with `'…'` for the ellipsis gap.
+//   ≤7 pages → all numbers
+//   near start (p≤3) → 1 2 3 4 … N
+//   near end (p≥N-2) → 1 … N-3 N-2 N-1 N
+//   middle           → 1 … p-1 p p+1 … N
+function pagerNumbers(p: number, total: number): Array<number | '…'> {
+  if (total <= 1) return [1];
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  if (p <= 3) return [1, 2, 3, 4, '…', total];
+  if (p >= total - 2) return [1, '…', total - 3, total - 2, total - 1, total];
+  return [1, '…', p - 1, p, p + 1, '…', total];
+}
+
 export default function PagesTable({
   data,
   isLoading,
@@ -150,9 +165,23 @@ export default function PagesTable({
           >
             ‹
           </button>
-          <span className="text-muted" style={{ padding: '0 8px' }}>
-            page {page} / {totalPages}
-          </span>
+          {pagerNumbers(page, totalPages).map((n, i) =>
+            n === '…' ? (
+              <span key={`dot-${i}`} className="pager-dot">
+                …
+              </span>
+            ) : (
+              <button
+                key={n}
+                type="button"
+                className={'pager-num ' + (n === page ? 'active' : '')}
+                onClick={() => onPageChange(n)}
+                disabled={isLoading}
+              >
+                {n}
+              </button>
+            ),
+          )}
           <button
             type="button"
             className="icon-btn"

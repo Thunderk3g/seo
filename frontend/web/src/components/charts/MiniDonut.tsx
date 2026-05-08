@@ -3,8 +3,14 @@
 // Renders concentric arcs as overlapping <circle>s with stroke-dasharray
 // proportional to each entry's share of the total. Visual style mirrors
 // .design-ref/project/charts.jsx Donut (rotated -90deg so 0% starts at 12
-// o'clock). To extend: add an `animate` prop and ease the dasharray over time
-// like the design-ref version, or accept a click handler per segment.
+// o'clock).
+//
+// The reveal is animated via requestAnimationFrame over 700ms using an
+// easeOutCubic curve (1 - (1 - k)^3). When `prefers-reduced-motion: reduce`
+// is requested, the animation is skipped and arcs render at their final
+// length on first paint.
+
+import { useEffect, useState } from 'react';
 
 interface DonutEntry {
   label: string;
@@ -18,6 +24,12 @@ interface Props {
   size?: number;
   thickness?: number;
   centerLabel?: string;
+  animate?: boolean;
+}
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 export default function MiniDonut({
@@ -26,6 +38,7 @@ export default function MiniDonut({
   size = 160,
   thickness = 18,
   centerLabel = 'URLs',
+  animate = true,
 }: Props) {
   const sum = entries.reduce((s, e) => s + e.count, 0);
   const computedTotal = total ?? sum;
@@ -36,6 +49,26 @@ export default function MiniDonut({
 
   // Empty / all-zero state — render a single grey ring as the empty placeholder.
   const hasData = sum > 0;
+
+  const shouldAnimate = animate && !prefersReducedMotion();
+  const [t, setT] = useState(shouldAnimate ? 0 : 1);
+
+  useEffect(() => {
+    if (!shouldAnimate) {
+      setT(1);
+      return;
+    }
+    let raf = 0;
+    const start = performance.now();
+    const step = (now: number) => {
+      const k = Math.min(1, (now - start) / 700);
+      const eased = 1 - Math.pow(1 - k, 3);
+      setT(eased);
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [shouldAnimate, sum, entries.length]);
 
   let acc = 0;
   return (
@@ -53,9 +86,9 @@ export default function MiniDonut({
         <g transform={`rotate(-90 ${cx} ${cy})`}>
           {entries.map((e, i) => {
             if (e.count <= 0) return null;
-            const len = (e.count / sum) * c;
+            const len = (e.count / sum) * c * t;
             const dasharray = `${len} ${c - len}`;
-            const offset = -((acc / sum) * c);
+            const offset = -((acc / sum) * c * t);
             acc += e.count;
             return (
               <circle

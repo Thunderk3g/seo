@@ -82,6 +82,7 @@ export default function MiniBars({
                 borderRadius: '3px 3px 0 0',
                 minHeight: 1,
                 opacity: 0.85,
+                transition: 'height 0.6s var(--ease, cubic-bezier(0.2,0.7,0.3,1))',
               }}
             />
             <div
