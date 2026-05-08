@@ -202,3 +202,108 @@ def test_update_settings_boolean_with_int_rejected(website):
     with pytest.raises(ValueError) as exc:
         SettingsService.update_settings(website, {"enable_js_rendering": 1})
     assert "enable_js_rendering" in str(exc.value)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# excluded_paths / excluded_params — JSON list validators
+# ─────────────────────────────────────────────────────────────────────────
+@pytest.mark.django_db
+def test_excluded_paths_default_is_empty_list(website):
+    """Fresh CrawlConfig surfaces empty lists — never None."""
+    result = SettingsService.get_settings(website)
+    assert result["excluded_paths"] == []
+    assert result["excluded_params"] == []
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_round_trip(website):
+    """Set then re-read — the persisted list comes back verbatim."""
+    payload = {"excluded_paths": ["/admin", "/private"]}
+    result = SettingsService.update_settings(website, payload)
+    assert result["excluded_paths"] == ["/admin", "/private"]
+
+    # Fresh fetch from DB — confirms it actually persisted, not just
+    # echoed from the input dict.
+    website.crawl_config.refresh_from_db()
+    assert website.crawl_config.excluded_paths == ["/admin", "/private"]
+    refetched = SettingsService.get_settings(website)
+    assert refetched["excluded_paths"] == ["/admin", "/private"]
+
+
+@pytest.mark.django_db
+def test_update_excluded_params_round_trip(website):
+    payload = {"excluded_params": ["utm_source", "fbclid", "gclid"]}
+    result = SettingsService.update_settings(website, payload)
+    assert result["excluded_params"] == ["utm_source", "fbclid", "gclid"]
+
+    website.crawl_config.refresh_from_db()
+    assert website.crawl_config.excluded_params == [
+        "utm_source", "fbclid", "gclid",
+    ]
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_empty_list_clears(website):
+    """Sending [] must clear an existing list (not be misread as 'unset')."""
+    SettingsService.update_settings(website, {"excluded_paths": ["/admin"]})
+    result = SettingsService.update_settings(website, {"excluded_paths": []})
+    assert result["excluded_paths"] == []
+    website.crawl_config.refresh_from_db()
+    assert website.crawl_config.excluded_paths == []
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_non_list_rejected(website):
+    """A bare string is a common client mistake — must 400, not coerce."""
+    with pytest.raises(ValueError) as exc:
+        SettingsService.update_settings(website, {"excluded_paths": "/admin"})
+    assert "excluded_paths" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_non_string_entry_rejected(website):
+    with pytest.raises(ValueError) as exc:
+        SettingsService.update_settings(
+            website, {"excluded_paths": ["/admin", 42]},
+        )
+    assert "excluded_paths" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_empty_entry_rejected(website):
+    """Empty strings are usually whitespace bugs from the client — reject."""
+    with pytest.raises(ValueError) as exc:
+        SettingsService.update_settings(
+            website, {"excluded_paths": ["/admin", ""]},
+        )
+    assert "excluded_paths" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_entry_too_long_rejected(website):
+    too_long = "/" + ("x" * 200)  # 201 chars total, over the 200 cap.
+    with pytest.raises(ValueError) as exc:
+        SettingsService.update_settings(
+            website, {"excluded_paths": [too_long]},
+        )
+    assert "excluded_paths" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_update_excluded_paths_too_many_entries_rejected(website):
+    too_many = [f"/p{i}" for i in range(101)]  # 101 > 100 cap.
+    with pytest.raises(ValueError) as exc:
+        SettingsService.update_settings(
+            website, {"excluded_paths": too_many},
+        )
+    assert "excluded_paths" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_update_excluded_params_validation_shares_rules(website):
+    """The same validator covers both fields; spot-check excluded_params."""
+    with pytest.raises(ValueError) as exc:
+        SettingsService.update_settings(
+            website, {"excluded_params": [None]},
+        )
+    assert "excluded_params" in str(exc.value)

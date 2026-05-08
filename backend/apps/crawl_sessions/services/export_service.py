@@ -12,9 +12,12 @@ Design notes
 * All generators are pure: they take a :class:`CrawlSession` and return
   a ``(content, content_type, filename, row_count)`` tuple. They do NOT
   persist anything; persistence happens in :meth:`ExportService.create_export`.
-* Content is held in-memory and stored in the ``ExportRecord.content``
-  TextField. v1 cap is 50k URLs ~ 10MB worst case, which Postgres TEXT
-  handles trivially.
+* ``content`` is ``str`` for text kinds (CSV / XML / JSON) and ``bytes``
+  for binary kinds (XLSX). The persistence layer routes bytes payloads
+  to ``ExportRecord.content_bytes`` and text payloads to
+  ``ExportRecord.content`` — text and bytes never share a column.
+* v1 cap is 50k URLs ~ 10MB worst case, which Postgres TEXT / bytea
+  handle trivially.
 * CSV writers use ``lineterminator="\\n"`` so output is platform-stable
   and tests can split on ``"\\n"`` without CRLF surprises.
 """
@@ -81,32 +84,38 @@ def _gen_urls_csv(session: CrawlSession) -> tuple[str, str, str, int]:
     return buf.getvalue(), "text/csv", "urls.csv", row_count
 
 
-def _gen_issues_xlsx(session: CrawlSession) -> tuple[str, str, str, int]:
-    """Generate the Issues export.
+def _gen_issues_xlsx(session: CrawlSession) -> tuple[bytes, str, str, int]:
+    """Generate the Issues export as a real ``.xlsx`` workbook.
 
-    The ``.xlsx`` filename is preserved in the URL for forward
-    compatibility, but the body is CSV until the project picks up the
-    ``openpyxl`` dependency.
-
-    # TODO: real xlsx via openpyxl when the package lands
+    Single ``Issues`` summary sheet — per-issue detail sheets are out of
+    scope for v1. Returns ``bytes`` (not ``str``) because Excel files are
+    zip containers; routing the bytes through utf-8 would corrupt them.
     """
-    buf = io.StringIO()
-    writer = _csv_writer(buf)
-    writer.writerow(["id", "name", "severity", "count", "description"])
+    # Local import keeps ``openpyxl`` off the hot path for callers that
+    # never touch the xlsx generator.
+    from openpyxl import Workbook
 
     issues = IssueService.derive_issues(session)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Issues"
+    ws.append(["Issue", "Severity", "Description", "URL count"])
     for issue in issues:
-        writer.writerow([
-            issue["id"],
+        ws.append([
             issue["name"],
             issue["severity"],
-            issue["count"],
             issue["description"],
+            issue["count"],
         ])
 
-    # content_type stays text/csv because the body is CSV; the filename
-    # carries the .xlsx extension so URL routing stays stable.
-    return buf.getvalue(), "text/csv", "issues.xlsx", len(issues)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return (
+        buf.getvalue(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "issues.xlsx",
+        len(issues),
+    )
 
 
 def _gen_sitemap_xml(session: CrawlSession) -> tuple[str, str, str, int]:
@@ -323,15 +332,26 @@ class ExportService:
         generator = _GENERATORS[kind]
         content, content_type, filename, row_count = generator(session)
 
-        # size_bytes is computed centrally so generators stay simple and
-        # consistent — UTF-8 byte length matches what the download view
-        # would actually transmit.
-        size_bytes = len(content.encode("utf-8"))
+        # Route bytes payloads to ``content_bytes`` and str payloads to
+        # ``content``. Both columns coexist on the row, but only one is
+        # ever populated for a given record (the other holds its default
+        # empty value). ``size_bytes`` reflects the wire-size of the
+        # column actually used — utf-8 length for text, raw length for
+        # bytes — so the UI's "X KB" badge is accurate either way.
+        if isinstance(content, bytes):
+            content_str = ""
+            content_bytes = content
+            size_bytes = len(content_bytes)
+        else:
+            content_str = content
+            content_bytes = b""
+            size_bytes = len(content_str.encode("utf-8"))
 
         record = ExportRecord.objects.create(
             crawl_session=session,
             kind=kind,
-            content=content,
+            content=content_str,
+            content_bytes=content_bytes,
             content_type=content_type,
             filename=filename,
             row_count=row_count,

@@ -86,6 +86,20 @@ class CrawlSession(UUIDPrimaryKeyMixin, TimestampMixin):
         help_text="Path prefix for sectional crawls (e.g. /blog/)",
     )
 
+    # ── AI Insights cache (Day 5+) ────────────────────────────
+    # Anthropic calls cost real money; we cache the post-crawl
+    # IndexingIntelligenceAgent payload on the session row and
+    # only re-issue the call when the user explicitly POSTs to
+    # /sessions/<id>/insights/ (the "Regenerate" button).
+    ai_insights = models.JSONField(
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Cached AI insights payload. Populated by IndexingIntelligenceAgent post-crawl.",
+    )
+    ai_insights_generated_at = models.DateTimeField(blank=True, null=True)
+    ai_insights_model = models.CharField(max_length=64, blank=True, default="")
+
     class Meta:
         db_table = "crawl_sessions"
         ordering = ["-started_at"]
@@ -435,10 +449,19 @@ class CrawlEvent(UUIDPrimaryKeyMixin):
 class ExportRecord(UUIDPrimaryKeyMixin):
     """Generated export artifact for a crawl session.
 
-    Stores file content directly in a TextField for v1 (small files —
-    sites cap at 50k URLs, ~10MB worst case). Future: stream to disk and
-    track via filepath. The `kind` enumeration matches the design's
-    Exports page card grid.
+    Stores file content directly on the row for v1 (small files — sites
+    cap at 50k URLs, ~10MB worst case). Future: stream to disk and track
+    via filepath. The `kind` enumeration matches the design's Exports
+    page card grid.
+
+    Storage split:
+      * Text-bodied exports (CSV / XML / JSON) live in :attr:`content`
+        (TextField).
+      * Binary-bodied exports (XLSX, etc.) live in :attr:`content_bytes`
+        (BinaryField). Postgres encodes BinaryField as ``bytea``, which
+        cleanly round-trips arbitrary binary — TextField cannot, because
+        the value passes through utf-8 codecs at the cursor boundary.
+        Use :meth:`body` to read whichever side carries the payload.
     """
     KIND_URLS_CSV = "urls.csv"
     KIND_ISSUES_XLSX = "issues.xlsx"
@@ -448,12 +471,20 @@ class ExportRecord(UUIDPrimaryKeyMixin):
     KIND_METADATA_JSON = "metadata.json"
     KIND_CHOICES = [
         (KIND_URLS_CSV, "URLs (CSV)"),
-        (KIND_ISSUES_XLSX, "Issues (CSV)"),  # see note below
+        (KIND_ISSUES_XLSX, "Issues (XLSX)"),
         (KIND_SITEMAP_XML, "Sitemap (XML)"),
         (KIND_BROKEN_LINKS_CSV, "Broken Links (CSV)"),
         (KIND_REDIRECTS_CSV, "Redirects (CSV)"),
         (KIND_METADATA_JSON, "Metadata (JSON)"),
     ]
+
+    # MIME prefixes that indicate the payload lives in ``content_bytes``
+    # rather than the ``content`` TextField.
+    _BINARY_CONTENT_TYPES = (
+        "application/vnd.openxmlformats-officedocument",
+        "application/vnd.ms-excel",
+        "application/octet-stream",
+    )
 
     crawl_session = models.ForeignKey(
         CrawlSession,
@@ -463,6 +494,10 @@ class ExportRecord(UUIDPrimaryKeyMixin):
     )
     kind = models.CharField(max_length=32, choices=KIND_CHOICES, db_index=True)
     content = models.TextField(blank=True, default="")
+    content_bytes = models.BinaryField(
+        blank=True, default=b"",
+        help_text="Raw bytes for binary export kinds (e.g. .xlsx).",
+    )
     content_type = models.CharField(max_length=100, blank=True, default="")
     filename = models.CharField(max_length=255, blank=True, default="")
     row_count = models.PositiveIntegerField(default=0)
@@ -476,4 +511,23 @@ class ExportRecord(UUIDPrimaryKeyMixin):
 
     def __str__(self):
         return f"{self.kind} for session {str(self.crawl_session_id)[:8]}"
+
+    def is_binary(self) -> bool:
+        """Return True if the payload is binary (lives in ``content_bytes``)."""
+        ct = (self.content_type or "").lower()
+        return any(ct.startswith(prefix) for prefix in self._BINARY_CONTENT_TYPES)
+
+    def body(self) -> bytes:
+        """Return the export body as bytes regardless of storage column.
+
+        Binary kinds (xlsx) are stored in ``content_bytes``; text kinds
+        (csv/xml/json) are stored in ``content`` and encoded to utf-8 here.
+        Postgres returns ``content_bytes`` as ``memoryview``; we coerce to
+        ``bytes`` so callers can hand the value straight to ``HttpResponse``.
+        """
+        if self.is_binary():
+            raw = self.content_bytes or b""
+            # ``BinaryField`` may surface as ``memoryview`` on Postgres.
+            return bytes(raw) if not isinstance(raw, bytes) else raw
+        return (self.content or "").encode("utf-8")
 

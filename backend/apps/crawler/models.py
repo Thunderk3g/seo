@@ -98,6 +98,22 @@ class CrawlConfig(UUIDPrimaryKeyMixin, TimestampMixin):
         default="",
         help_text="Optional custom User-Agent string",
     )
+    excluded_paths = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "List of URL path prefixes to skip, e.g. ['/admin', '/private']. "
+            "Storage only — engine enforcement is a follow-up."
+        ),
+    )
+    excluded_params = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "List of query-string keys to strip before deduplication, "
+            "e.g. ['utm_source', 'fbclid']."
+        ),
+    )
 
     class Meta:
         db_table = "crawl_configs"

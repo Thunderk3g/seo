@@ -24,6 +24,7 @@ from apps.crawl_sessions.models import (
     StructuredData,
 )
 from apps.crawler.models import Website, CrawlConfig
+from apps.crawl_sessions.services.event_retention import cap_events_for_session
 
 
 import logging
@@ -126,6 +127,10 @@ class SessionManager:
             message=f"Crawl completed in {session.duration_seconds:.1f}s" if session.duration_seconds else "Crawl completed",
             metadata={"event": "completed", "duration_seconds": session.duration_seconds},
         )
+        # Trim CrawlEvent table to the configured cap. Runs after the
+        # "completed" event is recorded so that final marker survives
+        # the trim (the cap keeps the newest rows by timestamp).
+        cap_events_for_session(session)
         return session
 
     @staticmethod
@@ -142,6 +147,7 @@ class SessionManager:
             message=error or "Crawl failed",
             metadata={"event": "failed"},
         )
+        cap_events_for_session(session)
         return session
 
     @staticmethod
@@ -170,6 +176,7 @@ class SessionManager:
             message="Crawl cancelled",
             metadata={"event": "cancelled"},
         )
+        cap_events_for_session(session)
         return True
 
     @staticmethod

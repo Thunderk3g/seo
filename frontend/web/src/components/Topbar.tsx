@@ -6,22 +6,36 @@
 // we navigate to /sessions where the new pending row will show up.
 //
 // Pause/Stop remain disabled — Stop will be wired by Stream F at the row
-// level via the cancel endpoint. AI Insights stays disabled until Day 5.
+// level via the cancel endpoint.
+//
+// Day 5: the "AI Insights" button now opens AIInsightsDrawer for the most
+// recent session of the active site. The drawer itself handles the
+// available=false placeholder, so we don't probe the backend up front — we
+// just hide the button when there's no active site or no recent session.
 
 import { useState } from 'react';
 import { useLocation } from 'wouter';
 import Icon from './icons/Icon';
 import AddSiteModal from './AddSiteModal';
+import AIInsightsDrawer from './AIInsightsDrawer';
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useWebsites } from '../api/hooks/useWebsites';
+import { useSessions } from '../api/hooks/useSessions';
 import { useStartCrawl } from '../api/hooks/useStartCrawl';
 
 export default function Topbar() {
   const [showAddSite, setShowAddSite] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [, setLocation] = useLocation();
   const { activeSiteId } = useActiveSite();
   const websites = useWebsites();
+  const sessions = useSessions(activeSiteId);
   const startCrawl = useStartCrawl();
+
+  // Most recent session of the active site — drives the drawer's sessionId.
+  // Sessions are returned ordered by -started_at, so the head is the latest.
+  const latestSessionId = sessions.data?.[0]?.id ?? null;
+  const showInsightsButton = Boolean(activeSiteId && latestSessionId);
 
   const activeSite = websites.data?.results?.find((w) => w.id === activeSiteId) ?? null;
   const displayDomain = activeSite?.domain ?? '';
@@ -92,15 +106,17 @@ export default function Topbar() {
         </div>
 
         <div className="topbar-actions">
-          {/* AI Insights — added per spec §5.4.9. Disabled until first crawl (Day 5). */}
-          <button
-            className="btn ghost"
-            disabled
-            title="Available after first crawl (Day 5)"
-          >
-            <Icon name="zap" size={13} />
-            <span>AI Insights</span>
-          </button>
+          {/* AI Insights (Day 5) — hidden until there's a session to analyse. */}
+          {showInsightsButton && (
+            <button
+              className="btn ghost"
+              onClick={() => setDrawerOpen(true)}
+              title="Open AI insights for the latest crawl"
+            >
+              <Icon name="zap" size={13} />
+              <span>Insights</span>
+            </button>
+          )}
           <div className="topbar-divider" />
           <button className="icon-btn" aria-label="Search" disabled>
             <Icon name="search" size={15} />
@@ -145,6 +161,12 @@ export default function Topbar() {
             : 'Failed to start crawl.'}
         </div>
       )}
+
+      <AIInsightsDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        sessionId={latestSessionId}
+      />
     </header>
   );
 }

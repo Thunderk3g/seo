@@ -202,3 +202,235 @@ export interface AnalyticsCharts {
   content_type_distribution: AnalyticsContentTypeEntry[];
   total_pages: number;
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Exports — ExportService.list_exports / create_export
+// (backend/apps/crawl_sessions/services/export_service.py).
+// `kind` is one of the ExportRecord.KIND_* constants in
+// backend/apps/crawl_sessions/models.py.
+// ─────────────────────────────────────────────────────────────────
+
+export type ExportKind =
+  | 'urls.csv'
+  | 'issues.xlsx'
+  | 'sitemap.xml'
+  | 'broken-links.csv'
+  | 'redirects.csv'
+  | 'metadata.json';
+
+export interface ExportRecordSummary {
+  id: string;
+  kind: ExportKind;
+  filename: string;
+  content_type: string;
+  row_count: number;
+  size_bytes: number;
+  generated_at: string; // ISO-8601
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Settings — SettingsService.get_settings / update_settings
+// (backend/apps/crawler/services/settings_service.py:_to_dict).
+// Endpoint: GET / PATCH /api/v1/settings/?website=<uuid>.
+//
+// `website_id` and `domain` are read-only (managed via website CRUD);
+// every other key is editable. Server-side range validation lives in
+// _VALIDATORS — clients should mirror these on inputs but rely on the
+// server as the source of truth (400 with "field: reason" on failure).
+// ─────────────────────────────────────────────────────────────────
+
+export interface SettingsDict {
+  // Read-only.
+  website_id: string;
+  domain: string;
+  // Editable — Website fields.
+  is_active: boolean;
+  include_subdomains: boolean;
+  // Editable — CrawlConfig fields.
+  max_depth: number;             // 0..50
+  max_urls_per_session: number;  // 1..1_000_000
+  concurrency: number;           // 1..100
+  request_delay: number;         // 0.0..60.0
+  request_timeout: number;       // 1..300
+  max_retries: number;           // 0..10
+  enable_js_rendering: boolean;
+  respect_robots_txt: boolean;
+  custom_user_agent: string;     // ≤500 chars
+  // Storage-only exclusion lists (engine enforcement is a follow-up).
+  excluded_paths: string[];      // ≤100 entries, ≤200 chars each
+  excluded_params: string[];     // ≤100 entries, ≤200 chars each
+}
+
+// PATCH body — any subset of the editable keys. The view layer drops
+// unknown / read-only keys silently (PATCH semantics), but we keep the
+// type tight so callers don't accidentally try to mutate read-only ones.
+export type SettingsUpdate = Partial<Omit<SettingsDict, 'website_id' | 'domain'>>;
+
+// ─────────────────────────────────────────────────────────────────
+// Site tree — TreeService.build_tree
+// (backend/apps/crawl_sessions/services/tree_service.py).
+// Powers the Visualizations page. Recursive folder hierarchy where
+// each node aggregates the URL counts of itself and its descendants.
+// ─────────────────────────────────────────────────────────────────
+
+export interface TreeNode {
+  /** Path segment for this node, e.g. "products". The root node uses "/". */
+  name: string;
+  /** Full path from the site root, e.g. "/products/shoes". Root is "/". */
+  path: string;
+  /** Inclusive count: pages at this node + every descendant. */
+  url_count: number;
+  /** Pages whose path is exactly this node (excludes descendants). */
+  direct_url_count: number;
+  /** Children sorted by url_count desc, then name asc. */
+  children: TreeNode[];
+}
+
+/**
+ * Root payload returned by GET /sessions/<uuid>/tree/.
+ * Identical to TreeNode but carries an extra `max_depth_reached` field
+ * (deepest level with at least one page; root = 0).
+ */
+export interface SiteTree extends TreeNode {
+  max_depth_reached: number;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Links — flat link graph from LinkSerializer
+// (backend/apps/crawler/serializers.py). Not consumed by the v1
+// Visualizations page (force-graph viz cut), but typed here for
+// future Day 4+ work.
+// ─────────────────────────────────────────────────────────────────
+
+export interface Link {
+  source_url: string;
+  target_url: string;
+  link_type: string;
+  anchor_text: string;
+  rel_attributes: string;
+  is_navigation: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// AI Insights — InsightsService.get_insights
+// (backend/apps/ai_agents/services/insights_service.py).
+// Day 5 surface; env-gated via ANTHROPIC_API_KEY on the backend.
+// When `available === false`, the frontend renders the
+// "AI insights are not configured" placeholder.
+// ─────────────────────────────────────────────────────────────────
+
+export type InsightSeverity = 'info' | 'warning' | 'critical';
+export interface InsightHighlight {
+  title: string;
+  severity: InsightSeverity;
+  body: string;
+}
+export interface InsightsResponse {
+  available: boolean;
+  session_id: string;
+  summary: string;
+  highlights: InsightHighlight[];
+  model: string;
+  cached: boolean;
+  generated_at: string;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Overview snapshot — OverviewService.get_overview
+// (backend/apps/crawl_sessions/services/overview_service.py).
+// Powers the Dashboard KPI strip, SEO Health gauge, and System
+// Metrics card via GET /sessions/<uuid>/overview/.
+// ─────────────────────────────────────────────────────────────────
+
+export interface OverviewKpis {
+  total_urls: number;   // discovered (frontier)
+  crawled: number;      // successfully fetched
+  pending: number;      // discovered but not yet crawled
+  failed: number;       // 4xx / 5xx / network errors
+  excluded: number;     // robots / rules / classification
+}
+
+export interface HealthReason {
+  label: string;
+  delta: number;        // signed: positive = added, negative = subtracted
+}
+
+export type HealthBand = 'good' | 'warn' | 'poor';
+
+// Spec §5.4.1 Technical / Content / Performance breakdown. Each value is
+// an independent 0..100 sub-score computed server-side; see
+// backend/apps/crawl_sessions/services/overview_service.py::_compute_health
+// for the predicate-by-predicate formulas.
+export interface OverviewSubScores {
+  technical: number;    // 0..100
+  content: number;      // 0..100
+  performance: number;  // 0..100
+}
+
+export interface OverviewHealth {
+  score: number;        // 0..100, integer — index_eligible / crawled * 100
+  band: HealthBand;     // >=80 'good', >=50 'warn', else 'poor'
+  reasons: HealthReason[];
+  // Optional for backwards-compat with older payloads. New backends
+  // always populate this; the dashboard renders it when present.
+  sub_scores?: OverviewSubScores;
+}
+
+export interface SystemMetrics {
+  avg_response_time_ms: number;
+  p95_response_time_ms: number | null;  // null when no pages yet
+  median_depth: number;
+  max_depth_reached: number;
+  pages_with_issues: number;            // distinct URLs across all 12 categories
+}
+
+export interface OverviewSnapshot {
+  session_id: string;
+  session_status: SessionStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  kpis: OverviewKpis;
+  health: OverviewHealth;
+  system_metrics: SystemMetrics;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Client-only user preferences — persisted to localStorage under the
+// key `lattice.prefs` (spec §5.4.8/§5.4.9). Not sent to the backend;
+// applied on mount and on change via CSS variables and body classes.
+// ─────────────────────────────────────────────────────────────────
+
+export interface LatticePrefs {
+  accent: 'amber' | 'violet' | 'cyan' | 'emerald';
+  density: 'comfortable' | 'compact';
+  theme: 'dark' | 'light' | 'system';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// System host metrics — backend/apps/crawler/views_system_metrics.py
+// (Spec §4.2). Powers the Dashboard's SystemMetricsCard via
+// GET /api/v1/system/metrics/. Distinct from the SystemMetrics
+// interface above (which carries crawl-perf metrics from
+// OverviewService.get_overview).
+// ─────────────────────────────────────────────────────────────────
+
+export interface SystemHostMetrics {
+  host: {
+    cpu_percent: number;
+    memory_percent: number;
+    memory_used_mb: number;
+    memory_total_mb: number;
+    thread_count: number;
+  };
+  redis: {
+    queue_depth: number;
+    connected: boolean;
+  };
+  celery: {
+    active_tasks: number;
+    scheduled_tasks: number;
+    workers_online: number;
+  };
+  captured_at: string;
+}

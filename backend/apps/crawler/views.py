@@ -23,6 +23,7 @@ from apps.crawl_sessions.services.issue_service import IssueService
 from apps.crawl_sessions.services.analytics_service import AnalyticsService
 from apps.crawl_sessions.services.tree_service import TreeService
 from apps.crawl_sessions.services.export_service import ExportService
+from apps.crawl_sessions.services.overview_service import OverviewService
 from apps.crawler.services.settings_service import SettingsService
 from apps.crawler.serializers import (
     WebsiteSerializer,
@@ -216,13 +217,6 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
             return CrawlSessionDetailSerializer
         return CrawlSessionListSerializer
 
-    @action(detail=True, methods=["get"], url_path="overview")
-    def overview(self, request, pk=None):
-        """Get detailed session overview with aggregated metrics."""
-        session = self.get_object()
-        overview = SnapshotService.get_session_overview(session)
-        return Response(overview)
-
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, pk=None):
         """Cancel a running or pending crawl session."""
@@ -407,6 +401,12 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
         session = self.get_object()
         return Response(AnalyticsService.get_chart_data(session))
 
+    @action(detail=True, methods=["get"], url_path="overview")
+    def overview(self, request, pk=None):
+        """Return the Dashboard snapshot (KPIs + health + system metrics)."""
+        session = self.get_object()
+        return Response(OverviewService.get_overview(session))
+
     @action(detail=True, methods=["get"], url_path="tree")
     def tree(self, request, pk=None):
         """Folder-hierarchy site tree for the Visualizations page.
@@ -463,7 +463,13 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
         url_path=r"exports/(?P<export_id>[0-9a-f-]+)/download",
     )
     def download_export(self, request, pk=None, export_id=None):
-        """Stream the export body with attachment headers."""
+        """Stream the export body with attachment headers.
+
+        Uses :meth:`ExportRecord.body` so binary kinds (xlsx) come from
+        the ``content_bytes`` column while text kinds (csv/xml/json)
+        come from the ``content`` TextField — the caller never sees the
+        split.
+        """
         session = self.get_object()
         try:
             record = ExportService.get_export(session, export_id)
@@ -472,7 +478,7 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
                 {"detail": "Export not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        response = HttpResponse(record.content, content_type=record.content_type)
+        response = HttpResponse(record.body(), content_type=record.content_type)
         response["Content-Disposition"] = (
             f'attachment; filename="{record.filename}"'
         )

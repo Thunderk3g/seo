@@ -7,10 +7,9 @@ parses the query string + request body, then hands a plain ``dict`` payload
 here. All validation and the Website/CrawlConfig field-routing live in this
 module, so the wire format stays decoupled from the model layout.
 
-The exclusion-paths feature called out in spec §5.4.8 is intentionally NOT
-implemented here — it requires a new model field and migration which is out
-of scope for the v1 vertical slice. The view layer can omit those keys from
-the response; this service neither reads nor writes them.
+``excluded_paths`` and ``excluded_params`` (spec §5.4.8) are stored and
+validated here. Engine-side enforcement (actually skipping URLs that match)
+is a follow-up — this service is the storage + API contract only.
 """
 
 from __future__ import annotations
@@ -45,6 +44,8 @@ _CONFIG_FIELDS: frozenset[str] = frozenset({
     "enable_js_rendering",
     "respect_robots_txt",
     "custom_user_agent",
+    "excluded_paths",
+    "excluded_params",
 })
 
 # Read-only keys appear in the response dict but are silently dropped from
@@ -112,6 +113,54 @@ def _validate_user_agent(field: str, value: Any) -> str:
     return value
 
 
+# Bounds for ``excluded_paths`` / ``excluded_params``. 100 entries is well
+# beyond any realistic exclusion list while still bounding the JSON payload
+# size; 200 chars per entry comfortably fits the longest sane URL path or
+# query-string key. The view layer reflects these into a 400 with a
+# field-prefixed message.
+_MAX_LIST_ENTRIES = 100
+_MAX_LIST_ENTRY_LEN = 200
+
+
+def _validate_string_list(field: str, value: Any) -> list[str]:
+    """Validate a list of non-empty strings (paths / param keys).
+
+    Rules: must be a list; each entry must be a string, non-empty, and at
+    most ``_MAX_LIST_ENTRY_LEN`` characters; the list must hold at most
+    ``_MAX_LIST_ENTRIES`` entries. Returns a fresh list (no in-place
+    coercion of the caller's payload).
+    """
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{field}: must be a list (got {type(value).__name__})"
+        )
+    if len(value) > _MAX_LIST_ENTRIES:
+        raise ValueError(
+            f"{field}: at most {_MAX_LIST_ENTRIES} entries allowed "
+            f"(got {len(value)})"
+        )
+    cleaned: list[str] = []
+    for index, entry in enumerate(value):
+        # bool would slip past ``isinstance(entry, str)`` since str is not
+        # a subclass of bool — but defensively narrow the type message.
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"{field}: entry {index} must be a string "
+                f"(got {type(entry).__name__})"
+            )
+        if entry == "":
+            raise ValueError(
+                f"{field}: entry {index} must be non-empty"
+            )
+        if len(entry) > _MAX_LIST_ENTRY_LEN:
+            raise ValueError(
+                f"{field}: entry {index} must be at most "
+                f"{_MAX_LIST_ENTRY_LEN} characters (got {len(entry)})"
+            )
+        cleaned.append(entry)
+    return cleaned
+
+
 # Lookup table: field -> validator. Keeping this here (rather than as
 # inline if/elif inside ``update_settings``) makes the ranges easy to
 # spot-check against the spec.
@@ -126,6 +175,8 @@ _VALIDATORS: dict[str, Callable[[str, Any], Any]] = {
     "enable_js_rendering":  _validate_bool,
     "respect_robots_txt":   _validate_bool,
     "custom_user_agent":    _validate_user_agent,
+    "excluded_paths":       _validate_string_list,
+    "excluded_params":      _validate_string_list,
     # Website
     "is_active":            _validate_bool,
     "include_subdomains":   _validate_bool,
@@ -211,4 +262,8 @@ def _to_dict(website: Website, config: CrawlConfig) -> dict:
         "enable_js_rendering":  config.enable_js_rendering,
         "respect_robots_txt":   config.respect_robots_txt,
         "custom_user_agent":    config.custom_user_agent,
+        # JSONField defaults to ``list`` — list() copy keeps callers from
+        # accidentally mutating the model's in-memory value.
+        "excluded_paths":       list(config.excluded_paths or []),
+        "excluded_params":      list(config.excluded_params or []),
     }

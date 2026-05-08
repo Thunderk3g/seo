@@ -9,7 +9,11 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: seo_db
-    ports: ["5432:5432"]
+    # Host port remapped to 5433 to avoid collision with an unrelated
+    # `compliance-postgres` container that holds host:5432. In-network port
+    # remains 5432, so api/worker continue to use DB_HOST=db, DB_PORT=5432.
+    # Host-side tools (bare-metal pytest, psql) must connect to localhost:5433.
+    ports: ["5433:5432"]
     volumes: [pg_data:/var/lib/postgresql/data]
 
   redis:

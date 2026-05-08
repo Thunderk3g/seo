@@ -6,6 +6,7 @@ documented in ``services/export_service.py``.
 
 from __future__ import annotations
 
+import io
 import json
 import xml.etree.ElementTree as ET
 
@@ -117,30 +118,76 @@ def test_create_urls_csv_zero_pages(session):
 
 
 # ─────────────────────────────────────────────────────────────
-# 5. issues.xlsx — always 12 issue rows + header
+# 5. issues.xlsx — real openpyxl-backed workbook
 # ─────────────────────────────────────────────────────────────
+_XLSX_MIME = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+
 @pytest.mark.django_db
-def test_create_issues_xlsx_returns_12_rows(session):
-    """Empty session → header + all 12 issue rows (count=0 for each)."""
+def test_issues_xlsx_is_valid_openpyxl_workbook(session):
+    """The body is a real .xlsx that openpyxl can re-open and inspect."""
+    # ``openpyxl`` is imported inside the test so collection still works
+    # if the dependency is missing; the test itself will skip.
+    openpyxl = pytest.importorskip("openpyxl")
+
+    # Seed a few pages so derive_issues has at least one non-zero count
+    # — exercises the data-row path, not just the header.
+    _make_page(session, "https://example.com/missing", http_status_code=404)
+    _make_page(session, "https://example.com/down", http_status_code=503)
+
     record = ExportService.create_export(session, "issues.xlsx")
 
-    # Filename keeps the .xlsx extension for forward-compat with openpyxl.
-    # Body is CSV today; content_type reflects the body, not the filename.
-    assert record.filename == "issues.xlsx"
-    assert record.content_type == "text/csv"
-    assert record.row_count == 12
+    # Body MUST round-trip through openpyxl — that proves it's a real
+    # zip-container xlsx and not utf-8-mangled bytes.
+    wb = openpyxl.load_workbook(io.BytesIO(record.body()))
+    assert wb.sheetnames == ["Issues"]
 
-    lines = _csv_lines(record.content)
-    assert lines[0] == "id,name,severity,count,description"
-    assert len(lines) == 13  # header + 12 issues
-    # Every data row's count column should be 0 on an empty session.
-    for data_line in lines[1:]:
-        cells = data_line.split(",")
-        # severity is column index 2, count is column index 3 — but
-        # description cells contain commas, so split has more entries.
-        # Just assert the first three columns then check that "0" appears
-        # near the front (count column).
-        assert cells[2] in {"error", "warning", "notice"}
+    ws = wb["Issues"]
+    header = [cell.value for cell in ws[1]]
+    assert header == ["Issue", "Severity", "Description", "URL count"]
+
+    # 12 canonical issues + 1 header row.
+    assert ws.max_row == 13
+    # Pull a representative data row and assert the URL-count column is
+    # an int (openpyxl preserves Python types).
+    second_row = [cell.value for cell in ws[2]]
+    assert isinstance(second_row[3], int)
+
+
+@pytest.mark.django_db
+def test_issues_xlsx_content_type_is_excel_mime(session):
+    """The persisted content_type is the OOXML spreadsheet MIME."""
+    pytest.importorskip("openpyxl")
+    record = ExportService.create_export(session, "issues.xlsx")
+    assert record.content_type == _XLSX_MIME
+
+
+@pytest.mark.django_db
+def test_issues_xlsx_filename_uses_xlsx_extension(session):
+    """The download filename keeps the .xlsx extension."""
+    pytest.importorskip("openpyxl")
+    record = ExportService.create_export(session, "issues.xlsx")
+    assert record.filename == "issues.xlsx"
+
+
+@pytest.mark.django_db
+def test_issues_xlsx_body_lives_in_content_bytes(session):
+    """Binary records store bytes in content_bytes, not in content TextField.
+
+    Guards against accidental regression where a future generator returns
+    str again — the persistence path would silently encode and break the
+    download."""
+    pytest.importorskip("openpyxl")
+    record = ExportService.create_export(session, "issues.xlsx")
+    assert record.content == ""
+    raw = bytes(record.content_bytes) if record.content_bytes else b""
+    # XLSX is a zip container — magic bytes "PK\x03\x04".
+    assert raw.startswith(b"PK\x03\x04")
+    assert record.is_binary() is True
+    assert record.body() == raw
+    assert record.row_count == 12
 
 
 # ─────────────────────────────────────────────────────────────

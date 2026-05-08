@@ -79,6 +79,8 @@ def run_scheduled_crawl(self, website_id: str):
             include_subdomains=website.include_subdomains,
             user_agent=config.effective_user_agent,
             session_id=str(session.id),
+            excluded_paths=config.excluded_paths or [],
+            excluded_params=config.excluded_params or [],
         )
 
         # Run async engine in sync context
@@ -87,6 +89,17 @@ def run_scheduled_crawl(self, website_id: str):
         # Persist results
         SessionManager.persist_crawl_results(session, result)
         SessionManager.complete_session(session)
+
+        # Best-effort post-crawl AI insights compute (cache primer).
+        # Mirrors run_on_demand_crawl. See spec §6 step 5.
+        try:
+            from apps.ai_agents.services.insights_service import InsightsService
+            InsightsService.regenerate(session)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Post-crawl AI insights regenerate failed for session %s",
+                session.id,
+            )
 
         return {
             "session_id": str(session.id),
@@ -165,11 +178,26 @@ def run_on_demand_crawl(
             user_agent=config.effective_user_agent,
             target_path_prefix=target_path_prefix,
             session_id=str(session.id),
+            excluded_paths=config.excluded_paths or [],
+            excluded_params=config.excluded_params or [],
         )
 
         result = asyncio.run(engine.run())
         SessionManager.persist_crawl_results(session, result)
         SessionManager.complete_session(session)
+
+        # Best-effort post-crawl AI insights compute. Spec §6 step 5: prime
+        # the session.ai_insights cache so the dashboard drawer opens
+        # without billing Anthropic on first view. Swallow errors — the
+        # crawl already succeeded; insights are optional.
+        try:
+            from apps.ai_agents.services.insights_service import InsightsService
+            InsightsService.regenerate(session)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Post-crawl AI insights regenerate failed for session %s",
+                session.id,
+            )
 
         return {
             "session_id": str(session.id),
@@ -236,11 +264,19 @@ def run_url_inspection(website_id: str, target_url: str):
             enable_js_rendering=config.enable_js_rendering,
             user_agent=config.effective_user_agent,
             session_id=str(session.id),
+            excluded_paths=config.excluded_paths or [],
+            excluded_params=config.excluded_params or [],
         )
 
         inspection = asyncio.run(engine.inspect_url(target_url))
 
         SessionManager.complete_session(session)
+
+        # Note: AI insights regenerate is intentionally NOT fired here.
+        # url_inspection sessions probe a single URL and have no aggregate
+        # indexability/canonical/issue distribution to summarise — the
+        # IndexingIntelligenceAgent payload would be near-empty. Insights
+        # remain a full-crawl feature (scheduled / on-demand).
 
         return {
             "session_id": str(session.id),

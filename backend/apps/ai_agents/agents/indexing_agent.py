@@ -2,6 +2,13 @@
 
 Consumes crawl data to identify indexability issues,
 canonical mismatches, and overall coverage health.
+
+Day 5 extension: ``analyze_session`` and ``analyze_canonical_clusters`` feed
+:class:`apps.ai_agents.services.insights_service.InsightsService`, which
+composes them with :class:`IssueService.derive_issues` and posts the result
+to Anthropic with a prompt-cached system block. This module deliberately
+keeps the LLM call out of the per-page pipeline — the agent stays a pure
+analytics helper, and only the explicit insights endpoint pays the LLM cost.
 """
 
 from apps.common import constants
