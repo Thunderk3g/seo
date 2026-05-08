@@ -81,7 +81,9 @@ export default function ActivityFeed({
 
       {!isLoading && rows.length === 0 && (
         <p className="text-muted" style={{ padding: '12px 4px' }}>
-          No activity yet. Events appear here once a crawl runs.
+          {isLive
+            ? 'Crawl in progress — per-URL activity will populate when the run completes (live streaming arrives in phase 2.5).'
+            : 'No activity yet. Events appear here once a crawl runs.'}
         </p>
       )}
 

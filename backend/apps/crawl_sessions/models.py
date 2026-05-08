@@ -431,3 +431,49 @@ class CrawlEvent(UUIDPrimaryKeyMixin):
     def __str__(self):
         return f"[{self.kind}] {self.url or self.message}"
 
+
+class ExportRecord(UUIDPrimaryKeyMixin):
+    """Generated export artifact for a crawl session.
+
+    Stores file content directly in a TextField for v1 (small files —
+    sites cap at 50k URLs, ~10MB worst case). Future: stream to disk and
+    track via filepath. The `kind` enumeration matches the design's
+    Exports page card grid.
+    """
+    KIND_URLS_CSV = "urls.csv"
+    KIND_ISSUES_XLSX = "issues.xlsx"
+    KIND_SITEMAP_XML = "sitemap.xml"
+    KIND_BROKEN_LINKS_CSV = "broken-links.csv"
+    KIND_REDIRECTS_CSV = "redirects.csv"
+    KIND_METADATA_JSON = "metadata.json"
+    KIND_CHOICES = [
+        (KIND_URLS_CSV, "URLs (CSV)"),
+        (KIND_ISSUES_XLSX, "Issues (CSV)"),  # see note below
+        (KIND_SITEMAP_XML, "Sitemap (XML)"),
+        (KIND_BROKEN_LINKS_CSV, "Broken Links (CSV)"),
+        (KIND_REDIRECTS_CSV, "Redirects (CSV)"),
+        (KIND_METADATA_JSON, "Metadata (JSON)"),
+    ]
+
+    crawl_session = models.ForeignKey(
+        CrawlSession,
+        on_delete=models.CASCADE,
+        related_name="exports",
+        db_index=True,
+    )
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES, db_index=True)
+    content = models.TextField(blank=True, default="")
+    content_type = models.CharField(max_length=100, blank=True, default="")
+    filename = models.CharField(max_length=255, blank=True, default="")
+    row_count = models.PositiveIntegerField(default=0)
+    size_bytes = models.PositiveIntegerField(default=0)
+    generated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "export_records"
+        indexes = [models.Index(fields=["crawl_session", "-generated_at"])]
+        ordering = ["-generated_at"]
+
+    def __str__(self):
+        return f"{self.kind} for session {str(self.crawl_session_id)[:8]}"
+

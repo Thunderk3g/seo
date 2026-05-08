@@ -134,3 +134,71 @@ export interface CrawlEvent {
   message: string;
   metadata: Record<string, unknown>;
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Issues — derived by IssueService.derive_issues / get_issue_detail
+// (backend/apps/crawl_sessions/services/issue_service.py).
+// ─────────────────────────────────────────────────────────────────
+
+export type IssueSeverity = 'error' | 'warning' | 'notice';
+
+export interface IssueSummary {
+  id: string;            // e.g. "broken-4xx", "missing-title"
+  name: string;
+  severity: IssueSeverity;
+  description: string;
+  count: number;
+}
+
+export interface IssueAffectedUrl {
+  url: string;
+  http_status_code: number | null;
+  title: string;
+  crawl_depth: number;
+  load_time_ms: number | null;
+}
+
+export interface IssueDetail extends IssueSummary {
+  affected_urls: IssueAffectedUrl[];
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Analytics — AnalyticsService.get_chart_data
+// (backend/apps/crawl_sessions/services/analytics_service.py).
+// All four datasets ship in one response.
+// ─────────────────────────────────────────────────────────────────
+
+export interface AnalyticsStatusEntry {
+  label: '2xx' | '3xx' | '4xx' | '5xx' | 'unknown';
+  count: number;
+  color: string; // hex e.g. "#6ee7b7"
+}
+
+export interface AnalyticsDepthEntry {
+  depth: number;
+  count: number;
+}
+
+export interface AnalyticsResponseTimeEntry {
+  bucket:
+    | '0-100ms'
+    | '100-250ms'
+    | '250-500ms'
+    | '500-1000ms'
+    | '1000-2500ms'
+    | '2500ms+';
+  count: number;
+}
+
+export interface AnalyticsContentTypeEntry {
+  label: 'html' | 'image' | 'css' | 'js' | 'font' | 'document' | 'other';
+  count: number;
+}
+
+export interface AnalyticsCharts {
+  status_distribution: AnalyticsStatusEntry[];
+  depth_distribution: AnalyticsDepthEntry[];
+  response_time_histogram: AnalyticsResponseTimeEntry[];
+  content_type_distribution: AnalyticsContentTypeEntry[];
+  total_pages: number;
+}

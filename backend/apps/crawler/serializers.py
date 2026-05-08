@@ -42,17 +42,24 @@ class WebsiteSerializer(serializers.ModelSerializer):
 
 
 class WebsiteCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating a new website with optional config."""
-    max_depth = serializers.IntegerField(required=False, default=7)
-    max_urls_per_session = serializers.IntegerField(required=False, default=50000)
-    concurrency = serializers.IntegerField(required=False, default=10)
+    """Serializer for creating a new website with optional config.
+
+    `id` and `created_at` are read-only (server-assigned) but are returned in
+    the 201 response body so the frontend can promote the new site to the
+    active selection without a follow-up GET.
+    """
+    max_depth = serializers.IntegerField(required=False, default=7, write_only=True)
+    max_urls_per_session = serializers.IntegerField(required=False, default=50000, write_only=True)
+    concurrency = serializers.IntegerField(required=False, default=10, write_only=True)
 
     class Meta:
         model = Website
         fields = [
-            "domain", "name", "is_active", "include_subdomains",
+            "id", "domain", "name", "is_active", "include_subdomains",
             "max_depth", "max_urls_per_session", "concurrency",
+            "created_at",
         ]
+        read_only_fields = ["id", "created_at"]
 
     def validate_domain(self, value):
         """Normalise the user-supplied domain and store the bare host.

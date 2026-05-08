@@ -4,20 +4,26 @@ Thin views that delegate logic to the services layer.
 """
 
 from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
+from django.core.exceptions import ValidationError
 from django.db.models import Q
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_datetime
 
 from apps.crawler.models import Website
 from apps.crawl_sessions.models import (
-    CrawlSession, CrawlEvent, Page, Link, URLClassification,
+    CrawlSession, CrawlEvent, ExportRecord, Page, Link, URLClassification,
 )
 from apps.crawl_sessions.services.snapshot_service import SnapshotService
 from apps.crawl_sessions.services.issue_service import IssueService
 from apps.crawl_sessions.services.analytics_service import AnalyticsService
+from apps.crawl_sessions.services.tree_service import TreeService
+from apps.crawl_sessions.services.export_service import ExportService
+from apps.crawler.services.settings_service import SettingsService
 from apps.crawler.serializers import (
     WebsiteSerializer,
     WebsiteCreateSerializer,
@@ -293,9 +299,15 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
         """Activity-feed entries for the dashboard live panel.
 
         Merges persisted CrawlEvent rows (session lifecycle) with synthesized
-        per-URL events derived from the Page table (since Pages bulk-insert
-        at end-of-crawl, the per-URL feed populates when the session
-        transitions to completed).
+        per-URL events derived from the Page table.
+
+        KNOWN LIMITATION (phase 2.5 follow-up): per-URL events only appear
+        once the session completes, because Pages are bulk-created at end of
+        crawl by SessionManager.persist_crawl_results. The 1.5s polling that
+        spec §5.4.1 calls for therefore returns mostly empty results during
+        the running window — only lifecycle events ("Crawl started") show up
+        live. To deliver the full spec UX, the engine needs a periodic event
+        flush via sync_to_async (tracked separately).
 
         Query params:
             since   ISO-8601 timestamp; only return entries after this point
@@ -395,6 +407,77 @@ class CrawlSessionViewSet(viewsets.ReadOnlyModelViewSet):
         session = self.get_object()
         return Response(AnalyticsService.get_chart_data(session))
 
+    @action(detail=True, methods=["get"], url_path="tree")
+    def tree(self, request, pk=None):
+        """Folder-hierarchy site tree for the Visualizations page.
+
+        Powers the Site tree + Treemap tabs and the Dashboard's
+        "Site structure" mini panel. Optional ``max_depth`` query param
+        (default 4, clamped to 1..10).
+        """
+        session = self.get_object()
+        try:
+            max_depth = int(request.query_params.get("max_depth", 4))
+        except (TypeError, ValueError):
+            max_depth = 4
+        max_depth = max(1, min(max_depth, 10))
+        return Response(TreeService.build_tree(session, max_depth=max_depth))
+
+    @action(detail=True, methods=["get"], url_path="exports")
+    def exports(self, request, pk=None):
+        """List previously generated export artifacts for this session."""
+        session = self.get_object()
+        return Response(ExportService.list_exports(session))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"exports/(?P<kind>[a-z0-9.-]+)",
+    )
+    def create_export(self, request, pk=None, kind=None):
+        """Generate a new export of the given kind."""
+        session = self.get_object()
+        try:
+            record = ExportService.create_export(session, kind)
+        except ValueError:
+            return Response(
+                {"detail": f"Unknown export kind: {kind!r}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "id": str(record.id),
+                "kind": record.kind,
+                "filename": record.filename,
+                "content_type": record.content_type,
+                "row_count": record.row_count,
+                "size_bytes": record.size_bytes,
+                "generated_at": record.generated_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"exports/(?P<export_id>[0-9a-f-]+)/download",
+    )
+    def download_export(self, request, pk=None, export_id=None):
+        """Stream the export body with attachment headers."""
+        session = self.get_object()
+        try:
+            record = ExportService.get_export(session, export_id)
+        except ExportRecord.DoesNotExist:
+            return Response(
+                {"detail": "Export not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        response = HttpResponse(record.content, content_type=record.content_type)
+        response["Content-Disposition"] = (
+            f'attachment; filename="{record.filename}"'
+        )
+        return response
+
     @action(detail=True, methods=["get"], url_path="classifications")
     def classifications(self, request, pk=None):
         """Get URL classifications for this session."""
@@ -449,3 +532,45 @@ class PageViewSet(viewsets.ReadOnlyModelViewSet):
         if session_id:
             qs = qs.filter(crawl_session_id=session_id)
         return qs
+
+
+# ─────────────────────────────────────────────────────────────
+# Settings endpoint — keyed by ?website=<uuid> rather than a path PK so
+# the topbar's "active site" toggle maps to one URL. Spec §5.4.8.
+# ─────────────────────────────────────────────────────────────
+
+@api_view(["GET", "PATCH"])
+def settings_view(request):
+    """GET / PATCH /api/v1/settings/?website=<uuid>.
+
+    Thin wrapper around SettingsService:
+      * 400 if ?website= is missing or not a UUID.
+      * 404 if the website doesn't exist.
+      * 400 if a PATCH payload fails range/type validation
+        (ValueError messages from the service flow through verbatim).
+    """
+    website_id = request.query_params.get("website")
+    if not website_id:
+        return Response(
+            {"detail": "Query parameter 'website' is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        website = get_object_or_404(Website, pk=website_id)
+    except (ValueError, ValidationError):
+        # Non-UUID strings raise ValidationError on Postgres / ValueError
+        # elsewhere — both mean "malformed id" → 400, not 500.
+        return Response(
+            {"detail": f"Invalid website id: {website_id!r}."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if request.method == "GET":
+        return Response(SettingsService.get_settings(website))
+
+    try:
+        updated = SettingsService.update_settings(website, request.data or {})
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(updated)
