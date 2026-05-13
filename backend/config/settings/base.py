@@ -96,19 +96,25 @@ CELERY_TIMEZONE = "UTC"
 # ─────────────────────────────────────────────────────────────
 # SEO AI Agent System
 # ─────────────────────────────────────────────────────────────
-# Project-relative defaults for the data sources the agents consume.
-# All paths are overridable via .env so prod can mount volumes elsewhere.
-_PROJECT_ROOT = BASE_DIR.parent
+# All data sources live under backend/data/ so the deployable backend
+# is self-contained — no scratch directories in the project root, no
+# absolute paths to host-specific scratch dirs. Subtypes:
+#   backend/data/                  → crawler CSVs + crawl_state.json (legacy default)
+#   backend/data/gsc/              → Search Console pull (gsc_pull.py output + OAuth files)
+#   backend/data/aem/              → AEM page-model JSON exports
+#   backend/data/_semrush_cache/   → SEMrush response cache
+# Every path is still overridable via .env so prod can mount volumes
+# elsewhere.
 
 SEO_AI = {
     "data_dir": Path(
         os.environ.get("SEO_AI_DATA_DIR") or (BASE_DIR / "data")
     ),
     "gsc_data_dir": Path(
-        os.environ.get("SEO_AI_GSC_DATA_DIR") or (_PROJECT_ROOT / "test" / "gsc_data")
+        os.environ.get("SEO_AI_GSC_DATA_DIR") or (BASE_DIR / "data" / "gsc")
     ),
     "sitemap_dir": Path(
-        os.environ.get("SEO_AI_SITEMAP_DIR") or (_PROJECT_ROOT / "sitemap")
+        os.environ.get("SEO_AI_SITEMAP_DIR") or (BASE_DIR / "data" / "aem")
     ),
     "max_findings_per_agent": int(os.environ.get("SEO_AI_MAX_FINDINGS_PER_AGENT", "20")),
     "budget_usd_per_run": float(os.environ.get("SEO_AI_BUDGET_USD_PER_RUN", "2.00")),

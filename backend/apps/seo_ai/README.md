@@ -11,8 +11,8 @@
 Tested end-to-end on `2026-05-13` against:
 
 - `backend/data/crawl_results.csv` — 3 653 URLs from the file-backed crawler
-- `test/gsc_data/www.bajajlifeinsurance.com/` — 78 GSC CSVs (web/image/news/video × dimensions)
-- `sitemap/*.json` — 6 deduplicated AEM page-model exports
+- `backend/data/gsc/www.bajajlifeinsurance.com/` — 78 GSC CSVs (web/image/news/video × dimensions)
+- `backend/data/aem/*.json` — 6 deduplicated AEM page-model exports
 - SEMrush key (1.99 M units, India database)
 - Groq `openai/gpt-oss-120b`
 
@@ -94,8 +94,8 @@ SEMRUSH_DATABASE=in
 SEMRUSH_DEFAULT_LIMIT=100
 
 SEO_AI_DATA_DIR=          # default: backend/data/
-SEO_AI_GSC_DATA_DIR=      # default: test/gsc_data/
-SEO_AI_SITEMAP_DIR=       # default: sitemap/
+SEO_AI_GSC_DATA_DIR=      # default: backend/data/gsc/
+SEO_AI_SITEMAP_DIR=       # default: backend/data/aem/
 SEO_AI_MAX_FINDINGS_PER_AGENT=20
 SEO_AI_BUDGET_USD_PER_RUN=2.00
 ```
@@ -155,11 +155,14 @@ Production should use the default (async, `202` + run id).
   `jsonschema`.
 - `backend/api/urls.py` — mounted `apps.seo_ai.urls` at `/api/v1/seo/`.
 - `backend/scripts/gsc_pull.py` — moved from `test/gsc_pull.py`,
-  paths now anchored on `<repo>/test/`. The OAuth client secret
-  + token stay in `test/` (gitignored).
+  paths anchored on `backend/data/gsc/`. OAuth client secret + token
+  + pulled CSVs all colocate there (gitignored via `backend/data/`).
 - `backend/smoke_test_seo_ai.py` — one-shot verification script.
-- `sitemap/` — 4 byte-identical `(1)/(2)` duplicates deleted
-  (verified by md5sum); 6 unique exports remain.
+- `backend/data/` — single root for every runtime artefact:
+  `gsc/` (Search Console), `aem/` (page-model JSON), `_semrush_cache/`,
+  and the crawler's existing `crawl_*.csv` outputs. The old top-level
+  `test/` and `sitemap/` directories were removed; 4 byte-identical
+  AEM duplicates were dropped during the consolidation (md5-verified).
 
 ## Phase 1 backlog (next, not yet implemented)
 

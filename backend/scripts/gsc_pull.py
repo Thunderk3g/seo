@@ -1,15 +1,15 @@
 """Google Search Console batch puller.
 
-Refactored from the original ``test/gsc_pull.py`` so it can be invoked
-from any working directory: paths are anchored against the project's
-``test/`` directory where the OAuth secrets and pulled CSVs already
-live. Run with:
+Pulls Search Console data for every verified site into
+``backend/data/gsc/<site>/`` as one CSV per ``(search_type × dimension)``
+combination. Outputs are consumed by ``apps.seo_ai.adapters.gsc_csv``.
+
+Run from anywhere:
 
     python backend/scripts/gsc_pull.py
 
-OAuth client secret + cached token + CSV outputs all stay under
-``test/`` (gitignored). The SEO AI ``GSCCSVAdapter`` reads from the
-same ``test/gsc_data/`` tree by default.
+The OAuth client secret + cached token + pulled CSVs all live under
+``backend/data/gsc/`` (gitignored).
 """
 import os
 import csv
@@ -25,17 +25,19 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
-# Anchor every path against ``<repo>/test/`` so this works regardless
-# of cwd. The original script assumed cwd == test/.
-_TEST_DIR = Path(__file__).resolve().parents[2] / "test"
+# Anchor every path against ``<repo>/backend/data/gsc/`` so this works
+# regardless of cwd. The OAuth secrets and the pulled CSVs all live in
+# the same place — one less variable when scripts run in CI / Docker.
+_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gsc"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 SCOPES = ['https://www.googleapis.com/auth/webmasters.readonly']
 CLIENT_SECRETS_FILE = str(
-    _TEST_DIR
+    _DATA_DIR
     / 'client_secret_247784932262-kb00a8epkqisvnadt095j0bi8njut3es.apps.googleusercontent.com.json'
 )
-TOKEN_FILE = str(_TEST_DIR / 'token.json')
-OUTPUT_DIR = str(_TEST_DIR / 'gsc_data')
+TOKEN_FILE = str(_DATA_DIR / 'token.json')
+OUTPUT_DIR = str(_DATA_DIR)
 
 # GSC retains ~16 months of data. Use 480 days to capture the full window.
 LOOKBACK_DAYS = 480

@@ -29,9 +29,10 @@ The system therefore uses **specialist agents + an orchestrator + a critic** (se
 | --- | --- |
 | `backend/apps/crawler/engine/` (synchronous Python crawler, file-backed) | Primary on-domain data source. Agents read its CSVs through a new read-only adapter. |
 | `backend/apps/crawler/storage/repository.py` (CSV catalog) | Already exposes `results / errors / discovered / …` tables — the Technical Auditor consumes these. |
-| `sitemap/*.json` (AEM page-model exports, ~7 unique × 14 MB) | Authoritative on-site content + component tree. The Content Analyzer parses these to avoid re-crawling. |
+| `backend/data/aem/*.json` (AEM page-model exports, 6 unique × ~14 MB) | Authoritative on-site content + component tree. The Content Analyzer parses these to avoid re-crawling. |
+| `backend/data/gsc/<site>/` (16-month Search Console pull, written by `backend/scripts/gsc_pull.py`) | Powers SERP/CTR analysis without needing live API access on every run. |
 | `.env` `SEMRUSH_API_KEY` (verified live, 1.99 M units, 13 896 IN keywords on the target domain) | Powers Keyword & Competitor agents. |
-| `.env` `GSC_API_KEY` (currently empty) | To be filled in Phase 1; powers SERP/CTR agent. |
+| `.env` `GROQ_API_KEY` (verified live, `openai/gpt-oss-120b`) | LLM backend for every agent. |
 | `frontend/web/src/api/hooks/useInsights.ts` (already calls `/sessions/<id>/insights/`) | Already-built UI contract. Backend currently returns nothing — Phase 1 fills this in with the orchestrator output. |
 | Celery + Redis (in `requirements/base.txt`, broker URL in `.env`) | The agent runs are background jobs; Celery is the queue, Redis backs short-lived state + rate limiters. |
 | `docs/AI Agent Structure.md` | The **interpretation** layer (Indexing, Link, Structured Data, Performance, URL Inspection narrators). Not replaced — it becomes a downstream consumer of the new scoring outputs and powers the per-URL drawer. |
