@@ -28,6 +28,28 @@ local_settings.py
 backend/data/
 backend/reports/
 
+# ── Data dumps (never push to GitHub) ─────────────────
+# AEM sitemap exports (~100 MB of page-model JSON), GSC pulls,
+# experimental notebooks, OAuth client secrets, OAuth tokens, and
+# any other raw data scratch directories live here. None of this
+# belongs in version control.
+sitemap/
+test/
+gsc_data/
+
+# Catch-all data file patterns. Generic JSON config (package.json,
+# tsconfig.json, etc.) stays tracked — only explicit data paths
+# above and these extensions are excluded.
+*.csv
+*.xlsx
+*.parquet
+
+# OAuth / service-account credentials, regardless of where they land.
+client_secret*.json
+token.json
+*.credentials.json
+service-account*.json
+
 # ── Node / Vite ───────────────────────────────────────
 node_modules/
 frontend/web/dist/
