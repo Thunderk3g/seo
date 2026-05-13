@@ -105,6 +105,7 @@ class GroqProvider(LLMProvider):
             )
         # Imported lazily so collection of the module doesn't require the
         # SDK in environments where LLM calls are disabled.
+        import httpx
         from openai import OpenAI
 
         # Windows corporate networks often break certifi's bundle because
@@ -119,7 +120,26 @@ class GroqProvider(LLMProvider):
         except Exception:  # noqa: BLE001 - non-Windows or already injected
             pass
 
-        self._client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        # Resolve TLS verification. On Linux containers behind a corp
+        # MITM proxy, certifi's bundle won't include the intercepting
+        # root, so the user can either point at the corp CA (path) or
+        # disable verification for dev (LLM_SSL_VERIFY=false).
+        verify: bool | str = _resolve_ssl_verify(
+            settings.LLM.get("ssl_verify", "")
+        )
+        if verify is False:
+            logger.warning(
+                "LLM_SSL_VERIFY=false — TLS certificate verification is "
+                "disabled. Acceptable for dev behind a corporate MITM "
+                "proxy only. NEVER use in production."
+            )
+        http_client = httpx.Client(verify=verify, timeout=60.0)
+
+        self._client = OpenAI(
+            api_key=cfg["api_key"],
+            base_url=cfg["base_url"],
+            http_client=http_client,
+        )
         self.model = cfg["model"]
         self._default_max_tokens = cfg["max_tokens"]
         self._default_temperature = cfg["temperature"]
@@ -247,6 +267,31 @@ class StubProvider(LLMProvider):
             model=self.model,
             finish_reason="stop",
         )
+
+
+def _resolve_ssl_verify(raw: str) -> bool | str:
+    """Map LLM_SSL_VERIFY env value → httpx ``verify`` argument.
+
+    Falsy / empty → ``True`` (use certifi). ``"false" / "0" / "no" / "off"``
+    → ``False`` (disable verification). Anything else is treated as a
+    filesystem path to a CA bundle; if the path doesn't exist we log a
+    warning and fall back to default verification rather than crash.
+    """
+    import os.path
+
+    value = (raw or "").strip()
+    if not value or value.lower() in ("true", "1", "yes", "on"):
+        return True
+    if value.lower() in ("false", "0", "no", "off"):
+        return False
+    if os.path.exists(value):
+        return value
+    logger.warning(
+        "LLM_SSL_VERIFY=%r does not exist on disk — falling back to "
+        "default (certifi) verification.",
+        value,
+    )
+    return True
 
 
 _singleton: LLMProvider | None = None
