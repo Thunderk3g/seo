@@ -122,6 +122,11 @@ SEO_AI = {
 
 LLM = {
     "provider": os.environ.get("LLM_PROVIDER", "groq"),
+    # TLS verification for outbound LLM calls. Accepts:
+    #   "" / unset / "true"  → default (certifi + truststore on Windows)
+    #   "false"              → disable verification (dev only — corp MITM)
+    #   "/path/to/ca.pem"    → custom CA bundle, e.g. corporate root CA
+    "ssl_verify": os.environ.get("LLM_SSL_VERIFY", "").strip(),
     "groq": {
         "api_key": os.environ.get("GROQ_API_KEY", ""),
         "base_url": os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
