@@ -1,16 +1,9 @@
-// Sidebar.tsx — left rail of the Lattice shell.
+// Sidebar.tsx — left rail of the Bajaj SEO dashboard.
 //
-// Stream E (Day 1) added the project picker section that the Day-0 port
-// intentionally omitted. Lists registered sites from useWebsites, marks
-// the active one (mint accent), switches `activeSiteId` on click, and
-// exposes an "+ Add site" button that opens the same AddSiteModal the
-// topbar uses (each instance owns its own visibility — no lifted state,
-// no shared event bus, see advisor note).
-//
-// Polish pass: the project menu is now a real dropdown (toggled by the
-// `proj-select` button, closed on outside-mousedown), the Issues nav item
-// gets a live badge fed by useIssues(latestSessionId), and a QuickStats
-// inset surfaces the most recent session's KPIs under the project picker.
+// Reshaped around the SEO AI grading flow: Overview + SEO Grade are
+// the primary surfaces; everything else (legacy crawler views,
+// settings, the embedded Crawler Engine v2) is grouped under "Tools"
+// so the main nav stays focused on what the user actually does.
 
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
@@ -29,11 +22,15 @@ interface NavItem {
   path: string;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/' },
-  { id: 'sessions', label: 'Crawl Sessions', icon: 'sessions', path: '/sessions' },
+const PRIMARY_NAV: NavItem[] = [
+  { id: 'overview', label: 'Overview', icon: 'dashboard', path: '/' },
+  { id: 'grade', label: 'SEO Grade', icon: 'analytics', path: '/grade' },
   { id: 'pages', label: 'Pages / URLs', icon: 'pages', path: '/pages' },
   { id: 'issues', label: 'Issues', icon: 'issues', path: '/issues' },
+];
+
+const TOOL_NAV: NavItem[] = [
+  { id: 'sessions', label: 'Crawl Sessions', icon: 'sessions', path: '/sessions' },
   { id: 'analytics', label: 'Analytics', icon: 'analytics', path: '/analytics' },
   {
     id: 'visualizations',
@@ -101,17 +98,23 @@ export default function Sidebar() {
           <BrandMark size={20} color="var(--accent)" />
         </div>
         <div>
-          <div className="brand-name">Lattice</div>
-          <div className="brand-sub">SEO Crawler</div>
+          <div className="brand-name">Bajaj SEO</div>
+          <div className="brand-sub">AI Grading Console</div>
         </div>
       </div>
 
       <nav className="sidebar-nav">
-        {NAV_ITEMS.map((it) => (
+        {PRIMARY_NAV.map((it) => (
           <Link
             key={it.id}
             href={it.path}
-            className={'nav-item ' + (isActive(it.path, location) ? 'active' : '')}
+            className={
+              'nav-item ' +
+              (isActive(it.path, location) ||
+              (it.path === '/grade' && location.startsWith('/grade'))
+                ? 'active'
+                : '')
+            }
           >
             <Icon name={it.icon} size={16} />
             <span>{it.label}</span>
@@ -121,6 +124,22 @@ export default function Sidebar() {
           </Link>
         ))}
       </nav>
+
+      <div className="sidebar-section" style={{ marginTop: 10 }}>
+        <div className="sidebar-section-title">Tools</div>
+        <nav className="sidebar-nav">
+          {TOOL_NAV.map((it) => (
+            <Link
+              key={it.id}
+              href={it.path}
+              className={'nav-item ' + (isActive(it.path, location) ? 'active' : '')}
+            >
+              <Icon name={it.icon} size={16} />
+              <span>{it.label}</span>
+            </Link>
+          ))}
+        </nav>
+      </div>
 
       {/* Embedded Crawler Engine (v2) — separate FastAPI service, proxied at /crawler-api. */}
       <div className="sidebar-section" style={{ marginTop: 10 }}>

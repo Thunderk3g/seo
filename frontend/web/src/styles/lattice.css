@@ -1,5 +1,6 @@
-/* styles.css — Lattice SEO Crawler dashboard
-   Palette: bajajlifeinsurance.com — deep navy text + Bajaj blue accent on white surfaces. */
+/* styles.css — Bajaj SEO dashboard
+   Palette: bajajlifeinsurance.com — deep navy text + Bajaj blue accent on white surfaces.
+   Layout: Material-style cards, generous whitespace, side-nav + top-bar shell. */
 :root {
   --bg: #f4f7fb;
   --bg-2: #ffffff;
@@ -16,15 +17,26 @@
   --accent: #0072ce;
   --accent-hover: #005ba1;
   --accent-glow: rgba(0, 114, 206, 0.15);
+  --accent-soft: rgba(0, 114, 206, 0.06);
   --error: #d32f2f;
+  --error-soft: rgba(211, 47, 47, 0.10);
   --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.12);
   --notice: #0072ce;
+  --success: #1f8e3a;
+  --success-soft: rgba(31, 142, 58, 0.10);
 
   --radius: 10px;
   --radius-lg: 14px;
   --pad: 14px;
   --row-h: 34px;
   --gap: 14px;
+
+  /* Material-style elevation. Subtle by default; the dashboard uses the
+     deepest tier (e3) for the headline score card only. */
+  --elev-1: 0 1px 2px rgba(0, 44, 110, 0.04), 0 1px 3px rgba(0, 44, 110, 0.05);
+  --elev-2: 0 2px 4px rgba(0, 44, 110, 0.06), 0 4px 12px rgba(0, 44, 110, 0.06);
+  --elev-3: 0 4px 12px rgba(0, 44, 110, 0.07), 0 16px 32px rgba(0, 44, 110, 0.07);
 }
 
 [data-density="compact"] {
@@ -70,6 +82,7 @@ button { font: inherit; }
 .app-shell {
   display: grid;
   grid-template-columns: 240px 1fr;
+  grid-template-rows: 100vh;
   height: 100vh;
   overflow: hidden;
 }
@@ -77,20 +90,41 @@ button { font: inherit; }
 .app-main {
   display: flex;
   flex-direction: column;
+  /* Both `min-width: 0` and `min-height: 0` are required for the inner
+     flex column to clip + scroll instead of growing. Without
+     `min-height: 0` the column expands to fit content and the scroll
+     never engages, which is the bug we hit on the new Overview page. */
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   background: var(--bg);
+  overflow: hidden;
 }
 
 .content-scroll {
-  flex: 1;
+  flex: 1 1 0;
+  /* `min-height: 0` is required for a flex child with overflow-y:auto.
+     Without it the child grows to fit content instead of scrolling
+     within the viewport — that's why the old short Dashboard worked
+     but the new taller Overview page did not. */
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px;
+  /* Reserve scrollbar gutter so content never shifts when the bar
+     appears/disappears. */
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: rgba(0,44,110,0.18) transparent;
+  scrollbar-color: rgba(0, 44, 110, 0.32) transparent;
 }
-.content-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.content-scroll::-webkit-scrollbar-thumb { background: rgba(0,44,110,0.14); border-radius: 4px; }
+.content-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.content-scroll::-webkit-scrollbar-track { background: transparent; }
+.content-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 44, 110, 0.28);
+  border: 2px solid var(--bg);
+  border-radius: 8px;
+}
+.content-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
 /* ── Sidebar ──────────────────────────────────────────────────────────────── */
 .sidebar {
@@ -100,10 +134,17 @@ button { font: inherit; }
   flex-direction: column;
   padding: 12px 10px;
   gap: 14px;
+  /* Grid item gets a definite height from align-items:stretch on the
+     parent. min-height:0 lets the nav block actually clip + scroll
+     instead of growing the column. */
+  min-height: 0;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 44, 110, 0.28) transparent;
 }
 .sidebar::-webkit-scrollbar { width: 6px; }
-.sidebar::-webkit-scrollbar-thumb { background: rgba(0,44,110,0.12); border-radius: 3px; }
+.sidebar::-webkit-scrollbar-thumb { background: rgba(0, 44, 110, 0.22); border-radius: 3px; }
+.sidebar::-webkit-scrollbar-thumb:hover { background: rgba(0, 44, 110, 0.40); }
 
 .sidebar-brand {
   display: flex;
@@ -1269,3 +1310,476 @@ button { font: inherit; }
 /* Light-theme override block intentionally left empty after the Bajaj
    white + blue rebrand — the default :root is already the only theme
    we ship, so the settings toggle short-circuits here without drift. */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SEO AI — Overview / Grade pages
+   ───────────────────────────────────────────────────────────────────────
+   GSC-style information density on the Bajaj palette. Classes are all
+   prefixed `seo-` so they cannot collide with the older Lattice cards
+   above. The Overview page builds entirely from these primitives.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.seo-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 4px 4px 32px;
+  /* Let the parent `.content-scroll` be the scroll axis; this element
+     just stacks content. Explicit width prevents the inner table cards
+     from accidentally widening the page past the scrollbar gutter. */
+  width: 100%;
+  min-width: 0;
+}
+
+.seo-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding: 4px 4px 8px;
+}
+.seo-page-header h1 {
+  margin: 0 0 2px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+.seo-page-header .seo-page-sub {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.seo-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--elev-1);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+.seo-card.seo-elev-2 { box-shadow: var(--elev-2); }
+.seo-card.seo-elev-3 { box-shadow: var(--elev-3); }
+.seo-card:hover { border-color: var(--border-2); }
+.seo-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.seo-card-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.seo-card-head .seo-card-sub {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* ── Score headline (top of Overview) ──────────────────────────────────── */
+
+.seo-score-card {
+  background: linear-gradient(135deg, var(--accent-soft) 0%, transparent 70%),
+              var(--surface);
+  display: grid;
+  grid-template-columns: 260px 1fr auto;
+  gap: 28px;
+  align-items: center;
+  padding: 28px 28px;
+}
+.seo-score-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.seo-score-value {
+  font-size: 56px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  color: var(--accent);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.seo-score-band {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: inline-block;
+  margin-top: 4px;
+}
+.seo-score-band.warn { color: var(--warning); background: var(--warning-soft); }
+.seo-score-band.bad { color: var(--error); background: var(--error-soft); }
+.seo-score-band.ok { color: var(--success); background: var(--success-soft); }
+.seo-score-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 8px;
+}
+.seo-score-body { min-width: 0; }
+.seo-score-summary {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  margin: 0;
+}
+.seo-score-action {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.seo-score-action::before {
+  content: '→';
+  margin-right: 8px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.seo-score-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+@media (max-width: 1100px) {
+  .seo-score-card { grid-template-columns: 1fr; }
+  .seo-score-cta { align-items: flex-start; }
+}
+
+/* ── Sub-score grid ────────────────────────────────────────────────────── */
+
+.seo-subscores {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1100px) { .seo-subscores { grid-template-columns: repeat(2, 1fr); } }
+.seo-subscore {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.seo-subscore:hover {
+  border-color: var(--border-2);
+  box-shadow: var(--elev-1);
+}
+.seo-subscore-label {
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+}
+.seo-subscore-value {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.seo-subscore-bar {
+  height: 4px;
+  background: var(--surface-3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.seo-subscore-bar > div {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.seo-subscore.warn .seo-subscore-value { color: var(--warning); }
+.seo-subscore.warn .seo-subscore-bar > div { background: var(--warning); }
+.seo-subscore.bad .seo-subscore-value { color: var(--error); }
+.seo-subscore.bad .seo-subscore-bar > div { background: var(--error); }
+.seo-subscore.good .seo-subscore-value { color: var(--success); }
+.seo-subscore.good .seo-subscore-bar > div { background: var(--success); }
+
+/* ── Performance chart card ────────────────────────────────────────────── */
+
+.seo-perf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.seo-perf-totals {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 0 -22px;
+  padding: 14px 22px;
+}
+.seo-perf-total {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 0 16px;
+  border-left: 1px solid var(--border);
+}
+.seo-perf-total:first-child { border-left: 0; padding-left: 0; }
+.seo-perf-total .label {
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.seo-perf-total .value {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.seo-perf-total .swatch {
+  width: 12px; height: 12px; border-radius: 3px; display: inline-block;
+  margin-right: 6px; vertical-align: middle;
+}
+.seo-perf-chart {
+  position: relative;
+  height: 220px;
+  width: 100%;
+}
+.seo-perf-chart svg { width: 100%; height: 100%; display: block; }
+.seo-perf-chart .axis line,
+.seo-perf-chart .axis path { stroke: var(--border); }
+.seo-perf-chart .axis text { fill: var(--text-3); font-size: 10.5px; }
+.seo-perf-chart .grid line { stroke: var(--border); stroke-dasharray: 3 3; }
+.seo-perf-chart .clicks-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.seo-perf-chart .impressions-line {
+  fill: none; stroke: var(--text-2); stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+.seo-perf-chart .clicks-area { fill: var(--accent-soft); }
+
+/* ── Two-column row ────────────────────────────────────────────────────── */
+
+.seo-row-2 { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; }
+.seo-row-2-balanced { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 1100px) {
+  .seo-row-2, .seo-row-2-balanced { grid-template-columns: 1fr; }
+}
+
+/* ── Finding rows ──────────────────────────────────────────────────────── */
+
+.seo-finding-list { display: flex; flex-direction: column; }
+.seo-finding {
+  display: grid;
+  grid-template-columns: 4px 1fr auto;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--border);
+  align-items: center;
+}
+.seo-finding:last-child { border-bottom: 0; }
+.seo-finding-bar {
+  width: 4px;
+  border-radius: 2px;
+  align-self: stretch;
+  background: var(--accent);
+}
+.seo-finding-bar.critical { background: var(--error); }
+.seo-finding-bar.warning  { background: var(--warning); }
+.seo-finding-bar.notice   { background: var(--accent); }
+.seo-finding-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.35;
+}
+.seo-finding-meta {
+  display: flex; align-items: center; gap: 6px; margin-top: 2px;
+}
+.seo-finding-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-3);
+}
+.seo-finding-chip.critical { background: var(--error-soft); color: var(--error); }
+.seo-finding-chip.warning  { background: var(--warning-soft); color: #a86200; }
+.seo-finding-chip.notice   { background: var(--accent-soft); color: var(--accent); }
+.seo-finding-agent { font-size: 11px; color: var(--text-3); }
+.seo-finding-priority {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Lightweight tables (top queries / pages) ──────────────────────────── */
+
+.seo-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.seo-table th, .seo-table td {
+  text-align: left;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.seo-table th {
+  font-weight: 500;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border-2);
+}
+.seo-table td.num, .seo-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.seo-table tr:last-child td { border-bottom: 0; }
+.seo-table tr:hover td { background: var(--surface-2); }
+.seo-table .seo-cell-query {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+  max-width: 320px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── Empty / error / loading states ─────────────────────────────────────── */
+
+.seo-empty {
+  padding: 28px 8px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.seo-empty b { color: var(--text-2); }
+.seo-error {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--error-soft);
+  color: var(--error);
+  font-size: 12.5px;
+}
+
+/* ── Grade list + detail page ──────────────────────────────────────────── */
+
+.seo-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.seo-run-status.running, .seo-run-status.critic, .seo-run-status.pending {
+  background: var(--accent-soft); color: var(--accent);
+}
+.seo-run-status.complete { background: var(--success-soft); color: var(--success); }
+.seo-run-status.degraded { background: var(--warning-soft); color: #a86200; }
+.seo-run-status.failed { background: var(--error-soft); color: var(--error); }
+.seo-run-status::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.seo-detail-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 18px;
+}
+@media (max-width: 1100px) {
+  .seo-detail-grid { grid-template-columns: 1fr; }
+}
+
+.seo-tab-strip {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+  margin-bottom: -1px;
+}
+.seo-tab {
+  background: transparent;
+  border: 0;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.12s, border-color 0.12s;
+}
+.seo-tab:hover { color: var(--text); }
+.seo-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.seo-conversation { display: flex; flex-direction: column; gap: 6px; }
+.seo-conv-msg {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+.seo-conv-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.seo-conv-head b { color: var(--text); font-weight: 600; }
+.seo-conv-body {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* ── Primary button override for the GSC-style top of the score card ───── */
+
+.seo-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px var(--accent-glow);
+  transition: background 0.12s, box-shadow 0.12s;
+}
+.seo-btn:hover { background: var(--accent-hover); }
+.seo-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.seo-btn.seo-btn-ghost {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+  border: 1px solid var(--border-2);
+}
+.seo-btn.seo-btn-ghost:hover { background: var(--accent-soft); }

@@ -2,7 +2,9 @@ import { Route, Switch } from 'wouter';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import StatusBar from './components/StatusBar';
-import DashboardPage from './pages/DashboardPage';
+import OverviewPage from './pages/OverviewPage';
+import GradePage from './pages/GradePage';
+import GradeDetailPage from './pages/GradeDetailPage';
 import SessionsPage from './pages/SessionsPage';
 import PagesUrlsPage from './pages/PagesUrlsPage';
 import IssuesPage from './pages/IssuesPage';
@@ -26,7 +28,12 @@ export default function App() {
         <Topbar />
         <main className="content-scroll">
           <Switch>
-            <Route path="/" component={DashboardPage} />
+            {/* ── Bajaj SEO AI (primary) ─────────────────────── */}
+            <Route path="/" component={OverviewPage} />
+            <Route path="/grade" component={GradePage} />
+            <Route path="/grade/:id" component={GradeDetailPage} />
+
+            {/* ── Tools (existing crawler-engine driven pages) ─ */}
             <Route path="/sessions" component={SessionsPage} />
             <Route path="/pages" component={PagesUrlsPage} />
             <Route path="/issues" component={IssuesPage} />
