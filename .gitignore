@@ -21,25 +21,20 @@ backend/db.sqlite3
 *.log
 local_settings.py
 
-# ── Crawler runtime output ────────────────────────────
-# File-backed crawler writes CSVs / crawl_state.json to backend/data/
-# and XLSX reports to backend/reports/. Mounted as docker volumes;
-# they're per-run artifacts, not source.
+# ── Backend data directory (never push to GitHub) ─────
+# Everything the backend reads/writes at runtime lives here:
+#   backend/data/                  → crawler CSVs + crawl_state.json
+#   backend/data/gsc/              → Search Console pull + OAuth files
+#   backend/data/aem/              → AEM page-model JSON exports
+#   backend/data/_semrush_cache/   → SEMrush response cache
+# Mounted as docker volumes in prod; pure per-run artefacts, not source.
 backend/data/
 backend/reports/
 
-# ── Data dumps (never push to GitHub) ─────────────────
-# AEM sitemap exports (~100 MB of page-model JSON), GSC pulls,
-# experimental notebooks, OAuth client secrets, OAuth tokens, and
-# any other raw data scratch directories live here. None of this
-# belongs in version control.
-sitemap/
-test/
-gsc_data/
-
-# Catch-all data file patterns. Generic JSON config (package.json,
-# tsconfig.json, etc.) stays tracked — only explicit data paths
-# above and these extensions are excluded.
+# ── Catch-all safety nets ─────────────────────────────
+# Generic JSON config (package.json, tsconfig.json, etc.) stays
+# tracked — only data-file extensions and credential filename
+# patterns are blanket-excluded.
 *.csv
 *.xlsx
 *.parquet

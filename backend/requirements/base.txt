@@ -20,3 +20,11 @@ openpyxl>=3.1
 # Optional middleware (already referenced in design; kept for parity)
 whitenoise>=6.6.0
 django-cors-headers>=4.3.0
+
+# ── SEO AI Agent System ─────────────────────────────────
+# Groq is OpenAI-API-compatible, so we use the openai SDK with a
+# different base_url instead of pulling a second LLM client. Pydantic
+# powers the agent schemas; jsonschema validates LLM tool outputs.
+openai>=1.40
+pydantic>=2.5
+jsonschema>=4.20
