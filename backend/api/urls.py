@@ -37,6 +37,9 @@ urlpatterns = [
     # Active crawler — the new file-backed engine.
     path("crawler/", include("apps.crawler.urls", namespace="crawler")),
 
+    # SEO AI Agent System — Phase 0 grading endpoints.
+    path("seo/", include("apps.seo_ai.urls", namespace="seo_ai")),
+
     # Sidebar / topbar widget stubs (see module docstring).
     path("websites/", empty_websites_stub, name="websites-stub"),
     path("system/metrics/", empty_system_metrics_stub, name="system-metrics-stub"),
