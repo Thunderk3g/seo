@@ -8,7 +8,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
 import Icon from './icons/Icon';
-import BrandMark from './icons/BrandMark';
 import QuickStats from './QuickStats';
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useWebsites } from '../api/hooks/useWebsites';
@@ -94,13 +93,12 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="brand-mark">
-          <BrandMark size={20} color="var(--accent)" />
-        </div>
-        <div>
-          <div className="brand-name">Bajaj SEO</div>
-          <div className="brand-sub">AI Grading Console</div>
-        </div>
+        <img
+          src="/bajaj-logo.webp"
+          alt="Bajaj Life Insurance"
+          className="brand-logo"
+        />
+        <div className="brand-sub-line">AI Grading Console</div>
       </div>
 
       <nav className="sidebar-nav">

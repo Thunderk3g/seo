@@ -148,27 +148,27 @@ button { font: inherit; }
 
 .sidebar-brand {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 6px 8px 4px;
+  gap: 6px;
+  padding: 8px 8px 10px;
+  border-bottom: 1px solid var(--border);
 }
-.brand-mark {
-  width: 32px; height: 32px;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, var(--accent-glow), rgba(0,114,206,0.04));
-  border-radius: 8px;
-  border: 0.5px solid var(--border-2);
+.brand-logo {
+  width: 168px;
+  max-width: 100%;
+  height: auto;
+  display: block;
+  /* The logo is already on a transparent background with its own square
+     blue mark and tagline — no wrapper card, no border, no shadow. */
 }
-.brand-name {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text);
-}
-.brand-sub {
+.brand-sub-line {
   font-size: 10.5px;
-  color: var(--text-3);
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-align: center;
 }
 
 .sidebar-nav { display: flex; flex-direction: column; gap: 1px; }
