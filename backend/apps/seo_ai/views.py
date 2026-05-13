@@ -22,6 +22,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from .models import SEORun
+from .overview import build_overview
 from .serializers import (
     SEORunFindingSerializer,
     SEORunMessageSerializer,
@@ -97,3 +98,14 @@ def start_grade(request: Request):
         {"id": str(run.id), "status": run.status},
         status=status.HTTP_202_ACCEPTED,
     )
+
+
+@api_view(["GET"])
+def overview(request: Request):
+    """Single endpoint that feeds the Overview page.
+
+    Bundles the latest completed run, the GSC rollup, and the crawler
+    rollup so the dashboard paints from one query rather than three.
+    """
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    return Response(build_overview(domain))

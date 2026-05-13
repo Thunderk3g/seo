@@ -1,22 +1,13 @@
-// Topbar.tsx — top action bar of the Lattice shell.
+// Topbar.tsx — Bajaj SEO property header.
 //
-// Stream E (Day 1): the URL field reflects the active site (read-only
-// once one is selected), an "Add site" button reveals an inline registration
-// form, and "Start crawl" is wired to POST /websites/<id>/crawl/. On success
-// we navigate to /sessions where the new pending row will show up.
+// Reshaped from the legacy crawler topbar into a property-selector +
+// CTA strip. Left side carries the active domain pill (Bajaj only for
+// now — the system has one property) and the legacy URL-aware crawler
+// shortcuts. Right side surfaces "Run new grade" and AI Insights when
+// a session is available.
 //
-// Pause/Stop remain disabled — Stop will be wired by Stream F at the row
-// level via the cancel endpoint.
-//
-// Day 5: the "AI Insights" button opens AIInsightsDrawer for the most
-// recent session of the active site. The drawer itself handles the
-// available=false placeholder, so we don't probe the backend up front — we
-// just hide the button when there's no active site or no recent session.
-//
-// Polish pass: when the latest session is `running`, render the topbar
-// progress sub-row from `.design-ref/project/shell.jsx:137`. The pill,
-// counts, percent, elapsed/ETA timers, and bar all derive from real
-// session + activity data.
+// The progress sub-row is preserved for crawler runs so the existing
+// /crawler pages still show their inline status.
 
 import { useEffect, useState } from 'react';
 import { useLocation } from 'wouter';
@@ -27,7 +18,10 @@ import { useWebsites } from '../api/hooks/useWebsites';
 import { useSessions } from '../api/hooks/useSessions';
 import { useStartCrawl } from '../api/hooks/useStartCrawl';
 import { useActivity } from '../api/hooks/useActivity';
+import { useStartGrade } from '../api/hooks/useGrade';
 import type { CrawlSessionListItem } from '../api/types';
+
+const PRIMARY_DOMAIN = 'bajajlifeinsurance.com';
 
 function pad(n: number): string {
   return String(n).padStart(2, '0');
@@ -67,6 +61,7 @@ export default function Topbar() {
   const websites = useWebsites();
   const sessions = useSessions(activeSiteId);
   const startCrawl = useStartCrawl();
+  const startGrade = useStartGrade();
 
   // Most recent session of the active site — drives the drawer's sessionId
   // and the progress sub-row. Sessions are returned ordered by -started_at,
@@ -97,13 +92,24 @@ export default function Topbar() {
   }, [runningSession]);
 
   const activeSite = websites.data?.results?.find((w) => w.id === activeSiteId) ?? null;
-  const displayDomain = activeSite?.domain ?? '';
+  // Legacy crawler URL field stays for the crawler pages; the new SEO
+  // surface always operates against the single configured Bajaj domain.
+  const displayDomain = activeSite?.domain ?? PRIMARY_DOMAIN;
 
   function handleStartCrawl() {
     if (!activeSiteId) return;
     startCrawl.mutate(activeSiteId, {
       onSuccess: () => setLocation('/sessions'),
     });
+  }
+
+  function handleStartGrade() {
+    startGrade.mutate(
+      { domain: PRIMARY_DOMAIN, sync: false },
+      {
+        onSuccess: (resp) => setLocation(`/grade/${resp.id}`),
+      },
+    );
   }
 
   const startDisabled =
@@ -145,7 +151,7 @@ export default function Topbar() {
               aria-label="Active site"
             />
             <span className="url-field-hint">
-              {activeSite ? 'active' : 'none'}
+              {activeSite ? 'active' : 'bajaj'}
             </span>
           </div>
           <button
@@ -178,7 +184,15 @@ export default function Topbar() {
         </div>
 
         <div className="topbar-actions">
-          {/* AI Insights (Day 5) — hidden until there's a session to analyse. */}
+          <button
+            className="btn primary"
+            onClick={handleStartGrade}
+            disabled={startGrade.isPending}
+            title="Run a new SEO grading run"
+          >
+            <Icon name="zap" size={13} />
+            <span>{startGrade.isPending ? 'Starting…' : 'Run grade'}</span>
+          </button>
           {showInsightsButton && (
             <button
               className="btn ghost"
