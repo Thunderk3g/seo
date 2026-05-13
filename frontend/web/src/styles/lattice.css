@@ -1,23 +1,24 @@
-/* styles.css — Lattice SEO Crawler dashboard */
+/* styles.css — Lattice SEO Crawler dashboard
+   Palette: bajajlifeinsurance.com — deep navy text + Bajaj blue accent on white surfaces. */
 :root {
-  --bg: #0a0d12;
-  --bg-2: #0f141b;
-  --bg-3: #131922;
-  --surface: #141a23;
-  --surface-2: #1a212c;
-  --surface-3: #232b38;
-  --border: rgba(255,255,255,0.06);
-  --border-2: rgba(255,255,255,0.10);
-  --text: #e7eaef;
-  --text-2: rgba(231,234,239,0.72);
-  --text-3: rgba(231,234,239,0.46);
-  --text-4: rgba(231,234,239,0.30);
-  --accent: #6ee7b7;
-  --accent-hover: #34d399;
-  --accent-glow: rgba(110, 231, 183, 0.18);
-  --error: #f87171;
-  --warning: #fbbf24;
-  --notice: #60a5fa;
+  --bg: #f4f7fb;
+  --bg-2: #ffffff;
+  --bg-3: #eaf1fb;
+  --surface: #ffffff;
+  --surface-2: #f4f7fb;
+  --surface-3: #e6eef9;
+  --border: rgba(0, 44, 110, 0.08);
+  --border-2: rgba(0, 44, 110, 0.16);
+  --text: #002c6e;
+  --text-2: rgba(0, 44, 110, 0.78);
+  --text-3: rgba(0, 44, 110, 0.55);
+  --text-4: rgba(0, 44, 110, 0.35);
+  --accent: #0072ce;
+  --accent-hover: #005ba1;
+  --accent-glow: rgba(0, 114, 206, 0.15);
+  --error: #d32f2f;
+  --warning: #f59e0b;
+  --notice: #0072ce;
 
   --radius: 10px;
   --radius-lg: 14px;
@@ -37,20 +38,10 @@
   --gap: 18px;
 }
 
-[data-theme="light"] {
-  --bg: #f7f8fa;
-  --bg-2: #ffffff;
-  --bg-3: #f0f2f5;
-  --surface: #ffffff;
-  --surface-2: #f7f8fa;
-  --surface-3: #eef0f3;
-  --border: rgba(0,0,0,0.06);
-  --border-2: rgba(0,0,0,0.10);
-  --text: #0f141b;
-  --text-2: rgba(15,20,27,0.72);
-  --text-3: rgba(15,20,27,0.46);
-  --text-4: rgba(15,20,27,0.30);
-}
+/* The default :root palette is already Bajaj white + blue; the
+   `[data-theme="light"]` toggle is intentionally a no-op so the
+   settings page's theme selector can stay wired without changing
+   the rebrand look. */
 
 * { box-sizing: border-box; }
 
@@ -96,10 +87,10 @@ button { font: inherit; }
   overflow-x: hidden;
   padding: 16px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
+  scrollbar-color: rgba(0,44,110,0.18) transparent;
 }
 .content-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.content-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+.content-scroll::-webkit-scrollbar-thumb { background: rgba(0,44,110,0.14); border-radius: 4px; }
 
 /* ── Sidebar ──────────────────────────────────────────────────────────────── */
 .sidebar {
@@ -112,7 +103,7 @@ button { font: inherit; }
   overflow-y: auto;
 }
 .sidebar::-webkit-scrollbar { width: 6px; }
-.sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 3px; }
+.sidebar::-webkit-scrollbar-thumb { background: rgba(0,44,110,0.12); border-radius: 3px; }
 
 .sidebar-brand {
   display: flex;
@@ -123,7 +114,7 @@ button { font: inherit; }
 .brand-mark {
   width: 32px; height: 32px;
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, var(--accent-glow), transparent);
+  background: linear-gradient(135deg, var(--accent-glow), rgba(0,114,206,0.04));
   border-radius: 8px;
   border: 0.5px solid var(--border-2);
 }
@@ -156,11 +147,11 @@ button { font: inherit; }
   position: relative;
   transition: background 0.12s, color 0.12s;
 }
-.nav-item:hover { background: var(--surface); color: var(--text); }
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active {
-  background: linear-gradient(90deg, var(--accent-glow), transparent 80%);
-  color: var(--text);
-  font-weight: 500;
+  background: linear-gradient(90deg, var(--accent-glow), rgba(0,114,206,0.04) 90%);
+  color: var(--accent);
+  font-weight: 600;
 }
 .nav-item.active::before {
   content: '';
@@ -174,7 +165,7 @@ button { font: inherit; }
 .nav-badge {
   margin-left: auto;
   background: var(--error);
-  color: #1a0202;
+  color: #ffffff;
   font-size: 10px;
   font-weight: 600;
   padding: 1px 6px;
@@ -382,9 +373,9 @@ button { font: inherit; }
 .btn[disabled], .btn-disabled { opacity: 0.45; cursor: default; pointer-events: none; }
 .btn.primary {
   background: var(--accent);
-  color: #062018;
+  color: #ffffff;
   border-color: var(--accent);
-  box-shadow: 0 0 18px var(--accent-glow);
+  box-shadow: 0 4px 14px var(--accent-glow);
 }
 .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn.ghost {
@@ -448,7 +439,7 @@ button { font: inherit; }
 .progress-track {
   grid-column: 1 / -1;
   height: 3px;
-  background: rgba(255,255,255,0.06);
+  background: rgba(0,44,110,0.08);
   border-radius: 999px;
   overflow: hidden;
   margin-top: 2px;
@@ -875,7 +866,7 @@ button { font: inherit; }
 .tree-mini-count { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: 11px; }
 .tree-mini-bar {
   height: 4px;
-  background: rgba(255,255,255,0.04);
+  background: rgba(0,44,110,0.06);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -999,7 +990,7 @@ button { font: inherit; }
 .pager-num:hover { background: var(--surface-2); }
 .pager-num.active {
   background: var(--accent);
-  color: #062018;
+  color: #ffffff;
   font-weight: 600;
 }
 .pager-dot { color: var(--text-4); padding: 0 4px; }
@@ -1184,8 +1175,8 @@ button { font: inherit; }
 .tree-row:hover { background: var(--surface-2); }
 .tree-row-name { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: var(--text); }
 .tree-row-count { font-variant-numeric: tabular-nums; color: var(--text-3); font-size: 11px; }
-.tree-row-bar { height: 3px; background: rgba(255,255,255,0.04); border-radius: 999px; overflow: hidden; }
-.tree-row-bar > div { height: 100%; background: var(--accent); opacity: 0.6; }
+.tree-row-bar { height: 3px; background: rgba(0,44,110,0.06); border-radius: 999px; overflow: hidden; }
+.tree-row-bar > div { height: 100%; background: var(--accent); opacity: 0.7; }
 
 .treemap {
   position: relative;
@@ -1200,7 +1191,7 @@ button { font: inherit; }
   padding: 12px;
   display: flex; flex-direction: column; justify-content: space-between;
   border: 0.5px solid var(--bg-2);
-  color: #062018;
+  color: #ffffff;
   overflow: hidden;
   transition: opacity 0.15s;
 }
@@ -1275,20 +1266,6 @@ button { font: inherit; }
 .status-bar b { color: var(--text-2); font-weight: 500; }
 .status-bar .status-dot { color: var(--accent); }
 
-/* Light mode tweaks */
-[data-theme="light"] .stat-card .stat-value,
-[data-theme="light"] .health-score,
-[data-theme="light"] .sysmet-value { color: var(--text); }
-[data-theme="light"] .btn.primary { color: #062018; }
-[data-theme="light"] .pager-num.active { color: #062018; }
-[data-theme="light"] .tm-cell { color: #062018; }
-[data-theme="light"] .url-cell, [data-theme="light"] .bt-url-link,
-[data-theme="light"] .activity-url, [data-theme="light"] .sess-id,
-[data-theme="light"] .legend-label, [data-theme="light"] .tree-row-name,
-[data-theme="light"] .issue-affected-url, [data-theme="light"] .tree-mini-name {
-  color: #047857;
-}
-[data-theme="light"] .nav-item.active::before { box-shadow: 0 0 8px var(--accent-glow); }
-[data-theme="light"] .progress-fill::after {
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
-}
+/* Light-theme override block intentionally left empty after the Bajaj
+   white + blue rebrand — the default :root is already the only theme
+   we ship, so the settings toggle short-circuits here without drift. */

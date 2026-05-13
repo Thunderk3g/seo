@@ -59,11 +59,14 @@ import SettingRow from '../components/SettingRow';
 
 const LATTICE_PREFS_KEY = 'lattice.prefs';
 
+// Bajaj Life Insurance palette: blue + white. The "emerald" key is kept
+// for storage compatibility but now maps to Bajaj's primary blue so
+// previously-saved prefs land on the right swatch after the rebrand.
 const ACCENT_HEX: Record<LatticePrefs['accent'], string> = {
-  amber: '#fbbf24',
+  amber: '#f59e0b',
   violet: '#a78bfa',
-  cyan: '#22d3ee',
-  emerald: '#6ee7b7',
+  cyan: '#0099e0',
+  emerald: '#0072ce',
 };
 
 const DEFAULT_PREFS: LatticePrefs = {
@@ -99,10 +102,10 @@ function applyPrefs(prefs: LatticePrefs): void {
   root.style.setProperty('--accent-hover', hex);
   // accent-glow = same hex at ~18% alpha; pre-baked rgba per accent.
   const glow: Record<LatticePrefs['accent'], string> = {
-    amber: 'rgba(251, 191, 36, 0.18)',
+    amber: 'rgba(245, 158, 11, 0.18)',
     violet: 'rgba(167, 139, 250, 0.18)',
-    cyan: 'rgba(34, 211, 238, 0.18)',
-    emerald: 'rgba(110, 231, 183, 0.18)',
+    cyan: 'rgba(0, 153, 224, 0.18)',
+    emerald: 'rgba(0, 114, 206, 0.18)',
   };
   root.style.setProperty('--accent-glow', glow[prefs.accent]);
   // Theme + density → dataset attributes on <html>. The reference

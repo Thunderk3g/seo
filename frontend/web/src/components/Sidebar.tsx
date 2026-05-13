@@ -16,7 +16,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
 import Icon from './icons/Icon';
 import BrandMark from './icons/BrandMark';
-import AddSiteModal from './AddSiteModal';
 import QuickStats from './QuickStats';
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useWebsites } from '../api/hooks/useWebsites';
@@ -63,7 +62,6 @@ function isActive(path: string, current: string): boolean {
 
 export default function Sidebar() {
   const [location] = useLocation();
-  const [showAddSite, setShowAddSite] = useState(false);
   const [projOpen, setProjOpen] = useState(false);
   const projPickerRef = useRef<HTMLDivElement | null>(null);
   const { activeSiteId, setActiveSite } = useActiveSite();
@@ -143,119 +141,54 @@ export default function Sidebar() {
         </nav>
       </div>
 
-      {/* Project picker — TS port of .design-ref/project/shell.jsx Sidebar. */}
-      <div className="sidebar-section" ref={projPickerRef}>
-        <div className="sidebar-section-title">Project</div>
-
-        {websites.isLoading && (
-          <div
-            style={{
-              padding: '0 8px',
-              fontSize: 11.5,
-              color: 'var(--text-3)',
-            }}
+      {!websites.isLoading && sites.length > 0 && (
+        <div className="sidebar-section" ref={projPickerRef}>
+          <div className="sidebar-section-title">Project</div>
+          <button
+            className="proj-select"
+            type="button"
+            onClick={() => setProjOpen((v) => !v)}
+            aria-expanded={projOpen}
+            aria-haspopup="menu"
           >
-            Loading sites…
-          </div>
-        )}
-
-        {!websites.isLoading && sites.length === 0 && (
-          <div className="proj-menu">
-            <div
-              style={{
-                padding: '6px 8px',
-                fontSize: 11.5,
-                color: 'var(--text-3)',
-              }}
-            >
-              No sites yet
-            </div>
-            <button
-              className="proj-menu-item"
-              onClick={() => setShowAddSite(true)}
-            >
-              <Icon name="plus" size={12} />
-              <span>Add site</span>
-            </button>
-          </div>
-        )}
-
-        {!websites.isLoading && sites.length > 0 && (
-          <>
-            <button
-              className="proj-select"
-              type="button"
-              onClick={() => setProjOpen((v) => !v)}
-              aria-expanded={projOpen}
-              aria-haspopup="menu"
-            >
-              <div className="proj-info">
-                <div className="proj-name">
-                  {activeSite ? activeSite.name || activeSite.domain : 'No site selected'}
-                </div>
-                <div className="proj-sub">
-                  {sites.length} site{sites.length === 1 ? '' : 's'} registered
-                </div>
+            <div className="proj-info">
+              <div className="proj-name">
+                {activeSite ? activeSite.name || activeSite.domain : 'No site selected'}
               </div>
-              <Icon name="chevDown" size={14} />
-            </button>
-            {projOpen && (
-              <div className="proj-menu" role="menu">
-                {sites.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    role="menuitem"
-                    className={
-                      'proj-menu-item ' + (s.id === activeSiteId ? 'active' : '')
-                    }
-                    onClick={() => {
-                      setActiveSite(s.id);
-                      setProjOpen(false);
-                    }}
-                  >
-                    <span>{s.name || s.domain}</span>
-                    <span className="proj-menu-count">{s.domain}</span>
-                  </button>
-                ))}
-                <div className="proj-menu-sep" />
+              <div className="proj-sub">
+                {sites.length} site{sites.length === 1 ? '' : 's'} registered
+              </div>
+            </div>
+            <Icon name="chevDown" size={14} />
+          </button>
+          {projOpen && (
+            <div className="proj-menu" role="menu">
+              {sites.map((s) => (
                 <button
+                  key={s.id}
                   type="button"
                   role="menuitem"
-                  className="proj-menu-item"
+                  className={
+                    'proj-menu-item ' + (s.id === activeSiteId ? 'active' : '')
+                  }
                   onClick={() => {
+                    setActiveSite(s.id);
                     setProjOpen(false);
-                    setShowAddSite(true);
                   }}
                 >
-                  <Icon name="plus" size={12} />
-                  <span>Add site</span>
+                  <span>{s.name || s.domain}</span>
+                  <span className="proj-menu-count">{s.domain}</span>
                 </button>
-              </div>
-            )}
-          </>
-        )}
-
-        {showAddSite && (
-          <AddSiteModal onClose={() => setShowAddSite(false)} />
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Quick stats — only renders when there's a session to summarise. */}
       <QuickStats sessionId={latestSessionId} />
 
       <div style={{ flex: 1 }} />
-
-      <div className="sidebar-user">
-        <div className="user-avatar">AV</div>
-        <div className="user-info">
-          <div className="user-name">Aman Verma</div>
-          <div className="user-role">Administrator</div>
-        </div>
-        <button className="icon-btn" aria-label="Account menu">
-          <Icon name="more" size={14} />
-        </button>
-      </div>
     </aside>
   );
 }

@@ -21,7 +21,6 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'wouter';
 import Icon from './icons/Icon';
-import AddSiteModal from './AddSiteModal';
 import AIInsightsDrawer from './AIInsightsDrawer';
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useWebsites } from '../api/hooks/useWebsites';
@@ -62,7 +61,6 @@ function computeEta(session: CrawlSessionListItem): string {
 }
 
 export default function Topbar() {
-  const [showAddSite, setShowAddSite] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [, setLocation] = useLocation();
   const { activeSiteId } = useActiveSite();
@@ -100,8 +98,6 @@ export default function Topbar() {
 
   const activeSite = websites.data?.results?.find((w) => w.id === activeSiteId) ?? null;
   const displayDomain = activeSite?.domain ?? '';
-  const hasNoSites =
-    !websites.isLoading && (websites.data?.results?.length ?? 0) === 0;
 
   function handleStartCrawl() {
     if (!activeSiteId) return;
@@ -145,26 +141,13 @@ export default function Topbar() {
               type="text"
               value={displayDomain}
               readOnly
-              placeholder={
-                hasNoSites
-                  ? 'Register your first site to start crawling'
-                  : 'Select a site from the sidebar'
-              }
+              placeholder="Select a site from the sidebar"
               aria-label="Active site"
             />
             <span className="url-field-hint">
               {activeSite ? 'active' : 'none'}
             </span>
           </div>
-          <button
-            className="btn ghost"
-            onClick={() => setShowAddSite((v) => !v)}
-            aria-expanded={showAddSite}
-            aria-controls="topbar-add-site-form"
-          >
-            <Icon name="plus" size={11} />
-            <span>Add site</span>
-          </button>
           <button
             className={'btn primary ' + (startDisabled ? 'btn-disabled' : '')}
             disabled={startDisabled}
@@ -206,24 +189,6 @@ export default function Topbar() {
               <span>Insights</span>
             </button>
           )}
-          <div className="topbar-divider" />
-          <button className="icon-btn" aria-label="Search" disabled>
-            <Icon name="search" size={15} />
-          </button>
-          <button className="icon-btn" aria-label="Refresh" disabled>
-            <Icon name="refresh" size={15} />
-          </button>
-          <button
-            className="icon-btn icon-btn-badge"
-            aria-label="Notifications"
-            disabled
-          >
-            <Icon name="bell" size={15} />
-          </button>
-          <div className="topbar-divider" />
-          <button className="icon-btn" aria-label="Settings" disabled>
-            <Icon name="settings" size={15} />
-          </button>
         </div>
       </div>
 
@@ -257,15 +222,6 @@ export default function Topbar() {
           <div className="progress-track">
             <div className="progress-fill" style={{ width: `${pct}%` }} />
           </div>
-        </div>
-      )}
-
-      {showAddSite && (
-        <div
-          id="topbar-add-site-form"
-          style={{ padding: '8px 16px 12px', maxWidth: 480 }}
-        >
-          <AddSiteModal onClose={() => setShowAddSite(false)} />
         </div>
       )}
 
