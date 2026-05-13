@@ -46,6 +46,16 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'settings', label: 'Settings', icon: 'settings', path: '/settings' },
 ];
 
+// Embedded Crawler Engine (v2) — backed by the standalone FastAPI service in
+// crawler-engine/ (proxied at /crawler-api). See src/crawler/*.
+const CRAWLER_NAV: NavItem[] = [
+  { id: 'crawler-dash', label: 'Crawler Dashboard', icon: 'globe', path: '/crawler' },
+  { id: 'crawler-tree', label: 'Site Tree', icon: 'visualizations', path: '/crawler/tree' },
+  { id: 'crawler-logs', label: 'Live Logs', icon: 'zap', path: '/crawler/logs' },
+  { id: 'crawler-reports', label: 'Reports', icon: 'pages', path: '/crawler/reports' },
+  { id: 'crawler-settings', label: 'Crawler Settings', icon: 'settings', path: '/crawler/settings' },
+];
+
 function isActive(path: string, current: string): boolean {
   if (path === '/') return current === '/';
   return current === path || current.startsWith(path + '/');
@@ -113,6 +123,25 @@ export default function Sidebar() {
           </Link>
         ))}
       </nav>
+
+      {/* Embedded Crawler Engine (v2) — separate FastAPI service, proxied at /crawler-api. */}
+      <div className="sidebar-section" style={{ marginTop: 10 }}>
+        <div className="sidebar-section-title">Crawler Engine</div>
+        <nav className="sidebar-nav">
+          {CRAWLER_NAV.map((it) => {
+            const active =
+              it.path === '/crawler'
+                ? location === '/crawler'
+                : location === it.path || location.startsWith(it.path + '/');
+            return (
+              <Link key={it.id} href={it.path} className={'nav-item ' + (active ? 'active' : '')}>
+                <Icon name={it.icon} size={16} />
+                <span>{it.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
 
       {/* Project picker — TS port of .design-ref/project/shell.jsx Sidebar. */}
       <div className="sidebar-section" ref={projPickerRef}>

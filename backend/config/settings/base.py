@@ -18,10 +18,13 @@ INSTALLED_APPS = [
     "rest_framework",
     "apps.common",
     "apps.crawler",
-    "apps.crawl_sessions",
-    "apps.ai_agents",
-    "apps.gsc_integration",
-    "apps.dashboard",
+    # apps.crawl_sessions removed — replaced by the file-backed crawler-engine
+    # port now living in apps.crawler. The following apps still reference
+    # the deleted ORM models (CrawlSession / Page / Link / etc.) and will
+    # need rework before they can be re-enabled:
+    #   - apps.ai_agents
+    #   - apps.gsc_integration
+    #   - apps.dashboard
 ]
 
 MIDDLEWARE = [

@@ -1,1 +1,0 @@
-"""Executive insight generator / summarization."""

@@ -1,23 +1,13 @@
-"""Celery Beat schedule for daily crawl automation.
+"""Celery Beat schedule — empty post-migration.
 
-Defines the periodic task schedule that triggers daily
-scheduled crawls for all active websites.
+The previous schedule pointed at ``crawler.run_daily_crawl_all`` and
+``crawler.run_daily_change_detection`` tasks defined in the deleted
+async-Django crawler. The new file-backed crawler ships no Celery tasks
+of its own; trigger crawls via the management command (``manage.py crawl``)
+or the ``POST /api/v1/crawler/start`` endpoint.
+
+Add new periodic tasks here when needed.
 """
+from __future__ import annotations
 
-from celery.schedules import crontab
-
-
-# Celery Beat schedule configuration.
-# Import this into your Celery app config or settings.
-CELERY_BEAT_SCHEDULE = {
-    "daily-scheduled-crawl": {
-        "task": "crawler.run_daily_crawl_all",
-        "schedule": crontab(hour=2, minute=0),  # Run at 2:00 AM UTC daily
-        "options": {"queue": "crawl"},
-    },
-    "daily-change-detection": {
-        "task": "crawler.run_daily_change_detection",
-        "schedule": crontab(hour=6, minute=0),  # Run at 6:00 AM UTC daily
-        "options": {"queue": "analysis"},
-    },
-}
+CELERY_BEAT_SCHEDULE: dict = {}

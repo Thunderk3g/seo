@@ -10,6 +10,13 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import VisualizationsPage from './pages/VisualizationsPage';
 import ExportsPage from './pages/ExportsPage';
 import SettingsPage from './pages/SettingsPage';
+// Embedded Crawler Engine (v2) pages — see src/crawler/* and crawler-engine/.
+import CrawlerDashboard from './crawler/pages/CrawlerDashboard';
+import SiteTreePage from './crawler/pages/SiteTreePage';
+import CrawlerLogs from './crawler/pages/CrawlerLogs';
+import CrawlerReports from './crawler/pages/CrawlerReports';
+import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
+import CrawlerSettings from './crawler/pages/CrawlerSettings';
 
 export default function App() {
   return (
@@ -27,6 +34,15 @@ export default function App() {
             <Route path="/visualizations" component={VisualizationsPage} />
             <Route path="/exports" component={ExportsPage} />
             <Route path="/settings" component={SettingsPage} />
+
+            {/* ── Crawler Engine (v2) ─────────────────────────── */}
+            <Route path="/crawler" component={CrawlerDashboard} />
+            <Route path="/crawler/tree" component={SiteTreePage} />
+            <Route path="/crawler/logs" component={CrawlerLogs} />
+            <Route path="/crawler/reports" component={CrawlerReports} />
+            <Route path="/crawler/reports/:key" component={CrawlerReportDetail} />
+            <Route path="/crawler/settings" component={CrawlerSettings} />
+
             <Route>
               <div style={{ padding: 24 }}>Not found</div>
             </Route>

@@ -1,23 +1,43 @@
-"""Central API layer URL routing."""
+"""Central API layer URL routing.
 
-from django.urls import path, include
+After the crawler-engine migration, every live endpoint lives under
+``/api/v1/crawler/`` and is served by ``apps.crawler``. The Lattice main
+dashboard (sidebar's "Dashboard / Sessions / Pages / Issues / …" pages)
+relied on viewsets backed by the deleted ``apps.crawl_sessions`` ORM
+models, so those endpoints are gone.
 
-from apps.crawler.views import settings_view
-from apps.crawler.views_insights import insights_view
-from apps.crawler.views_system_metrics import system_metrics_view
-from .routers import router
+The two ``/websites/`` and ``/system/metrics/`` stubs below exist purely
+to keep the Lattice **sidebar + topbar widgets** quiet — they fire on
+every page (including the Crawler Engine pages) and would otherwise
+spam the console with 404s. They return empty payloads so the widgets
+render in their "no data" state without errors.
+"""
+from django.http import JsonResponse
+from django.urls import include, path
+from django.views.decorators.http import require_GET
+
+
+@require_GET
+def empty_websites_stub(_request):
+    """Stub for /api/v1/websites/ — sidebar project picker."""
+    return JsonResponse({"count": 0, "next": None, "previous": None, "results": []})
+
+
+@require_GET
+def empty_system_metrics_stub(_request):
+    """Stub for /api/v1/system/metrics/ — topbar host metrics card."""
+    return JsonResponse({
+        "host": {"cpu_percent": 0, "memory_percent": 0, "disk_percent": 0},
+        "redis": {"available": False},
+        "celery": {"workers": 0},
+    })
+
 
 urlpatterns = [
-    # /api/v1/settings/?website=<uuid> — standalone, not a ViewSet.
-    path("settings/", settings_view, name="settings"),
-    # /api/v1/system/metrics/ — host/redis/celery snapshot (Spec §4.2).
-    path("system/metrics/", system_metrics_view, name="system-metrics"),
-    # /api/v1/sessions/<uuid>/insights/ — standalone (Day 5). Bypasses the
-    # router so it does not collide with CrawlSessionViewSet @action methods.
-    path(
-        "sessions/<uuid:session_id>/insights/",
-        insights_view,
-        name="session-insights",
-    ),
-    path("", include(router.urls)),
+    # Active crawler — the new file-backed engine.
+    path("crawler/", include("apps.crawler.urls", namespace="crawler")),
+
+    # Sidebar / topbar widget stubs (see module docstring).
+    path("websites/", empty_websites_stub, name="websites-stub"),
+    path("system/metrics/", empty_system_metrics_stub, name="system-metrics-stub"),
 ]
