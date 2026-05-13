@@ -1,20 +1,22 @@
-# NOTE (Day 0, Stream C):
-# - playwright: install browser binaries via `python -m playwright install chromium` post-pip-install.
-# - whitenoise: requires settings wiring (MIDDLEWARE + STATICFILES_STORAGE). DEFERRED — Day 1+.
-# - django-cors-headers: requires settings wiring (INSTALLED_APPS + MIDDLEWARE + CORS_ALLOWED_ORIGINS). DEFERRED — Day 0 frontend stream uses Vite proxy in dev, so CORS isn't required immediately.
-# - anthropic: SDK only. Used by IndexingIntelligenceAgent (Day 5).
-Django>=4.2
+# Base runtime requirements for the SEO platform backend.
+#
+# After the crawler-engine -> Django port, the crawler is synchronous and
+# threaded; aiohttp / playwright / anthropic / psutil are no longer used.
+# whitenoise + django-cors-headers stay because they are wired (or trivially
+# wireable) into settings and are tiny.
+
+Django>=4.2,<5
 djangorestframework
 psycopg2-binary
 celery
 redis
 python-dotenv
-aiohttp>=3.9
+
+# Crawler runtime
+requests>=2.31
 beautifulsoup4>=4.12
-lxml
-openpyxl>=3.1.0
-anthropic>=0.40.0
-playwright>=1.45.0
+openpyxl>=3.1
+
+# Optional middleware (already referenced in design; kept for parity)
 whitenoise>=6.6.0
 django-cors-headers>=4.3.0
-psutil>=5.9.0

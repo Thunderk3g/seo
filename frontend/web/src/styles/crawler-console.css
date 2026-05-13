@@ -1,0 +1,362 @@
+/* ============================================================
+ * Crawler Engine (v2) — styles, scoped under .cc-scope
+ * ------------------------------------------------------------
+ * Ported from Crawler_v2.0.0/frontend/src/index.css. Every selector
+ * is namespaced under `.cc-scope` so it cannot leak into / collide
+ * with the Lattice dashboard styles. CSS custom properties are also
+ * scoped to `.cc-scope`, so the crawler pages render with the v2
+ * (light) palette even inside the dark Lattice shell.
+ * ============================================================ */
+
+.cc-scope {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-alt: #f8f9fb;
+  --border: #e1e5eb;
+  --border-strong: #c6cedb;
+
+  --text: #1a2238;
+  --text-secondary: #5b6479;
+  --text-muted: #8a93a6;
+
+  --primary: #003da5;
+  --primary-dark: #002e7d;
+  --primary-light: #e6eef9;
+  --primary-2: #1a5fbb;
+
+  --accent: #fdb913;
+  --accent-light: #fff3cd;
+
+  --green: #34a853;
+  --green-light: #e6f4ea;
+  --red: #ea4335;
+  --red-light: #fce8e6;
+  --orange: #fbbc04;
+  --orange-light: #fef7e0;
+  --blue: #4285f4;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.05);
+  --shadow: 0 2px 4px rgba(17, 24, 39, 0.04), 0 4px 12px rgba(17, 24, 39, 0.06);
+  --shadow-lg: 0 8px 24px rgba(17, 24, 39, 0.1);
+
+  /* the crawler pages own their own scrollable content surface */
+  min-height: 100%;
+  padding: 24px 28px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.cc-scope * { box-sizing: border-box; }
+.cc-scope a { color: var(--primary); text-decoration: none; }
+.cc-scope a:hover { text-decoration: underline; }
+.cc-scope button { font-family: inherit; cursor: pointer; border: none; background: none; }
+.cc-scope code,
+.cc-scope pre,
+.cc-scope .mono {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- Page head --- */
+.cc-scope .page-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.cc-scope .page-head h1 { font-size: 22px; font-weight: 700; margin: 0; display: flex; align-items: center; }
+.cc-scope .page-head h1 .material-icons-outlined { color: var(--primary); opacity: .85; }
+.cc-scope .page-head p { margin: 4px 0 0; color: var(--text-secondary); font-size: 13px; display: flex; align-items: center; }
+.cc-scope .page-head p .material-icons-outlined { color: var(--text-muted); opacity: .7; }
+
+/* --- Card --- */
+.cc-scope .card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.cc-scope .card-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: 14px;
+}
+.cc-scope .card-head .material-icons-outlined { color: var(--primary); font-size: 20px; }
+.cc-scope .card-head .pill {
+  margin-left: auto;
+  font-size: 11px; font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 3px 10px; border-radius: 999px;
+}
+.cc-scope .card-head .pill.pill-warn {
+  background: var(--orange-light);
+  color: #9c6e00;
+  border: 1px solid #f6d87c;
+}
+.cc-scope .card-body { padding: 16px 18px; }
+
+/* --- Stat cards --- */
+.cc-scope .stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.cc-scope .stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex; align-items: center; gap: 14px;
+  transition: transform .15s, box-shadow .15s;
+}
+.cc-scope .stat:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+.cc-scope .stat .icon {
+  width: 42px; height: 42px; border-radius: 10px;
+  display: grid; place-items: center; flex-shrink: 0;
+}
+.cc-scope .stat .icon .material-icons-outlined { font-size: 22px; }
+.cc-scope .stat .label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: .6px; font-weight: 600; }
+.cc-scope .stat .value { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.cc-scope .stat.primary .icon { background: var(--primary-light); color: var(--primary); }
+.cc-scope .stat.accent .icon { background: var(--accent-light); color: #8a6200; }
+.cc-scope .stat.green .icon { background: var(--green-light); color: var(--green); }
+.cc-scope .stat.red .icon { background: var(--red-light); color: var(--red); }
+.cc-scope .stat.blue .icon { background: #e8f0fe; color: var(--blue); }
+.cc-scope .stat.muted .icon { background: var(--surface-alt); color: var(--text-secondary); }
+
+/* --- Buttons --- */
+.cc-scope .btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 18px;
+  font-size: 13.5px; font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  transition: background .15s, box-shadow .15s, opacity .15s, transform .15s;
+}
+.cc-scope .btn:active:not(:disabled) { transform: translateY(1px); }
+.cc-scope .btn:disabled { opacity: .5; cursor: not-allowed; }
+.cc-scope .btn .material-icons-outlined { font-size: 18px; }
+.cc-scope .btn-primary { background: var(--primary); color: #fff; }
+.cc-scope .btn-primary:hover:not(:disabled) { background: var(--primary-dark); box-shadow: var(--shadow); }
+.cc-scope .btn-accent { background: var(--accent); color: #4a3400; }
+.cc-scope .btn-accent:hover:not(:disabled) { background: #e8a400; box-shadow: var(--shadow); }
+.cc-scope .btn-danger { background: var(--red); color: #fff; }
+.cc-scope .btn-danger:hover:not(:disabled) { background: #c5221f; box-shadow: var(--shadow); }
+.cc-scope .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+.cc-scope .btn-ghost:hover { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
+.cc-scope .btn:hover { text-decoration: none; }
+
+/* --- Badges --- */
+.cc-scope .badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 9px; font-size: 11px; font-weight: 600;
+  border-radius: 999px;
+}
+.cc-scope .badge.ok { background: var(--green-light); color: var(--green); }
+.cc-scope .badge.err { background: var(--red-light); color: var(--red); }
+.cc-scope .badge.warn { background: var(--orange-light); color: #9c6e00; }
+.cc-scope .badge.info { background: var(--primary-light); color: var(--primary); }
+.cc-scope .badge.muted { background: var(--surface-alt); color: var(--text-secondary); border: 1px solid var(--border); }
+
+/* --- Tables --- */
+.cc-scope .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cc-scope .tbl th, .cc-scope .tbl td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-scope .tbl th {
+  background: var(--surface-alt);
+  font-weight: 600; color: var(--text-secondary);
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px;
+  position: sticky; top: 0; z-index: 1;
+}
+.cc-scope .tbl tbody tr:hover { background: var(--primary-light); }
+.cc-scope .tbl td.url { font-family: 'JetBrains Mono', monospace; color: var(--primary); font-size: 12px; }
+.cc-scope .tbl td.num { font-variant-numeric: tabular-nums; text-align: right; }
+.cc-scope .tbl td.center { text-align: center; }
+.cc-scope .tbl-wrap { max-height: 560px; overflow: auto; border-radius: var(--radius); }
+
+/* --- Log panel --- */
+.cc-scope .log-panel { max-height: 520px; overflow: auto; padding: 10px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.cc-scope .log-row {
+  display: flex; gap: 10px;
+  padding: 5px 10px; margin-bottom: 2px;
+  border-left: 3px solid transparent; border-radius: 3px;
+  white-space: pre-wrap; word-break: break-all;
+}
+.cc-scope .log-row.success { border-left-color: var(--green); }
+.cc-scope .log-row.error { border-left-color: var(--red); background: rgba(234,67,53,.04); }
+.cc-scope .log-row.info { border-left-color: var(--blue); background: rgba(66,133,244,.04); }
+.cc-scope .log-row.warning { border-left-color: var(--orange); background: rgba(251,188,4,.05); }
+.cc-scope .log-row.complete { border-left-color: var(--green); background: rgba(52,168,83,.09); font-weight: 600; }
+.cc-scope .log-row.stopped { border-left-color: var(--red); }
+.cc-scope .log-row .ts { color: var(--text-muted); flex-shrink: 0; }
+
+/* --- Controls bar --- */
+.cc-scope .controls {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin-bottom: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-sm);
+}
+.cc-scope .controls .divider { width: 1px; height: 22px; background: var(--border); }
+.cc-scope .controls .meter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); }
+.cc-scope .controls .meter b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* --- Panel grid --- */
+.cc-scope .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 1100px) { .cc-scope .grid-2 { grid-template-columns: 1fr; } }
+
+/* --- Reports --- */
+.cc-scope .downloads {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 14px 18px; border-top: 1px solid var(--border); background: var(--surface-alt);
+}
+.cc-scope .downloads a.chip {
+  font-size: 12px; color: var(--primary);
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.cc-scope .downloads a.chip:hover { background: var(--primary-light); border-color: var(--primary); text-decoration: none; }
+.cc-scope .downloads a.chip .material-icons-outlined { font-size: 14px; }
+
+.cc-scope .report-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.cc-scope .report-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.cc-scope .report-card:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+.cc-scope .report-card .rc-head { display: flex; align-items: center; gap: 10px; }
+.cc-scope .report-card .rc-icon { width: 38px; height: 38px; border-radius: 8px; background: var(--primary-light); color: var(--primary); display: grid; place-items: center; }
+.cc-scope .report-card .rc-title { font-weight: 700; font-size: 15px; }
+.cc-scope .report-card .rc-count { font-size: 26px; font-weight: 700; color: var(--primary); font-variant-numeric: tabular-nums; }
+.cc-scope .report-card .rc-desc { color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.cc-scope .report-card .rc-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* --- Settings --- */
+.cc-scope .settings-group { margin-bottom: 22px; }
+.cc-scope .settings-group h3 { font-size: 13px; font-weight: 700; margin: 0 0 10px; color: var(--text); text-transform: uppercase; letter-spacing: .5px; }
+.cc-scope .kv {
+  display: grid; grid-template-columns: 220px 1fr; gap: 10px 20px;
+  padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+.cc-scope .kv dt { color: var(--text-secondary); font-size: 13px; }
+.cc-scope .kv dd { margin: 0; font-size: 13px; color: var(--text); font-family: 'JetBrains Mono', monospace; }
+
+/* --- Empty state --- */
+.cc-scope .empty { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+.cc-scope .empty .material-icons-outlined { font-size: 40px; margin-bottom: 6px; display: block; }
+
+/* ============================================================
+ * Site tree — list view
+ * ============================================================ */
+.cc-scope .tree-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cc-scope .tree-controls .input-wrap {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px 10px; min-width: 260px;
+}
+.cc-scope .tree-controls .input-wrap .material-icons-outlined { font-size: 18px; color: var(--text-muted); }
+.cc-scope .tree-controls .tree-input { border: none; outline: none; background: transparent; font: inherit; color: var(--text); flex: 1; }
+.cc-scope .tree-controls .depth-picker {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-secondary);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}
+.cc-scope .tree-controls .depth-picker .material-icons-outlined { font-size: 18px; color: var(--primary); }
+.cc-scope .tree-controls .depth-picker select { border: none; outline: none; background: transparent; font: inherit; color: var(--text); cursor: pointer; }
+
+.cc-scope .tree-wrap { max-height: 720px; overflow: auto; padding: 16px 18px; }
+.cc-scope .tree-node { position: relative; }
+.cc-scope .tree-node.is-root > .tree-row { background: var(--primary-light); border: 1px solid #c7d7ef; font-weight: 600; }
+.cc-scope .tree-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-sm); min-width: 0; transition: background .12s; }
+.cc-scope .tree-row:hover { background: var(--surface-alt); }
+.cc-scope .tree-toggle { width: 22px; height: 22px; display: grid; place-items: center; color: var(--text-secondary); border-radius: 4px; flex-shrink: 0; }
+.cc-scope .tree-toggle:hover:not(:disabled) { background: var(--primary-light); color: var(--primary); }
+.cc-scope .tree-toggle:disabled { opacity: .35; cursor: default; }
+.cc-scope .tree-toggle .material-icons-outlined { font-size: 18px; }
+.cc-scope .tree-url { color: var(--primary); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 620px; }
+.cc-scope .tree-title { color: var(--text-secondary); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+.cc-scope .tree-count {
+  margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-secondary);
+  background: var(--surface-alt); border: 1px solid var(--border); padding: 1px 8px; border-radius: 999px;
+  flex-shrink: 0; font-variant-numeric: tabular-nums;
+}
+.cc-scope .tree-children { position: relative; margin-left: 18px; padding-left: 14px; border-left: 1px dashed var(--border-strong); }
+.cc-scope .tree-children > .tree-node > .tree-row::before {
+  content: ''; position: absolute; left: -14px; top: 18px; width: 12px; height: 1px; background: var(--border-strong);
+}
+.cc-scope .tree-children > .tree-node { position: relative; }
+
+/* --- View toggle --- */
+.cc-scope .view-toggle { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px; gap: 2px; }
+.cc-scope .view-toggle .vt-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); border-radius: 5px; transition: background .15s, color .15s; }
+.cc-scope .view-toggle .vt-btn:hover { color: var(--primary); }
+.cc-scope .view-toggle .vt-btn.active { background: var(--primary); color: #fff; box-shadow: var(--shadow-sm); }
+.cc-scope .view-toggle .vt-btn .material-icons-outlined { font-size: 16px; }
+
+/* ============================================================
+ * Site tree — decomposition graph
+ * ============================================================ */
+.cc-scope .tg-card-body { padding: 0 !important; }
+.cc-scope .tg-wrap {
+  position: relative; width: 100%; height: 720px;
+  background:
+    radial-gradient(circle, #dde3ee 1px, transparent 1px) 0 0 / 18px 18px,
+    var(--surface-alt);
+  border-radius: 0 0 var(--radius) var(--radius);
+  overflow: hidden; user-select: none; -webkit-user-select: none;
+}
+.cc-scope .tg-canvas { display: block; width: 100%; height: 100%; }
+.cc-scope .tg-controls {
+  position: absolute; top: 14px; right: 14px;
+  display: inline-flex; gap: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 4px; box-shadow: var(--shadow-sm); z-index: 2;
+}
+.cc-scope .tg-controls .tg-btn { width: 30px; height: 30px; display: grid; place-items: center; color: var(--text-secondary); border-radius: 4px; transition: background .15s, color .15s; }
+.cc-scope .tg-controls .tg-btn:hover { background: var(--primary-light); color: var(--primary); }
+.cc-scope .tg-controls .tg-btn .material-icons-outlined { font-size: 18px; }
+.cc-scope .tg-controls .tg-zoom { padding: 0 8px; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); font-variant-numeric: tabular-nums; align-self: center; min-width: 40px; text-align: center; }
+.cc-scope .tg-legend {
+  position: absolute; top: 14px; left: 14px;
+  display: inline-flex; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px 12px; box-shadow: var(--shadow-sm); font-size: 11.5px; color: var(--text-secondary); z-index: 2;
+}
+.cc-scope .tg-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.cc-scope .tg-legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.cc-scope .tg-hint {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  font-size: 11.5px; color: var(--text-muted);
+  background: rgba(255,255,255,.85); border: 1px solid var(--border); border-radius: 999px;
+  padding: 4px 12px; backdrop-filter: blur(2px); pointer-events: none; z-index: 1;
+}
+.cc-scope .tg-edge { fill: none; stroke: #b7c0d0; stroke-width: 1.5; opacity: .9; }
+.cc-scope .tg-node .tg-rect { fill: #ffffff; stroke: var(--border); stroke-width: 1; transition: stroke .15s; }
+.cc-scope .tg-node:hover .tg-rect { stroke: var(--primary); }
+.cc-scope .tg-node.is-root .tg-rect { fill: var(--primary-dark); stroke: var(--primary); }
+.cc-scope .tg-node.is-root .tg-url, .cc-scope .tg-node.is-root .tg-title { fill: #ffffff; }
+.cc-scope .tg-node.is-root .tg-title { fill: rgba(255,255,255,.72); }
+.cc-scope .tg-url { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 600; fill: var(--primary); }
+.cc-scope .tg-title { font-family: 'Inter', sans-serif; font-size: 11px; fill: var(--text-secondary); }
+.cc-scope .tg-status { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; }
+.cc-scope .tg-toggle-bg { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; transition: fill .15s, stroke .15s; }
+.cc-scope .tg-node:hover .tg-toggle-bg { fill: var(--primary-light); stroke: var(--primary); }
+.cc-scope .tg-toggle-txt { font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700; fill: var(--text); pointer-events: none; }
+.cc-scope .tg-node:hover .tg-toggle-txt { fill: var(--primary); }

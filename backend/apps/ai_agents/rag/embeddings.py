@@ -1,1 +1,0 @@
-"""Vector embeddings connection logic."""

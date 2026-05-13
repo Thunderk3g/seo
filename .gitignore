@@ -1,3 +1,51 @@
+# ── Python ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
 
+# ── Django ────────────────────────────────────────────
 backend/db.sqlite3
+*.log
+local_settings.py
 
+# ── Crawler runtime output ────────────────────────────
+# File-backed crawler writes CSVs / crawl_state.json to backend/data/
+# and XLSX reports to backend/reports/. Mounted as docker volumes;
+# they're per-run artifacts, not source.
+backend/data/
+backend/reports/
+
+# ── Node / Vite ───────────────────────────────────────
+node_modules/
+frontend/web/dist/
+frontend/web/.vite/
+*.tsbuildinfo
+
+# ── Env files (commit `.env.example`, never `.env`) ───
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ── IDE / OS ──────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── Claude Code session cache ─────────────────────────
+.claude/
