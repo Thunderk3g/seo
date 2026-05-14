@@ -10,14 +10,14 @@ export default defineConfig({
     proxy: {
       // Forward /api requests to the Django backend during dev.
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
       },
       // After the crawler-engine -> Django port, /crawler-api is just a
       // namespaced alias for /api/v1/crawler on the Django backend.
       '/crawler-api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/crawler-api/, '/api/v1/crawler'),

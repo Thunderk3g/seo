@@ -7,6 +7,7 @@ from .views import (
     overview,
     semrush_dashboard,
     sitemap_dashboard,
+    sitemap_page_detail,
     start_grade,
 )
 
@@ -21,5 +22,6 @@ urlpatterns = [
     path("gsc/", gsc_dashboard, name="gsc-dashboard"),
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
     path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
+    path("sitemap/page/", sitemap_page_detail, name="sitemap-page-detail"),
     path("", include(_router.urls)),
 ]

@@ -231,6 +231,20 @@ export interface SitemapPageRow {
   component_count: number;
   title_length: number;
   description_length: number;
+  word_count: number;
+  content_preview: string;
+}
+
+export interface SitemapPageDetail {
+  public_url: string;
+  aem_path: string;
+  title: string;
+  description: string;
+  template_name: string;
+  last_modified: string | null;
+  word_count: number;
+  content: string;
+  component_types: string[];
 }
 
 export interface SitemapDashboard {

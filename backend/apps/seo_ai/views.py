@@ -191,7 +191,15 @@ def semrush_dashboard(request: Request):
 
 @api_view(["GET"])
 def sitemap_dashboard(_request: Request):
-    """AEM sitemap page list and authoring rollup."""
+    """AEM sitemap page list and authoring rollup.
+
+    The list payload is intentionally slim — metadata + word count + a
+    short content preview. Full content lives behind
+    ``/api/v1/seo/sitemap/page/?path=...`` and is fetched on-demand by
+    the frontend drawer. With ~600 pages averaging 18 KB of content
+    each, returning the full text inline would push the response past
+    11 MB and stall the browser.
+    """
     adapter = SitemapAEMAdapter()
     try:
         summary = adapter.summary()
@@ -211,6 +219,8 @@ def sitemap_dashboard(_request: Request):
             "component_count": p.component_count,
             "title_length": len(p.title or ""),
             "description_length": len(p.description or ""),
+            "word_count": p.word_count,
+            "content_preview": (p.content or "")[:240],
         }
 
     return Response(
@@ -240,4 +250,46 @@ def sitemap_dashboard(_request: Request):
             ),
             "pages": [_page_dict(p) for p in pages],
         }
+    )
+
+
+@api_view(["GET"])
+def sitemap_page_detail(request: Request):
+    """Return the full extracted content for one AEM page.
+
+    Match by ``aem_path`` (preferred — stable identifier) or
+    ``public_url`` (fallback). Returns 404 if the path isn't in the
+    current AEM snapshot.
+    """
+    aem_path = request.query_params.get("path", "").strip()
+    public_url = request.query_params.get("url", "").strip()
+    if not aem_path and not public_url:
+        return Response(
+            {"detail": "path or url query param is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    adapter = SitemapAEMAdapter()
+    for p in adapter.iter_pages():
+        if (aem_path and p.aem_path == aem_path) or (
+            public_url and p.public_url == public_url
+        ):
+            return Response(
+                {
+                    "public_url": p.public_url,
+                    "aem_path": p.aem_path,
+                    "title": p.title,
+                    "description": p.description,
+                    "template_name": p.template_name,
+                    "last_modified": (
+                        p.last_modified.isoformat() if p.last_modified else None
+                    ),
+                    "word_count": p.word_count,
+                    "content": p.content,
+                    "component_types": p.component_types,
+                }
+            )
+    return Response(
+        {"detail": "page not found in current AEM snapshot"},
+        status=status.HTTP_404_NOT_FOUND,
     )

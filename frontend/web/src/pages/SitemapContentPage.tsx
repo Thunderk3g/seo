@@ -9,6 +9,7 @@
 
 import { useMemo, useState } from 'react';
 import { useSitemapDashboard } from '../api/hooks/useSitemapDashboard';
+import { useSitemapPage } from '../api/hooks/useSitemapPage';
 import type { SitemapDashboard, SitemapPageRow } from '../api/seoTypes';
 
 const PAGE_SIZE = 25;
@@ -100,6 +101,7 @@ function PagesTable({ pages }: { pages: SitemapPageRow[] }) {
   const [titleFilter, setTitleFilter] = useState<TitleFilter>('all');
   const [descFilter, setDescFilter] = useState<DescFilter>('all');
   const [templateFilter, setTemplateFilter] = useState<string>('all');
+  const [openPage, setOpenPage] = useState<SitemapPageRow | null>(null);
 
   const templates = useMemo(() => {
     const set = new Set<string>();
@@ -206,9 +208,11 @@ function PagesTable({ pages }: { pages: SitemapPageRow[] }) {
                 <th>Title</th>
                 <th className="num">Title len</th>
                 <th className="num">Desc len</th>
+                <th className="num">Words</th>
                 <th>Template</th>
                 <th className="num">Comp.</th>
                 <th>Updated</th>
+                <th>Content</th>
               </tr>
             </thead>
             <tbody>
@@ -228,9 +232,21 @@ function PagesTable({ pages }: { pages: SitemapPageRow[] }) {
                   <td className={`num ${lengthClass(p.description_length, 70, 160)}`}>
                     {p.description_length}
                   </td>
+                  <td className={`num ${p.word_count < 300 ? 'seo-mover-warn' : ''}`}>
+                    {p.word_count.toLocaleString()}
+                  </td>
                   <td>{p.template_name || '—'}</td>
                   <td className="num">{p.component_count}</td>
                   <td>{formatDate(p.last_modified)}</td>
+                  <td>
+                    <button
+                      className="seo-btn seo-btn-ghost"
+                      onClick={() => setOpenPage(p)}
+                      disabled={p.word_count === 0}
+                    >
+                      View
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -258,6 +274,70 @@ function PagesTable({ pages }: { pages: SitemapPageRow[] }) {
           )}
         </>
       )}
+      {openPage && (
+        <ContentDrawer page={openPage} onClose={() => setOpenPage(null)} />
+      )}
+    </div>
+  );
+}
+
+function ContentDrawer({
+  page,
+  onClose,
+}: {
+  page: SitemapPageRow;
+  onClose: () => void;
+}) {
+  // Pull the full body text on demand — the list response only ships
+  // a 240-char preview per row to keep the dashboard payload sane.
+  const { data: detail, isLoading, isError } = useSitemapPage(page.aem_path);
+  const content = detail?.content ?? page.content_preview;
+  const wordCount = detail?.word_count ?? page.word_count;
+
+  return (
+    <div className="seo-drawer-backdrop" onClick={onClose}>
+      <div
+        className="seo-drawer"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={`Content for ${page.title}`}
+      >
+        <header className="seo-drawer-head">
+          <div>
+            <h3>{page.title || '(no title)'}</h3>
+            <div className="seo-drawer-sub">
+              <a href={page.public_url} target="_blank" rel="noreferrer">
+                {page.public_url}
+              </a>
+              {' · '}
+              {wordCount.toLocaleString()} words ·{' '}
+              {page.template_name || 'no template'}
+            </div>
+          </div>
+          <button className="seo-btn seo-btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </header>
+        <div className="seo-drawer-meta">
+          <div>
+            <span className="seo-drawer-label">Description</span>
+            <p>{page.description || '—'}</p>
+          </div>
+        </div>
+        <div className="seo-drawer-body">
+          {isLoading && <div className="seo-empty">Loading content…</div>}
+          {isError && !isLoading && (
+            <div className="seo-error">Failed to load page content.</div>
+          )}
+          {!isLoading && !isError && content
+            ? content.split('\n').map((line, i) =>
+                line.trim() === '' ? <br key={i} /> : <p key={i}>{line}</p>,
+              )
+            : !isLoading && !isError ? (
+              <div className="seo-empty">No extractable content in this page.</div>
+            ) : null}
+        </div>
+      </div>
     </div>
   );
 }
