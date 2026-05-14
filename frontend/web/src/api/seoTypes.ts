@@ -290,6 +290,57 @@ export interface CompetitorVolumeDelta {
   competitor_total_words: number;
 }
 
+// ── Phase 2A — new dimensions ───────────────────────────────────
+
+export interface CompetitorProductCoverage {
+  product_slug: string;
+  our_page_count: number;
+  competitor_counts: Record<string, number>;
+  sample_competitor_urls: string[];
+}
+
+export interface CompetitorStructureDelta {
+  cluster_slug: string;
+  our_avg_h2: number;
+  competitor_avg_h2: number;
+  our_avg_h3: number;
+  competitor_avg_h3: number;
+  our_avg_internal_links: number;
+  competitor_avg_internal_links: number;
+  our_avg_external_links: number;
+  competitor_avg_external_links: number;
+  our_avg_image_alt_pct: number;
+  competitor_avg_image_alt_pct: number;
+  our_avg_cta_count: number;
+  competitor_avg_cta_count: number;
+  our_schema_type_count: number;
+  competitor_schema_type_count: number;
+  our_pages_sampled: number;
+  competitor_pages_sampled: number;
+}
+
+export interface CompetitorLoadingTimeDelta {
+  cluster_slug: string;
+  our_median_ms: number;
+  competitor_median_ms: number;
+  our_p90_ms: number;
+  competitor_p90_ms: number;
+  our_pages_sampled: number;
+  competitor_pages_sampled: number;
+}
+
+export interface CompetitorContentFitDelta {
+  keyword: string;
+  competitor_domain: string;
+  competitor_url: string;
+  competitor_position: number;
+  search_volume: number;
+  competitor_word_count: number;
+  competitor_keyword_occurrences: number;
+  competitor_keyword_density: number;
+  fit_verdict: 'strong' | 'moderate' | 'thin' | 'none';
+}
+
 export interface CompetitorSummary {
   domain: string;
   competition_level: number;
@@ -298,6 +349,7 @@ export interface CompetitorSummary {
   keywords_pulled: number;
   pages_crawled_ok: number;
   pages_crawl_attempted: number;
+  total_url_count: number;          // Phase 2A — sitemap.xml-derived
 }
 
 export interface CompetitorDashboard {
@@ -312,12 +364,27 @@ export interface CompetitorDashboard {
     content_volume_deltas_found: number;
     competitor_pages_crawled_ok: number;
     competitor_pages_crawl_attempted: number;
+    // Phase 2A
+    our_pages_crawled_ok?: number;
+    our_pages_crawl_attempted?: number;
+    our_total_url_count?: number;
+    product_coverage_rows?: number;
+    structure_deltas_found?: number;
+    loading_time_deltas_found?: number;
+    content_fit_items?: number;
   };
   competitors?: CompetitorSummary[];
   topic_gaps?: CompetitorTopicGap[];
   keyword_gaps?: CompetitorKeywordGap[];
   hygiene_deltas?: CompetitorHygieneDelta[];
   content_volume_deltas?: CompetitorVolumeDelta[];
+  // Phase 2A
+  product_coverage?: CompetitorProductCoverage[];
+  structure_deltas?: CompetitorStructureDelta[];
+  loading_time_deltas?: CompetitorLoadingTimeDelta[];
+  content_fit_deltas?: CompetitorContentFitDelta[];
+  total_url_count_by_competitor?: Record<string, number>;
+  our_total_url_count?: number;
 }
 
 export interface SitemapDashboard {

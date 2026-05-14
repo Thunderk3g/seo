@@ -19,8 +19,9 @@ from typing import Any
 from django.conf import settings
 
 from ..adapters import GSCCSVAdapter, SemrushAdapter, SitemapAEMAdapter
-from ..adapters.competitor_crawler import CompetitorCrawler
+from ..adapters.competitor_crawler import CompetitorCrawler, CompetitorPage
 from ..adapters.semrush import SemrushError
+from ..adapters.sitemap_xml import SitemapXMLAdapter
 from ..scoring_competitor import (
     CompetitorDossier,
     compute_gaps,
@@ -47,6 +48,70 @@ def _brand_stem(domain: str) -> str:
     if len(parts) >= 2:
         return parts[-2]
     return bare
+
+
+def _pick_our_top_urls(
+    *,
+    aem_pages,
+    gsc_queries,
+    our_semrush,
+    limit: int,
+) -> list[str]:
+    """Pick the top ``limit`` URLs from our domain to crawl live for
+    the symmetric-comparison phase.
+
+    Priority ranking:
+      1. Pages that show up in our SEMrush keyword list (top organic
+         performers — same yardstick we use for competitors).
+      2. URLs from GSC's top-clicks. (We don't have per-URL clicks
+         from the GSC adapter today, but the ranked queries do carry
+         a ``url`` field on some report variants — we use it when
+         present, otherwise this step adds nothing.)
+      3. All AEM pages with ``word_count > 0``, ordered by word count
+         desc so the meatier pages get crawled first.
+
+    Deduped preserving the priority order. Stops at ``limit``.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(u: str) -> bool:
+        if not u or u in seen:
+            return True
+        seen.add(u)
+        out.append(u)
+        return len(out) < limit
+
+    # Tier 1: SEMrush-ranked URLs sorted by traffic_pct desc.
+    semrush_sorted = sorted(
+        (k for k in (our_semrush or []) if getattr(k, "url", "")),
+        key=lambda k: getattr(k, "traffic_pct", 0.0),
+        reverse=True,
+    )
+    for k in semrush_sorted:
+        if not _push(k.url):
+            return out
+
+    # Tier 2: any URL field GSC rows carry (the bundled GSC summary
+    # uses a separate ``pages`` slice — we don't reach into it here to
+    # keep this function pure; the AEM tier picks up the rest).
+    for q in gsc_queries or []:
+        u = getattr(q, "url", "") or ""
+        if u and not _push(u):
+            return out
+
+    # Tier 3: AEM pages with non-empty content, biggest first.
+    aem_sorted = sorted(
+        (p for p in (aem_pages or []) if getattr(p, "word_count", 0) > 0),
+        key=lambda p: getattr(p, "word_count", 0),
+        reverse=True,
+    )
+    for p in aem_sorted:
+        u = getattr(p, "public_url", "") or ""
+        if u and not _push(u):
+            return out
+
+    return out
 
 
 def _same_brand(focus: str, candidate: str) -> bool:
@@ -297,12 +362,49 @@ class CompetitorAgent(Agent):
         except SemrushError as exc:
             logger.warning("our semrush kw load failed: %s", exc)
 
-        # ── 5. compute the structured gap report ───────────────────
+        # ── 5. sitemap.xml URL counts (Phase 2A) ───────────────────
+        sitemap_adapter = SitemapXMLAdapter()
+        our_sitemap = sitemap_adapter.discover(domain)
+        for d in dossiers:
+            try:
+                summary = sitemap_adapter.discover(d.domain)
+                d.total_url_count = summary.total_url_count
+            except Exception as exc:  # noqa: BLE001
+                logger.info("sitemap discover failed for %s: %s", d.domain, exc)
+        self.log_system_event(
+            "competitor.sitemaps_fetched",
+            {
+                "our_total_url_count": our_sitemap.total_url_count,
+                "their_counts": {d.domain: d.total_url_count for d in dossiers},
+            },
+        )
+
+        # ── 6. symmetric crawl of OUR top URLs (Phase 2A) ──────────
+        our_top_urls = _pick_our_top_urls(
+            aem_pages=aem_pages,
+            gsc_queries=gsc_queries,
+            our_semrush=our_semrush,
+            limit=cfg.get("our_pages_limit", 200),
+        )
+        our_crawled: list[CompetitorPage] = []
+        if our_top_urls:
+            our_crawled = crawler.fetch_pages(our_top_urls)
+            self.log_system_event(
+                "competitor.our_crawled",
+                {
+                    "attempted": len(our_crawled),
+                    "ok": sum(1 for p in our_crawled if p.status_code == 200),
+                },
+            )
+
+        # ── 7. compute the structured gap report ───────────────────
         report = compute_gaps(
             our_aem_pages=aem_pages,
             our_gsc_queries=gsc_queries,
             our_semrush_keywords=our_semrush,
             competitors=dossiers,
+            our_crawled=our_crawled,
+            our_total_url_count=our_sitemap.total_url_count,
         )
         facts = gap_report_to_facts(report)
         self.log_system_event(
@@ -312,8 +414,13 @@ class CompetitorAgent(Agent):
                 "keyword_gaps": len(report.keyword_gaps),
                 "hygiene_deltas": len(report.hygiene_deltas),
                 "volume_deltas": len(report.content_volume_deltas),
+                "product_coverage": len(report.product_coverage),
+                "structure_deltas": len(report.structure_deltas),
+                "loading_time_deltas": len(report.loading_time_deltas),
+                "content_fit_deltas": len(report.content_fit_deltas),
                 "samples_attempted": report.samples_attempted,
                 "samples_succeeded": report.samples_succeeded,
+                "our_pages_crawled": report.our_pages_crawled,
             },
         )
         return facts
