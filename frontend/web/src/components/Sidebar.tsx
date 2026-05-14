@@ -33,6 +33,7 @@ const DATA_SOURCE_NAV: NavItem[] = [
   { id: 'gsc', label: 'Search Console', icon: 'analytics', path: '/gsc' },
   { id: 'semrush', label: 'SEMrush Keywords', icon: 'pages', path: '/semrush' },
   { id: 'sitemap', label: 'Content via Sitemap', icon: 'visualizations', path: '/sitemap' },
+  { id: 'competitors', label: 'Competitor Gap', icon: 'issues', path: '/competitors' },
 ];
 
 // Embedded Crawler Engine (v2) — backed by the standalone FastAPI service in
