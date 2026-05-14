@@ -165,3 +165,90 @@ export interface SeoOverview {
   gsc: GSCPayload;
   crawler: CrawlerPayload;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Source-data dashboards
+// ─────────────────────────────────────────────────────────────────────
+
+export interface GSCDashboard {
+  available: boolean;
+  error?: string;
+  snapshot_path?: string;
+  totals?: {
+    queries: number;
+    pages: number;
+    clicks: number;
+    impressions: number;
+    avg_ctr: number;
+    avg_position: number;
+  };
+  top_queries?: GSCQueryRow[];
+  top_pages?: GSCPageRow[];
+  underperforming_queries?: GSCQueryRow[];
+  high_impression_low_click_queries?: GSCQueryRow[];
+  daily_series?: GSCDailyRow[];
+}
+
+export interface SemrushOverviewRow {
+  domain: string;
+  database: string;
+  rank: number;
+  organic_keywords: number;
+  organic_traffic: number;
+  organic_cost: number;
+  adwords_keywords: number;
+  adwords_traffic: number;
+  adwords_cost: number;
+}
+
+export interface SemrushKeywordRow {
+  keyword: string;
+  position: number;
+  previous_position: number;
+  search_volume: number;
+  cpc: number;
+  competition: number;
+  traffic_pct: number;
+  url: string;
+}
+
+export interface SemrushDashboard {
+  available: boolean;
+  error?: string;
+  domain?: string;
+  database?: string;
+  overview?: SemrushOverviewRow;
+  keywords?: SemrushKeywordRow[];
+}
+
+export interface SitemapPageRow {
+  public_url: string;
+  aem_path: string;
+  title: string;
+  description: string;
+  template_name: string;
+  last_modified: string | null;
+  component_count: number;
+  title_length: number;
+  description_length: number;
+}
+
+export interface SitemapDashboard {
+  available: boolean;
+  error?: string;
+  snapshot_path?: string;
+  totals?: {
+    pages: number;
+    with_description: number;
+    without_description: number;
+    short_title: number;
+    long_title: number;
+    short_desc: number;
+    long_desc: number;
+  };
+  distinct_templates?: string[];
+  component_usage?: Record<string, number>;
+  most_recent_modification?: string | null;
+  least_recent_modification?: string | null;
+  pages?: SitemapPageRow[];
+}

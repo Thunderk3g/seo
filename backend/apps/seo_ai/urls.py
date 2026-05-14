@@ -1,7 +1,14 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .views import SEORunViewSet, overview, start_grade
+from .views import (
+    SEORunViewSet,
+    gsc_dashboard,
+    overview,
+    semrush_dashboard,
+    sitemap_dashboard,
+    start_grade,
+)
 
 app_name = "seo_ai"
 
@@ -11,5 +18,8 @@ _router.register(r"grade", SEORunViewSet, basename="grade")
 urlpatterns = [
     path("overview/", overview, name="overview"),
     path("grade/start/", start_grade, name="start-grade"),
+    path("gsc/", gsc_dashboard, name="gsc-dashboard"),
+    path("semrush/", semrush_dashboard, name="semrush-dashboard"),
+    path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
     path("", include(_router.urls)),
 ]

@@ -86,7 +86,7 @@ def _gsc_payload() -> dict[str, Any]:
         logger.warning("gsc summary failed: %s", exc)
         return {"available": False, "error": str(exc)}
 
-    daily = _read_daily_series(adapter)
+    daily = read_daily_series(adapter)
     return {
         "available": True,
         "totals": {
@@ -106,7 +106,7 @@ def _gsc_payload() -> dict[str, Any]:
     }
 
 
-def _read_daily_series(adapter: GSCCSVAdapter) -> list[dict[str, Any]]:
+def read_daily_series(adapter: GSCCSVAdapter) -> list[dict[str, Any]]:
     """Read web__date.csv ordered ASC, return last 90 non-zero days.
 
     The performance chart shows clicks + impressions in dual-axis style
