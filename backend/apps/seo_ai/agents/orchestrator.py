@@ -20,6 +20,7 @@ from typing import Any
 from django.conf import settings
 from django.utils import timezone as dj_tz
 
+from ..adapters.semrush import SemrushError
 from ..llm import get_provider
 from ..models import (
     FindingSeverity,
@@ -28,6 +29,7 @@ from ..models import (
     SEORunStatus,
 )
 from .. import scoring
+from .competitor import CompetitorAgent
 from .critic import CriticAgent
 from .keyword import KeywordAgent
 from .narrator import NarratorAgent
@@ -61,10 +63,15 @@ class Orchestrator:
             # ── Stage 1: specialists ──────────────────────────────────
             technical_payload, tech_facts = self._run_technical()
             keyword_payload, keyword_facts = self._run_keyword(domain=run.domain)
+            competitor_payload, competitor_facts = self._run_competitor(
+                domain=run.domain
+            )
 
             # ── Stage 2: critic on combined findings ──────────────────
-            combined = list(technical_payload.get("findings") or []) + list(
-                keyword_payload.get("findings") or []
+            combined = (
+                list(technical_payload.get("findings") or [])
+                + list(keyword_payload.get("findings") or [])
+                + list((competitor_payload or {}).get("findings") or [])
             )
             # Build the authoritative reference-key list deterministically
             # (Python, not LLM). Critic checks set-membership, not deep
@@ -76,6 +83,7 @@ class Orchestrator:
                     "aem": tech_facts.get("aem", {}),
                     "gsc": keyword_facts.get("gsc", {}),
                     "semrush": keyword_facts.get("semrush", {}),
+                    "competitor": (competitor_facts or {}).get("competitor", {}),
                 }
             )
             run.status = SEORunStatus.CRITIC
@@ -109,6 +117,12 @@ class Orchestrator:
             # ── Stage 4: persist findings + narrate ───────────────────
             self._persist_findings("technical", technical_payload.get("findings") or [], accepted)
             self._persist_findings("keyword", keyword_payload.get("findings") or [], accepted)
+            if competitor_payload:
+                self._persist_findings(
+                    "competitor",
+                    competitor_payload.get("findings") or [],
+                    accepted,
+                )
 
             narrator = NarratorAgent(run=run, step_index_start=self.step)
             narrative = narrator.narrate(
@@ -187,6 +201,61 @@ class Orchestrator:
         self.step = agent.step_index
         return payload, facts
 
+    def _run_competitor(
+        self, *, domain: str
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Competitor gap analysis — optional, never crashes the run.
+
+        Skips silently when SEMrush is unconfigured or the
+        ``COMPETITOR_ENABLED`` flag is off. Catches both SEMrush errors
+        and bare-network errors from the competitor crawler so a flaky
+        rival host can't take down the whole grading pipeline.
+        """
+        if not settings.SEMRUSH.get("api_key"):
+            self._log_skip("competitor.skipped", reason="SEMRUSH_API_KEY not set")
+            return None, None
+        if not settings.COMPETITOR.get("enabled", True):
+            self._log_skip("competitor.skipped", reason="COMPETITOR_ENABLED=false")
+            return None, None
+        try:
+            agent = CompetitorAgent(run=self.run, step_index_start=self.step)
+            facts = agent.build_facts(domain=domain)
+            payload = agent.call_model(
+                facts,
+                instruction=(
+                    "Compare the focus domain against its rivals using "
+                    "ONLY the facts below. Surface 6-12 prioritised "
+                    "competitor gap findings."
+                ),
+            ).payload
+            self.step = agent.step_index
+            return payload, facts
+        except SemrushError as exc:
+            logger.warning("competitor agent skipped (semrush): %s", exc)
+            self._log_skip("competitor.skipped", reason=f"semrush: {exc}")
+            return None, None
+        except Exception as exc:  # noqa: BLE001 - keep grading running
+            logger.warning("competitor agent skipped (other): %s", exc)
+            self._log_skip("competitor.skipped", reason=str(exc)[:200])
+            return None, None
+
+    def _log_skip(self, event: str, *, reason: str) -> None:
+        """Audit-trail entry when an optional stage is skipped."""
+        from ..models import SEORunMessage
+
+        SEORunMessage.objects.create(
+            run=self.run,
+            step_index=self.step,
+            from_agent="orchestrator",
+            to_agent="",
+            role="system",
+            content={"event": event, "reason": reason},
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+        )
+        self.step += 1
+
     # ── persistence helpers ────────────────────────────────────────────
 
     def _persist_findings(
@@ -225,6 +294,7 @@ class Orchestrator:
     def _gather_sources_snapshot(self) -> dict[str, Any]:
         """Record which data dirs we read so a run can be replayed."""
         ai = settings.SEO_AI
+        comp = getattr(settings, "COMPETITOR", {})
         return {
             "captured_at": datetime.now(timezone.utc).isoformat(),
             "crawler_data_dir": str(ai["data_dir"]),
@@ -233,6 +303,10 @@ class Orchestrator:
             "semrush_database": settings.SEMRUSH["database"],
             "llm_provider": settings.LLM["provider"],
             "llm_model": settings.LLM["groq"]["model"],
+            "competitor_enabled": comp.get("enabled", True),
+            "competitor_top_n": comp.get("top_n", 10),
+            "competitor_pages_per_competitor": comp.get("pages_per_competitor", 50),
+            "competitor_cache_dir": str(ai["data_dir"] / "_competitor_cache"),
         }
 
 

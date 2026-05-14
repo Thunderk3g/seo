@@ -143,6 +143,42 @@ SEMRUSH = {
     # Same semantics as LLM_SSL_VERIFY above. Needed inside the Docker
     # image because the Debian-slim trust store lacks the corp MITM root.
     "ssl_verify": os.environ.get("SEMRUSH_SSL_VERIFY", "").strip(),
+    # Competitor-discovery and top-pages calls bill the same units but
+    # change far less often than headline overviews — give them a much
+    # longer TTL so day-to-day grade re-runs don't burn the budget.
+    "competitor_cache_ttl": int(
+        os.environ.get("SEMRUSH_COMPETITOR_CACHE_TTL", str(7 * 24 * 3600))
+    ),
+}
+
+# Competitor SEO Gap analysis — discovers our top organic rivals via
+# SEMrush, samples their best pages, and feeds the CompetitorAgent.
+# Disabled silently when SEMRUSH_API_KEY is unset or COMPETITOR_ENABLED
+# is "false"; never crashes a grading run.
+COMPETITOR = {
+    "enabled": os.environ.get("COMPETITOR_ENABLED", "true").lower()
+    in ("1", "true", "yes", "on"),
+    "top_n": int(os.environ.get("COMPETITOR_TOP_N", "10")),
+    "pages_per_competitor": int(os.environ.get("COMPETITOR_PAGES_PER_COMP", "50")),
+    "keywords_per_competitor": int(os.environ.get("COMPETITOR_KW_PER_COMP", "100")),
+    "rate_limit_sec": float(os.environ.get("COMPETITOR_RATE_LIMIT_SEC", "1.0")),
+    "timeout_sec": int(os.environ.get("COMPETITOR_TIMEOUT_SEC", "15")),
+    # Bot-identifiable UA strings get 403'd by Cloudflare/Akamai on
+    # most enterprise sites, so default to a recent Chrome UA. We still
+    # respect robots.txt and rate-limit at COMPETITOR_RATE_LIMIT_SEC,
+    # i.e. behave as a single human user.
+    "user_agent": os.environ.get(
+        "COMPETITOR_USER_AGENT",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    ),
+    "cache_ttl_seconds": int(
+        os.environ.get("COMPETITOR_CACHE_TTL_SECONDS", str(7 * 24 * 3600))
+    ),
+    # Same semantics as SEMRUSH_SSL_VERIFY. Inside the Docker image set
+    # to "false" because the Debian trust store doesn't include the
+    # corporate MITM root that intercepts competitor HTTPS traffic.
+    "ssl_verify": os.environ.get("COMPETITOR_SSL_VERIFY", "").strip(),
 }
 
 # ─────────────────────────────────────────────────────────────

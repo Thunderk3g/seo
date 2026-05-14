@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     SEORunViewSet,
+    competitor_dashboard,
     gsc_dashboard,
     overview,
     semrush_dashboard,
@@ -23,5 +24,6 @@ urlpatterns = [
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
     path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
     path("sitemap/page/", sitemap_page_detail, name="sitemap-page-detail"),
+    path("competitor/", competitor_dashboard, name="competitor-dashboard"),
     path("", include(_router.urls)),
 ]

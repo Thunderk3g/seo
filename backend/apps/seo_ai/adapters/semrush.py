@@ -71,6 +71,32 @@ class SemrushKeyword:
     url: str
 
 
+@dataclass
+class SemrushCompetitor:
+    """One row from the ``domain_organic_organic`` (Competitors) report."""
+
+    domain: str
+    competition_level: float
+    common_keywords: int
+    organic_keywords: int
+    organic_traffic: int
+
+
+@dataclass
+class SemrushTopPage:
+    """One row from the ``domain_organic_pages`` report.
+
+    ``traffic_estimate`` is the *absolute* estimated monthly organic
+    visits to this URL; ``traffic_pct`` is the same as a percentage of
+    the domain total. Either may be 0.0 if SEMrush's model is sparse.
+    """
+
+    url: str
+    keyword_count: int
+    traffic_pct: float
+    traffic_estimate: int
+
+
 class SemrushError(RuntimeError):
     pass
 
@@ -183,6 +209,129 @@ class SemrushAdapter:
         )
         return keywords
 
+    def organic_competitors(
+        self,
+        domain: str,
+        *,
+        limit: int = 10,
+    ) -> list[SemrushCompetitor]:
+        """Top organic competitors for ``domain`` — domains that rank
+        for the same keywords (40 units, regardless of ``limit``).
+
+        Column codes: ``Dn,Cr,Np,Or,Ot`` — Domain, Competition Level,
+        Common Keywords, Organic Keywords, Organic Traffic. Sorted by
+        competition level descending so the most relevant rivals come
+        first.
+        """
+        ttl_key = settings.SEMRUSH.get("competitor_cache_ttl") or self.cache_ttl
+        cache_name = f"competitors__{domain}__{self.database}__{limit}.json"
+        cached = self._cache_read(cache_name, ttl_seconds=ttl_key)
+        if cached:
+            return [SemrushCompetitor(**row) for row in cached]
+        rows = self._call(
+            "domain_organic_organic",
+            domain=domain,
+            display_limit=str(limit),
+            display_sort="cr_desc",
+            export_columns="Dn,Cr,Np,Or,Ot",
+        )
+        competitors = [
+            SemrushCompetitor(
+                domain=r.get("Domain", ""),
+                competition_level=_float(r.get("Competitor Relevance") or r.get("Competition Level")),
+                common_keywords=_int(r.get("Common Keywords")),
+                organic_keywords=_int(r.get("Organic Keywords")),
+                organic_traffic=_int(r.get("Organic Traffic")),
+            )
+            for r in rows
+            if r.get("Domain")
+        ]
+        self._cache_write(cache_name, [c.__dict__ for c in competitors])
+        return competitors
+
+    def top_pages(
+        self,
+        domain: str,
+        *,
+        limit: int = 50,
+    ) -> list[SemrushTopPage]:
+        """Top organic landing pages on ``domain``.
+
+        Tries the dedicated ``domain_organic_pages`` report first; on
+        API tiers where that endpoint is unavailable (SEMrush returns
+        ``HTTP 400 query type not found``) we fall back to aggregating
+        from the keyword list — pulling :meth:`organic_keywords` and
+        grouping rows by URL. The fallback is free in units because
+        the keywords are pulled anyway by the competitor agent for the
+        keyword-gap dimension.
+        """
+        ttl_key = settings.SEMRUSH.get("competitor_cache_ttl") or self.cache_ttl
+        cache_name = f"top_pages__{domain}__{self.database}__{limit}.json"
+        cached = self._cache_read(cache_name, ttl_seconds=ttl_key)
+        if cached:
+            return [SemrushTopPage(**row) for row in cached]
+
+        pages: list[SemrushTopPage] = []
+        try:
+            rows = self._call(
+                "domain_organic_pages",
+                domain=domain,
+                display_limit=str(limit),
+                display_sort="tr_desc",
+                export_columns="Ur,Pc,Tg,Tr",
+            )
+            pages = [
+                SemrushTopPage(
+                    url=r.get("URL") or r.get("Url", ""),
+                    keyword_count=_int(
+                        r.get("Number of Keywords") or r.get("Page Keywords")
+                    ),
+                    traffic_estimate=_int(r.get("Traffic")),
+                    traffic_pct=_float(r.get("Traffic (%)")),
+                )
+                for r in rows
+                if (r.get("URL") or r.get("Url"))
+            ]
+        except SemrushError as exc:
+            # "query type not found" → endpoint not on this API tier.
+            # Any other error → re-raise so callers surface it.
+            msg = str(exc).lower()
+            if "query type" not in msg and "not found" not in msg:
+                raise
+            logger.info(
+                "domain_organic_pages unavailable for %s — falling back to "
+                "URL aggregation from organic_keywords. (%s)",
+                domain,
+                exc,
+            )
+            kw_limit = max(limit * 5, 200)
+            keywords = self.organic_keywords(domain, limit=kw_limit)
+            agg: dict[str, dict[str, float]] = {}
+            for k in keywords:
+                if not k.url:
+                    continue
+                bucket = agg.setdefault(
+                    k.url,
+                    {"keyword_count": 0, "traffic_pct": 0.0, "traffic_estimate": 0.0},
+                )
+                bucket["keyword_count"] += 1
+                bucket["traffic_pct"] += k.traffic_pct
+            # Sort by aggregated traffic-share % desc, take top N.
+            ordered = sorted(
+                agg.items(), key=lambda kv: kv[1]["traffic_pct"], reverse=True
+            )[:limit]
+            pages = [
+                SemrushTopPage(
+                    url=url,
+                    keyword_count=int(b["keyword_count"]),
+                    traffic_pct=round(b["traffic_pct"], 2),
+                    traffic_estimate=0,
+                )
+                for url, b in ordered
+            ]
+        self._cache_write(cache_name, [p.__dict__ for p in pages])
+        return pages
+
     # ── low-level ─────────────────────────────────────────────────────
 
     def _call(self, type_: str, **params: str) -> list[dict[str, str]]:
@@ -230,12 +379,13 @@ class SemrushAdapter:
 
     # ── cache (filesystem JSON, TTL'd) ───────────────────────────────
 
-    def _cache_read(self, name: str) -> Any | None:
+    def _cache_read(self, name: str, *, ttl_seconds: int | None = None) -> Any | None:
         path = self.cache_dir / name
         if not path.exists():
             return None
+        ttl = ttl_seconds if ttl_seconds is not None else self.cache_ttl
         try:
-            if (time.time() - path.stat().st_mtime) > self.cache_ttl:
+            if (time.time() - path.stat().st_mtime) > ttl:
                 return None
             with path.open("r", encoding="utf-8") as f:
                 return json.load(f)

@@ -247,6 +247,79 @@ export interface SitemapPageDetail {
   component_types: string[];
 }
 
+export interface CompetitorTopicGap {
+  cluster_slug: string;
+  competitor_page_count: number;
+  our_page_count: number;
+  sample_competitor_urls: string[];
+  sample_competitor_titles: string[];
+  competitors_covering: string[];
+}
+
+export interface CompetitorKeywordGap {
+  keyword: string;
+  competitor_domain: string;
+  competitor_position: number;
+  competitor_url: string;
+  search_volume: number;
+  competitor_traffic_pct: number;
+  score: number;
+}
+
+export interface CompetitorHygieneDelta {
+  cluster_slug: string;
+  our_avg_title_length: number;
+  competitor_avg_title_length: number;
+  our_avg_description_length: number;
+  competitor_avg_description_length: number;
+  our_h1_pct: number;
+  competitor_h1_pct: number;
+  our_schema_pct: number;
+  competitor_schema_pct: number;
+  competitor_pages_sampled: number;
+  our_pages_sampled: number;
+}
+
+export interface CompetitorVolumeDelta {
+  cluster_slug: string;
+  our_page_count: number;
+  competitor_page_count: number;
+  our_avg_word_count: number;
+  competitor_avg_word_count: number;
+  our_total_words: number;
+  competitor_total_words: number;
+}
+
+export interface CompetitorSummary {
+  domain: string;
+  competition_level: number;
+  common_keywords: number;
+  top_pages_pulled: number;
+  keywords_pulled: number;
+  pages_crawled_ok: number;
+  pages_crawl_attempted: number;
+}
+
+export interface CompetitorDashboard {
+  available: boolean;
+  error?: string;
+  domain?: string;
+  summary?: {
+    competitors_analysed: number;
+    topic_gaps_found: number;
+    keyword_gaps_found: number;
+    hygiene_deltas_found: number;
+    content_volume_deltas_found: number;
+    competitor_pages_crawled_ok: number;
+    competitor_pages_crawl_attempted: number;
+  };
+  competitors?: CompetitorSummary[];
+  topic_gaps?: CompetitorTopicGap[];
+  keyword_gaps?: CompetitorKeywordGap[];
+  hygiene_deltas?: CompetitorHygieneDelta[];
+  content_volume_deltas?: CompetitorVolumeDelta[];
+}
+
 export interface SitemapDashboard {
   available: boolean;
   error?: string;

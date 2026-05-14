@@ -10,6 +10,7 @@ import IssuesPage from './pages/IssuesPage';
 import GscPage from './pages/GscPage';
 import SemrushPage from './pages/SemrushPage';
 import SitemapContentPage from './pages/SitemapContentPage';
+import CompetitorsPage from './pages/CompetitorsPage';
 // Embedded Crawler Engine (v2) pages — see src/crawler/* and crawler-engine/.
 import CrawlerDashboard from './crawler/pages/CrawlerDashboard';
 import SiteTreePage from './crawler/pages/SiteTreePage';
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="/gsc" component={GscPage} />
             <Route path="/semrush" component={SemrushPage} />
             <Route path="/sitemap" component={SitemapContentPage} />
+            <Route path="/competitors" component={CompetitorsPage} />
 
             {/* ── Crawler Engine (v2) ─────────────────────────── */}
             <Route path="/crawler" component={CrawlerDashboard} />

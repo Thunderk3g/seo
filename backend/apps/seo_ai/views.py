@@ -11,6 +11,7 @@ Routes:
   GET  /api/v1/seo/gsc/                   → full GSC dashboard data
   GET  /api/v1/seo/semrush/               → SEMrush overview + keywords
   GET  /api/v1/seo/sitemap/               → AEM sitemap page list + rollup
+  GET  /api/v1/seo/competitor/            → competitor gap report (no LLM)
 
 Run kickoff is fire-and-forget into Celery so the API stays responsive
 even when the LLM stage takes 30+ seconds. The view returns the run id
@@ -251,6 +252,57 @@ def sitemap_dashboard(_request: Request):
             "pages": [_page_dict(p) for p in pages],
         }
     )
+
+
+@api_view(["GET"])
+def competitor_dashboard(request: Request):
+    """Competitor gap report for a domain — no LLM call, just the
+    deterministic facts built by the same machinery the CompetitorAgent
+    uses. Heavy on first call (SEMrush + crawl); cached for 7 days
+    after that so subsequent loads are instant.
+    """
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    from django.conf import settings as _settings
+
+    if not _settings.SEMRUSH.get("api_key"):
+        return Response(
+            {"available": False, "error": "SEMRUSH_API_KEY not set"}
+        )
+    if not _settings.COMPETITOR.get("enabled", True):
+        return Response(
+            {"available": False, "error": "COMPETITOR_ENABLED=false"}
+        )
+
+    # Build a one-off SEORun-less context. CompetitorAgent.build_facts
+    # only uses the run for logging system events; we side-step that
+    # by using a transient in-memory SEORun row (committed=False).
+    from .agents.competitor import CompetitorAgent
+    from .models import SEORun
+
+    transient = SEORun(domain=domain, triggered_by="dashboard")
+    transient.id = None  # don't persist conversation logs for dashboard hits
+    # We need a saved SEORun for SEORunMessage FK; create + delete is
+    # cheaper than building a logging-shim.
+    transient.save()
+    try:
+        agent = CompetitorAgent(run=transient, step_index_start=0)
+        facts = agent.build_facts(domain=domain)
+    except SemrushError as exc:
+        transient.delete()
+        return Response({"available": False, "error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surface to client
+        logger.warning("competitor dashboard failed: %s", exc)
+        transient.delete()
+        return Response({"available": False, "error": str(exc)})
+    finally:
+        # Keep transient run as the audit log for this dashboard hit
+        # so users can replay; could be GC'd by a periodic job.
+        pass
+
+    payload = facts.get("competitor", {})
+    payload["available"] = True
+    payload["domain"] = domain
+    return Response(payload)
 
 
 @api_view(["GET"])
