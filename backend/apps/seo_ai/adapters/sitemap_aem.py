@@ -45,6 +45,11 @@ class AEMPage:
     last_modified: datetime | None
     component_count: int
     component_types: list[str]
+    # Concatenated body content from every text-bearing component in the
+    # page-model tree. Empty when the export has no text components
+    # (rare — usually means a redirect or admin stub).
+    content: str = ""
+    word_count: int = 0
 
 
 @dataclass
@@ -188,6 +193,10 @@ def _to_page(entry: dict) -> AEMPage | None:
         if isinstance(title, str) and title.strip():
             components.append(title.strip())
 
+    content_blocks = _extract_content(model)
+    content_str = "\n\n".join(content_blocks)
+    word_count = sum(1 for w in content_str.split() if w)
+
     return AEMPage(
         public_url=public,
         aem_path=aem_path,
@@ -197,4 +206,63 @@ def _to_page(entry: dict) -> AEMPage | None:
         last_modified=last_mod,
         component_count=len(components),
         component_types=components,
+        content=content_str,
+        word_count=word_count,
     )
+
+
+# Fields on AEM component nodes that carry user-visible body content.
+# Order matters only for stability across runs — the extraction itself
+# deduplicates so repeated nav/footer fragments don't blow up the
+# payload.
+_CONTENT_FIELDS = ("text", "content", "heading", "subtitle", "body", "plaintext")
+
+
+def _extract_content(node, out=None, seen=None):
+    """Recursively walk a page-model node and collect text content.
+
+    Returns a list of text blocks in document order with duplicates
+    suppressed. ``content`` and ``text`` can be HTML — we strip tags so
+    the frontend doesn't need to render unsafe markup.
+    """
+    if out is None:
+        out = []
+    if seen is None:
+        seen = set()
+    if isinstance(node, dict):
+        for key in _CONTENT_FIELDS:
+            val = node.get(key)
+            if isinstance(val, str):
+                cleaned = _strip_html(val).strip()
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    out.append(cleaned)
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                _extract_content(v, out, seen)
+    elif isinstance(node, list):
+        for v in node:
+            _extract_content(v, out, seen)
+    return out
+
+
+def _strip_html(raw: str) -> str:
+    """Cheap HTML → text. AEM emits simple tags (``<p><b><sup>...``) —
+    no need to pull in BeautifulSoup for this.
+    """
+    import re
+
+    # Replace block-level tags with newlines so paragraphs stay readable.
+    text = re.sub(r"</(p|div|li|h[1-6]|br|tr)\s*>", "\n", raw, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    # Common HTML entities — AEM mostly emits &amp; / &nbsp; / &#xNN;.
+    text = (
+        text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+    )
+    return text
