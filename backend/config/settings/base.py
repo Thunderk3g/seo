@@ -163,6 +163,9 @@ COMPETITOR = {
     "keywords_per_competitor": int(os.environ.get("COMPETITOR_KW_PER_COMP", "100")),
     "rate_limit_sec": float(os.environ.get("COMPETITOR_RATE_LIMIT_SEC", "1.0")),
     "timeout_sec": int(os.environ.get("COMPETITOR_TIMEOUT_SEC", "15")),
+    # Phase 2A — how many of OUR top URLs to crawl live for the
+    # symmetric comparison. 200 ≈ 4 min crawl at 1 req/s.
+    "our_pages_limit": int(os.environ.get("COMPETITOR_OUR_PAGES_LIMIT", "200")),
     # Bot-identifiable UA strings get 403'd by Cloudflare/Akamai on
     # most enterprise sites, so default to a recent Chrome UA. We still
     # respect robots.txt and rate-limit at COMPETITOR_RATE_LIMIT_SEC,

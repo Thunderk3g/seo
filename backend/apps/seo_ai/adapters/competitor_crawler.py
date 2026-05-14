@@ -57,12 +57,16 @@ logger = logging.getLogger("seo.ai.adapters.competitor_crawler")
 
 @dataclass
 class CompetitorPage:
-    """One fetched + parsed competitor page.
+    """One fetched + parsed competitor (or our own) page.
 
     A failed fetch still yields a CompetitorPage with ``status_code``
     set (0 for network errors, or the actual HTTP status for non-2xx)
     and an ``error`` string. Downstream scoring filters on
     ``status_code == 200``.
+
+    The same dataclass is used for our-side pages in Phase 2A's
+    symmetric crawl — all fields are computed from live HTML so the
+    comparison is apples-to-apples on both sides.
     """
 
     url: str
@@ -78,6 +82,20 @@ class CompetitorPage:
     canonical: str = ""
     word_count: int = 0
     has_schema_org: bool = False
+    # Phase 2A — symmetric structural metrics.
+    response_time_ms: int = 0
+    last_modified: str = ""            # HTTP Last-Modified header (RFC 1123)
+    h2_count: int = 0
+    h3_count: int = 0
+    h2_texts: list[str] = field(default_factory=list)   # first 8 only
+    internal_link_count: int = 0
+    external_link_count: int = 0
+    image_count: int = 0
+    image_alt_pct: float = 0.0         # % of <img> with non-empty alt
+    cta_count: int = 0                 # <a> whose text matches a CTA verb
+    schema_types: list[str] = field(default_factory=list)  # JSON-LD @type values
+    meta_robots: str = ""              # content of <meta name="robots">
+    body_text: str = ""                # Phase 2A — for content-keyword-fit scoring
 
 
 class CompetitorCrawler:
@@ -149,6 +167,7 @@ class CompetitorCrawler:
 
         self._throttle(host)
         session = self._session_for(host)
+        t0 = time.monotonic()
         try:
             resp = session.get(
                 url,
@@ -158,13 +177,20 @@ class CompetitorCrawler:
             )
         except requests.RequestException as exc:
             logger.warning("competitor fetch %s failed: %s", url, exc)
-            page = CompetitorPage(url=url, error=str(exc)[:200])
+            page = CompetitorPage(
+                url=url,
+                error=str(exc)[:200],
+                response_time_ms=int((time.monotonic() - t0) * 1000),
+            )
             self._cache_write(url, page, html="")
             return page
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         page = _parse_html(
             url=url, final_url=resp.url, status=resp.status_code, body=resp.text
         )
+        page.response_time_ms = elapsed_ms
+        page.last_modified = resp.headers.get("Last-Modified", "")
         self._cache_write(url, page, html=resp.text if resp.status_code == 200 else "")
         return page
 
@@ -249,6 +275,8 @@ class CompetitorCrawler:
                 status_code=int(meta.get("status_code") or 0),
                 fetched_at=meta.get("fetched_at", ""),
                 error=meta.get("error", ""),
+                response_time_ms=int(meta.get("response_time_ms") or 0),
+                last_modified=meta.get("last_modified", ""),
             )
             return page
         page = _parse_html(
@@ -258,6 +286,10 @@ class CompetitorCrawler:
             body=html_body,
         )
         page.fetched_at = meta.get("fetched_at", page.fetched_at)
+        # Pull the network-side fields from the cached sidecar (the HTML
+        # cache doesn't carry them).
+        page.response_time_ms = int(meta.get("response_time_ms") or 0)
+        page.last_modified = meta.get("last_modified", "")
         return page
 
     def _cache_write(self, url: str, page: CompetitorPage, *, html: str) -> None:
@@ -272,6 +304,8 @@ class CompetitorCrawler:
                 "status_code": page.status_code,
                 "fetched_at": page.fetched_at or _now_iso(),
                 "error": page.error,
+                "response_time_ms": page.response_time_ms,
+                "last_modified": page.last_modified,
             }
             with meta_path.open("w", encoding="utf-8") as f:
                 json.dump(meta, f)
@@ -283,7 +317,12 @@ class CompetitorCrawler:
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
-_SCHEMA_NEEDLES = ('application/ld+json', 'itemtype="https://schema.org', "itemtype='https://schema.org")
+_CTA_VERB_RE = re.compile(
+    r"\b(buy\s*now|get\s*(?:quote|started)|calculate|apply\s*now|register|"
+    r"download|sign\s*up|book\s*now|start\s*free|try\s*free|request\s*(?:a\s*)?call|"
+    r"compare\s*plans|view\s*plans|get\s*plan|enquire\s*now|subscribe)\b",
+    re.I,
+)
 
 
 def _parse_html(*, url: str, final_url: str, status: int, body: str) -> CompetitorPage:
@@ -298,6 +337,7 @@ def _parse_html(*, url: str, final_url: str, status: int, body: str) -> Competit
 
     soup = BeautifulSoup(body, "html.parser")
 
+    # ── title / meta description / canonical / robots ───────────────
     title_tag = soup.find("title")
     page.title = (title_tag.get_text(strip=True) if title_tag else "")[:512]
     page.title_length = len(page.title)
@@ -307,33 +347,111 @@ def _parse_html(*, url: str, final_url: str, status: int, body: str) -> Competit
         page.meta_description = str(meta["content"]).strip()[:1024]
         page.meta_description_length = len(page.meta_description)
 
-    page.h1_texts = [
-        h.get_text(" ", strip=True)[:256]
-        for h in soup.find_all("h1")
-        if h.get_text(strip=True)
-    ]
+    meta_robots = soup.find("meta", attrs={"name": re.compile(r"^robots$", re.I)})
+    if meta_robots and meta_robots.get("content"):
+        page.meta_robots = str(meta_robots["content"]).strip()[:256]
 
     canonical = soup.find("link", attrs={"rel": re.compile(r"canonical", re.I)})
     if canonical and canonical.get("href"):
         page.canonical = str(canonical["href"]).strip()[:1024]
 
-    # Body word count — strip script/style/noscript before counting so
-    # the number reflects what a reader actually sees, not embedded JS.
+    # ── heading hierarchy ──────────────────────────────────────────
+    page.h1_texts = [
+        h.get_text(" ", strip=True)[:256]
+        for h in soup.find_all("h1")
+        if h.get_text(strip=True)
+    ]
+    h2_tags = [h for h in soup.find_all("h2") if h.get_text(strip=True)]
+    h3_tags = [h for h in soup.find_all("h3") if h.get_text(strip=True)]
+    page.h2_count = len(h2_tags)
+    page.h3_count = len(h3_tags)
+    # Sample first 8 h2 texts so the LLM has concrete section names to
+    # cite without the payload growing on huge pages.
+    page.h2_texts = [h.get_text(" ", strip=True)[:200] for h in h2_tags[:8]]
+
+    # ── links + CTAs ───────────────────────────────────────────────
+    page_host = (_host(final_url or url) or "").lower().lstrip("www.")
+    internal = external = cta = 0
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        a_host = ""
+        if href.startswith("http"):
+            a_host = (_host(href) or "").lower().lstrip("www.")
+        if not a_host or a_host == page_host or a_host.endswith("." + page_host):
+            internal += 1
+        else:
+            external += 1
+        text = a.get_text(" ", strip=True)
+        if text and _CTA_VERB_RE.search(text):
+            cta += 1
+    page.internal_link_count = internal
+    page.external_link_count = external
+    page.cta_count = cta
+
+    # ── images ─────────────────────────────────────────────────────
+    imgs = soup.find_all("img")
+    page.image_count = len(imgs)
+    if imgs:
+        with_alt = sum(1 for i in imgs if (i.get("alt") or "").strip())
+        page.image_alt_pct = round(100.0 * with_alt / len(imgs), 1)
+
+    # ── JSON-LD schema parse ──────────────────────────────────────
+    schema_types: list[str] = []
+    for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
+        raw = script.string or script.get_text() or ""
+        if not raw.strip():
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        _collect_schema_types(data, schema_types)
+    # Dedupe preserving order, cap at 20 so wildly nested graphs don't
+    # explode the payload.
+    seen: set[str] = set()
+    page.schema_types = [
+        t for t in schema_types if not (t in seen or seen.add(t))
+    ][:20]
+    page.has_schema_org = bool(page.schema_types)
+
+    # ── body text (for word-count + content-fit) ──────────────────
     for tag in soup(["script", "style", "noscript", "template"]):
         tag.decompose()
     text = soup.get_text(" ", strip=True)
     text = _WHITESPACE_RE.sub(" ", text).strip()
     page.word_count = len(text.split()) if text else 0
+    # Keep a slice of the body text for content-keyword-fit scoring.
+    # 30 KB is enough to catch the head keyword's presence in real
+    # article bodies without bloating the in-memory dossier.
+    page.body_text = text[:30_000]
 
-    # Schema.org presence check (cheap substring scan).
-    body_lower = body.lower() if any(n in body for n in _SCHEMA_NEEDLES) else ""
-    if not body_lower:
-        # Slow path: do a case-insensitive scan only if the cheap one missed.
-        body_lower = body.lower()
-    page.has_schema_org = any(
-        n.lower() in body_lower for n in _SCHEMA_NEEDLES
-    )
     return page
+
+
+def _collect_schema_types(node, out: list[str]) -> None:
+    """Walk a parsed JSON-LD structure and collect every ``@type`` value.
+
+    Handles single dicts, ``@graph`` arrays, nested ``mainEntity`` /
+    ``itemListElement`` / ``hasPart`` patterns, and string-or-list
+    ``@type`` values. Skips silently on malformed nodes.
+    """
+    if isinstance(node, dict):
+        t = node.get("@type")
+        if isinstance(t, str) and t.strip():
+            out.append(t.strip()[:64])
+        elif isinstance(t, list):
+            for v in t:
+                if isinstance(v, str) and v.strip():
+                    out.append(v.strip()[:64])
+        # Recurse into common container keys + everything else.
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                _collect_schema_types(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _collect_schema_types(v, out)
 
 
 def _host(url: str) -> str:
