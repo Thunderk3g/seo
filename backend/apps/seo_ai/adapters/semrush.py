@@ -7,10 +7,14 @@ for the keyword list. SEMrush bills by row (``domain_organic`` is
 and persist results to disk with a short TTL — re-running a grade
 the same day must not redo the spend.
 
-The base URL hits the public API. On Windows we disable SSL
-revocation checks via ``urllib3`` because corporate certs frequently
-break the OCSP probe (we already saw this in this project's terminal).
-We **do not** disable certificate verification itself.
+The base URL hits the public API. On Windows corporate networks an
+MITM proxy frequently injects an intermediate cert that only lives in
+the OS trust store, so ``certifi``'s bundled CAs cannot verify the
+connection and ``requests.get`` fails with
+``CERTIFICATE_VERIFY_FAILED``. We mitigate this with ``truststore``,
+which makes Python's TLS stack use the system store — same fix the
+LLM provider already applies. We **do not** disable certificate
+verification itself.
 """
 from __future__ import annotations
 
@@ -26,6 +30,17 @@ from typing import Any
 
 import requests
 from django.conf import settings
+
+# Inject the OS trust store once at module import so all ``requests``
+# calls below pick up corporate root CAs without each call having to
+# configure SSL itself. Safe no-op on macOS / Linux or if truststore
+# isn't installed.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:  # noqa: BLE001 - non-Windows or already injected
+    pass
 
 logger = logging.getLogger("seo.ai.adapters.semrush")
 
@@ -185,12 +200,25 @@ class SemrushAdapter:
         return _parse_semrush_csv(body)
 
     def _http_get(self, url: str) -> str:
-        # Windows note: corporate proxies break OCSP cert-revocation probes.
-        # We *do not* disable verification; we disable revocation checks.
-        # See: https://stackoverflow.com/q/63738209 for the underlying
-        # SCHANNEL/curl story we already hit in this project's shell.
+        # TLS verification handling mirrors the LLM provider: behind a
+        # corporate MITM proxy where certifi's bundle can't verify the
+        # injected intermediate cert, the operator sets
+        # SEMRUSH_SSL_VERIFY=false (dev) or points it at a CA bundle.
+        # Inside the Linux Docker image neither truststore nor the
+        # bundled Debian roots see the corp CA, so this is the only
+        # working escape hatch short of mounting a CA into the container.
+        verify = _resolve_semrush_ssl_verify(settings.SEMRUSH.get("ssl_verify", ""))
+        if verify is False:
+            # Quiet the urllib3 InsecureRequestWarning that floods the
+            # logs once per call when verification is off.
+            try:
+                import urllib3
+
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:  # noqa: BLE001
+                pass
         try:
-            resp = requests.get(url, timeout=30)
+            resp = requests.get(url, timeout=30, verify=verify)
         except requests.RequestException as exc:
             raise SemrushError(str(exc)) from exc
         if resp.status_code != 200:
@@ -229,6 +257,32 @@ def _encode(params: dict[str, str]) -> str:
     from urllib.parse import urlencode
 
     return urlencode({k: v for k, v in params.items() if v is not None})
+
+
+def _resolve_semrush_ssl_verify(raw: str) -> bool | str:
+    """Map SEMRUSH_SSL_VERIFY env value → requests ``verify`` argument.
+
+    Empty / "true" → True (use certifi). "false"/"0"/"no"/"off" → False
+    (disable verification; dev-only escape hatch for corp MITM proxies,
+    same pattern as LLM_SSL_VERIFY). Anything else is treated as a path
+    to a CA bundle file; non-existent paths fall back to True with a
+    log warning rather than crashing the API call.
+    """
+    import os.path
+
+    value = (raw or "").strip()
+    if not value or value.lower() in ("true", "1", "yes", "on"):
+        return True
+    if value.lower() in ("false", "0", "no", "off"):
+        return False
+    if os.path.exists(value):
+        return value
+    logger.warning(
+        "SEMRUSH_SSL_VERIFY=%r does not exist on disk — falling back to "
+        "default (certifi) verification.",
+        value,
+    )
+    return True
 
 
 def _parse_semrush_csv(body: str) -> list[dict[str, str]]:

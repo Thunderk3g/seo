@@ -17,6 +17,11 @@ requests>=2.31
 beautifulsoup4>=4.12
 openpyxl>=3.1
 
+# Windows-friendly TLS — makes urllib3/requests use the OS trust store
+# instead of certifi's bundled CAs, which fixes CERTIFICATE_VERIFY_FAILED
+# behind corporate MITM proxies. No-op on macOS / Linux.
+truststore>=0.9
+
 # Optional middleware (already referenced in design; kept for parity)
 whitenoise>=6.6.0
 django-cors-headers>=4.3.0

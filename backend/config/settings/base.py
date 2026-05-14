@@ -140,6 +140,9 @@ SEMRUSH = {
     "api_key": os.environ.get("SEMRUSH_API_KEY", ""),
     "database": os.environ.get("SEMRUSH_DATABASE", "in"),
     "default_limit": int(os.environ.get("SEMRUSH_DEFAULT_LIMIT", "100")),
+    # Same semantics as LLM_SSL_VERIFY above. Needed inside the Docker
+    # image because the Debian-slim trust store lacks the corp MITM root.
+    "ssl_verify": os.environ.get("SEMRUSH_SSL_VERIFY", "").strip(),
 }
 
 # ─────────────────────────────────────────────────────────────
