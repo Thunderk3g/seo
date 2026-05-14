@@ -1783,3 +1783,43 @@ button { font: inherit; }
   border: 1px solid var(--border-2);
 }
 .seo-btn.seo-btn-ghost:hover { background: var(--accent-soft); }
+
+/* ── Data Source page primitives ────────────────────────────────────────── */
+
+.seo-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.seo-input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  min-width: 200px;
+}
+.seo-input:focus { outline: 2px solid var(--accent-soft); outline-offset: 0; border-color: var(--accent); }
+
+.seo-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.seo-pager-meta { font-variant-numeric: tabular-nums; }
+
+.seo-sortable { cursor: pointer; user-select: none; }
+.seo-sortable:hover { color: var(--text); }
+
+.seo-mover-up { color: #10803a; }
+.seo-mover-down { color: #b8341c; }
+.seo-mover-warn { color: #b97a07; }
+.seo-mover-ok { color: var(--text-2); }
+

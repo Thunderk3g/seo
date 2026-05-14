@@ -1,9 +1,10 @@
 // Sidebar.tsx — left rail of the Bajaj SEO dashboard.
 //
 // Reshaped around the SEO AI grading flow: Overview + SEO Grade are
-// the primary surfaces; everything else (legacy crawler views,
-// settings, the embedded Crawler Engine v2) is grouped under "Tools"
-// so the main nav stays focused on what the user actually does.
+// the primary surfaces. The "Data Sources" group surfaces the raw
+// inputs that feed the agents (Search Console, SEMrush, AEM sitemap)
+// as standalone dashboards. The embedded Crawler Engine (v2) sits in
+// its own group below.
 
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
@@ -28,17 +29,10 @@ const PRIMARY_NAV: NavItem[] = [
   { id: 'issues', label: 'Issues', icon: 'issues', path: '/issues' },
 ];
 
-const TOOL_NAV: NavItem[] = [
-  { id: 'sessions', label: 'Crawl Sessions', icon: 'sessions', path: '/sessions' },
-  { id: 'analytics', label: 'Analytics', icon: 'analytics', path: '/analytics' },
-  {
-    id: 'visualizations',
-    label: 'Visualizations',
-    icon: 'visualizations',
-    path: '/visualizations',
-  },
-  { id: 'exports', label: 'Exports', icon: 'exports', path: '/exports' },
-  { id: 'settings', label: 'Settings', icon: 'settings', path: '/settings' },
+const DATA_SOURCE_NAV: NavItem[] = [
+  { id: 'gsc', label: 'Search Console', icon: 'analytics', path: '/gsc' },
+  { id: 'semrush', label: 'SEMrush Keywords', icon: 'pages', path: '/semrush' },
+  { id: 'sitemap', label: 'Content via Sitemap', icon: 'visualizations', path: '/sitemap' },
 ];
 
 // Embedded Crawler Engine (v2) — backed by the standalone FastAPI service in
@@ -124,9 +118,9 @@ export default function Sidebar() {
       </nav>
 
       <div className="sidebar-section" style={{ marginTop: 10 }}>
-        <div className="sidebar-section-title">Tools</div>
+        <div className="sidebar-section-title">Data Sources</div>
         <nav className="sidebar-nav">
-          {TOOL_NAV.map((it) => (
+          {DATA_SOURCE_NAV.map((it) => (
             <Link
               key={it.id}
               href={it.path}

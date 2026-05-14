@@ -5,13 +5,11 @@ import StatusBar from './components/StatusBar';
 import OverviewPage from './pages/OverviewPage';
 import GradePage from './pages/GradePage';
 import GradeDetailPage from './pages/GradeDetailPage';
-import SessionsPage from './pages/SessionsPage';
 import PagesUrlsPage from './pages/PagesUrlsPage';
 import IssuesPage from './pages/IssuesPage';
-import AnalyticsPage from './pages/AnalyticsPage';
-import VisualizationsPage from './pages/VisualizationsPage';
-import ExportsPage from './pages/ExportsPage';
-import SettingsPage from './pages/SettingsPage';
+import GscPage from './pages/GscPage';
+import SemrushPage from './pages/SemrushPage';
+import SitemapContentPage from './pages/SitemapContentPage';
 // Embedded Crawler Engine (v2) pages — see src/crawler/* and crawler-engine/.
 import CrawlerDashboard from './crawler/pages/CrawlerDashboard';
 import SiteTreePage from './crawler/pages/SiteTreePage';
@@ -33,14 +31,14 @@ export default function App() {
             <Route path="/grade" component={GradePage} />
             <Route path="/grade/:id" component={GradeDetailPage} />
 
-            {/* ── Tools (existing crawler-engine driven pages) ─ */}
-            <Route path="/sessions" component={SessionsPage} />
+            {/* ── Pages / URLs / Issues ──────────────────────── */}
             <Route path="/pages" component={PagesUrlsPage} />
             <Route path="/issues" component={IssuesPage} />
-            <Route path="/analytics" component={AnalyticsPage} />
-            <Route path="/visualizations" component={VisualizationsPage} />
-            <Route path="/exports" component={ExportsPage} />
-            <Route path="/settings" component={SettingsPage} />
+
+            {/* ── Data Sources ─────────────────────────────────── */}
+            <Route path="/gsc" component={GscPage} />
+            <Route path="/semrush" component={SemrushPage} />
+            <Route path="/sitemap" component={SitemapContentPage} />
 
             {/* ── Crawler Engine (v2) ─────────────────────────── */}
             <Route path="/crawler" component={CrawlerDashboard} />
