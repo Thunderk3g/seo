@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jsonschema
@@ -46,6 +46,27 @@ class AgentResult:
     tokens_in: int
     tokens_out: int
     step_index: int
+
+
+@dataclass
+class FindingDraft:
+    """Detection-only finding produced by the Phase-2 gap-analysis agents.
+
+    Deliberately omits a ``recommendation`` field — these agents only
+    *detect* weak points; suggesting fixes is a later phase. The
+    orchestrator's persistence step writes these rows into
+    :class:`SEORunFinding` with ``recommendation=""``.
+    """
+
+    category: str
+    severity: str               # "critical" | "warning" | "notice"
+    title: str
+    description: str = ""
+    evidence_refs: list[str] = field(default_factory=list)
+    impact: str = "medium"      # "high" | "medium" | "low"
+    # ``effort`` is left blank for detection-only agents — costing the
+    # fix is a job for the next-phase recommender.
+    effort: str = ""
 
 
 class Agent:
@@ -199,6 +220,32 @@ class Agent:
         """Persist a non-LLM step (data fetched, decision taken, etc.)."""
         self._log_message(role="system", content={"event": event, "data": payload or {}})
         self.step_index += 1
+
+    # ── detection-only API ──────────────────────────────────────────────
+    #
+    # The newer gap-analysis agents (AISearchVisibility, SERPVisibility,
+    # TechnicalAudit, etc.) operate in detection mode: they emit a list
+    # of weak-point :class:`FindingDraft` entries rather than calling the
+    # LLM for narration. Subclasses override :meth:`detect` and (when
+    # they cite specific evidence) :meth:`valid_evidence_keys`.
+
+    def detect(self, *, domain: str) -> list[FindingDraft]:
+        """Return a list of detection-only findings for the given domain.
+
+        Default implementation is a no-op so legacy specialists can keep
+        their JSON-mode ``call_model()`` path without implementing
+        ``detect()``. Detection agents override this.
+        """
+        return []
+
+    def valid_evidence_keys(self) -> set[str]:
+        """Return the set of evidence-ref keys this agent legitimately
+        cites. The critic consults this when validating findings; an
+        empty set is interpreted by the orchestrator as "skip critic
+        validation for this agent" (detection-only agents are
+        deterministic, so there's nothing to fact-check).
+        """
+        return set()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

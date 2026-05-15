@@ -38,14 +38,24 @@ from rest_framework.response import Response
 from .adapters import GSCCSVAdapter, SemrushAdapter, SitemapAEMAdapter
 from .adapters.semrush import SemrushError
 from .chat import ChatRouter
-from .models import SEORun
+from .models import (
+    GapCompetitor,
+    GapComparison,
+    GapDeepCrawl,
+    GapLLMResult,
+    GapPipelineQuery,
+    GapPipelineRun,
+    GapPipelineStatus,
+    GapSerpResult,
+    SEORun,
+)
 from .overview import build_overview, read_daily_series
 from .serializers import (
     SEORunFindingSerializer,
     SEORunMessageSerializer,
     SEORunSerializer,
 )
-from .tasks import run_grade_task
+from .tasks import run_gap_pipeline_task, run_grade_task
 
 logger = logging.getLogger("seo.ai.views")
 
@@ -350,6 +360,325 @@ def sitemap_page_detail(request: Request):
         {"detail": "page not found in current AEM snapshot"},
         status=status.HTTP_404_NOT_FOUND,
     )
+
+
+# ── competitor gap detection ─────────────────────────────────────────────
+
+
+@api_view(["GET"])
+def competitor_gap_detection(request: Request):
+    """Per-agent detection findings for the latest finished run.
+
+    Returns one bucket per detection agent (the 7 Phase-2 agents). Each
+    bucket is a list of finding rows; an empty bucket means either the
+    agent was skipped (missing API key) or it ran and found nothing.
+    The caller can disambiguate by reading the run's audit messages.
+    Accepts both COMPLETE and DEGRADED status.
+    """
+    from .agents.orchestrator import DETECTION_AGENTS
+    from .models import SEORunStatus
+
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    detection_agent_names = [
+        getattr(c, "name", c.__name__) for c in DETECTION_AGENTS
+    ]
+    # Detection findings persist regardless of the run's terminal
+    # status — a critic/narrator LLM crash later in the pipeline
+    # doesn't unmake them. So we pick the most recent run on this
+    # domain that actually has any detection findings, rather than
+    # filtering on status.
+    run = (
+        SEORun.objects.filter(
+            domain=domain,
+            findings__agent__in=detection_agent_names,
+        )
+        .order_by("-started_at")
+        .distinct()
+        .first()
+    )
+    if run is None:
+        return Response({"available": False, "domain": domain})
+
+    by_agent: dict[str, list] = {n: [] for n in detection_agent_names}
+    for f in run.findings.filter(
+        agent__in=detection_agent_names
+    ).order_by("-priority"):
+        by_agent[f.agent].append(SEORunFindingSerializer(f).data)
+
+    # Lightweight skip / crash audit so the UI can show "skipped: no
+    # API key" rather than mistaking empty for "ran clean".
+    audit: dict[str, dict[str, str]] = {}
+    for msg in run.messages.filter(role="system").only(
+        "from_agent", "content"
+    ):
+        event = (msg.content or {}).get("event") or ""
+        if not event.endswith(".skipped") and not event.endswith(".crashed"):
+            continue
+        agent_key = event.rsplit(".", 1)[0]
+        if agent_key in by_agent:
+            audit[agent_key] = {
+                "status": event.rsplit(".", 1)[1],
+                "reason": ((msg.content or {}).get("data") or {}).get(
+                    "reason", ""
+                )[:300],
+            }
+
+    return Response(
+        {
+            "available": True,
+            "domain": domain,
+            "run_id": str(run.id),
+            "run_status": run.status,
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "findings_by_agent": by_agent,
+            "agent_status": audit,
+        }
+    )
+
+
+# ── gap detection pipeline ───────────────────────────────────────────────
+
+
+def _serialize_query(q: GapPipelineQuery) -> dict:
+    return {
+        "id": str(q.id),
+        "query": q.query,
+        "intent": q.intent,
+        "rationale": q.rationale,
+        "source_keywords": q.source_keywords,
+        "order": q.order,
+    }
+
+
+def _serialize_llm_result(r: GapLLMResult) -> dict:
+    return {
+        "id": str(r.id),
+        "query_id": str(r.query_id),
+        "provider": r.provider,
+        "model": r.model,
+        "answer_text": r.answer_text,
+        "cited_urls": r.cited_urls,
+        "cited_domains": r.cited_domains,
+        "mentions_our_brand": r.mentions_our_brand,
+        "web_search_used": r.web_search_used,
+        "tokens_in": r.tokens_in,
+        "tokens_out": r.tokens_out,
+        "cost_usd": r.cost_usd,
+        "latency_ms": r.latency_ms,
+        "cached": r.cached,
+        "error": r.error,
+    }
+
+
+def _serialize_serp_result(r: GapSerpResult) -> dict:
+    return {
+        "id": str(r.id),
+        "query_id": str(r.query_id),
+        "engine": r.engine,
+        "organic": r.organic,
+        "featured_snippet": r.featured_snippet,
+        "ai_overview": r.ai_overview,
+        "people_also_ask": r.people_also_ask,
+        "related_searches": r.related_searches,
+        "our_position": r.our_position,
+        "cached": r.cached,
+        "latency_ms": r.latency_ms,
+        "error": r.error,
+    }
+
+
+def _serialize_competitor(c: GapCompetitor) -> dict:
+    return {
+        "id": str(c.id),
+        "domain": c.domain,
+        "rank": c.rank,
+        "score": c.score,
+        "llm_citation_count": c.llm_citation_count,
+        "serp_appearance_count": c.serp_appearance_count,
+        "serp_top3_count": c.serp_top3_count,
+        "featured_snippet_count": c.featured_snippet_count,
+        "ai_overview_citation_count": c.ai_overview_citation_count,
+        "queries_appeared_for": c.queries_appeared_for,
+        "score_breakdown": c.score_breakdown,
+    }
+
+
+def _serialize_deep_crawl(c: GapDeepCrawl) -> dict:
+    return {
+        "id": str(c.id),
+        "competitor_id": str(c.competitor_id) if c.competitor_id else None,
+        "domain": c.domain,
+        "is_us": c.is_us,
+        "sitemap_url_count": c.sitemap_url_count,
+        "pages_attempted": c.pages_attempted,
+        "pages_ok": c.pages_ok,
+        "profile": c.profile,
+        "error": c.error,
+    }
+
+
+def _serialize_comparison(c: GapComparison) -> dict:
+    return {
+        "id": str(c.id),
+        "dimension": c.dimension,
+        "severity": c.severity,
+        "headline": c.headline,
+        "our_value": c.our_value,
+        "competitor_median": c.competitor_median,
+        "delta": c.delta,
+        "evidence": c.evidence,
+        "priority": c.priority,
+    }
+
+
+def _serialize_run_header(run: GapPipelineRun) -> dict:
+    return {
+        "id": str(run.id),
+        "domain": run.domain,
+        "status": run.status,
+        "triggered_by": run.triggered_by,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "query_count": run.query_count,
+        "seed_keyword_count": run.seed_keyword_count,
+        "llm_provider_count": run.llm_provider_count,
+        "llm_call_count": run.llm_call_count,
+        "llm_total_cost_usd": run.llm_total_cost_usd,
+        "serp_engine_count": run.serp_engine_count,
+        "serp_call_count": run.serp_call_count,
+        "competitor_count": run.competitor_count,
+        "deep_crawl_pages": run.deep_crawl_pages,
+        "stage_status": run.stage_status,
+        "config_snapshot": run.config_snapshot,
+        "error": run.error,
+    }
+
+
+@api_view(["POST"])
+def gap_pipeline_start(request: Request):
+    """Kick off a gap detection pipeline run.
+
+    Body: ``{"domain": "bajajlifeinsurance.com", "sync": false,
+    "top_n": 10, "query_count": 24}``. ``sync`` runs inline for dev;
+    default path enqueues a Celery task and returns 202 with the run
+    id for the client to poll.
+    """
+    body = request.data or {}
+    domain = (body.get("domain") or "").strip()
+    if not domain:
+        return Response(
+            {"detail": "domain is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    sync = bool(body.get("sync"))
+    top_n = max(1, min(int(body.get("top_n") or 10), 20))
+    query_count = max(8, min(int(body.get("query_count") or 24), 40))
+
+    run = GapPipelineRun.objects.create(domain=domain, triggered_by="api")
+    run.config_snapshot = {
+        "top_n": top_n,
+        "query_count": query_count,
+        "domain": domain,
+    }
+    run.save(update_fields=["config_snapshot"])
+
+    if sync:
+        from .gap_pipeline.orchestrator import GapPipelineOrchestrator
+
+        try:
+            GapPipelineOrchestrator(run).execute(
+                top_n=top_n, query_count=query_count
+            )
+        except Exception as exc:  # noqa: BLE001 - surface to client
+            return Response(
+                {"id": str(run.id), "status": "failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(_serialize_run_header(run))
+
+    run_gap_pipeline_task.delay(
+        str(run.id), top_n=top_n, query_count=query_count
+    )
+    return Response(
+        {"id": str(run.id), "status": run.status},
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+@api_view(["GET"])
+def gap_pipeline_status(request: Request, run_id: str):
+    """Lightweight status endpoint for polling.
+
+    Returns just the run header (status + counters + stage_status JSON),
+    not the full child-table payload. The frontend polls this on a 3-5
+    second interval while the run is in progress, and switches to the
+    full-detail endpoint once status hits a terminal state.
+    """
+    try:
+        run = GapPipelineRun.objects.get(pk=run_id)
+    except GapPipelineRun.DoesNotExist:
+        return Response(
+            {"detail": "run not found"}, status=status.HTTP_404_NOT_FOUND
+        )
+    return Response(_serialize_run_header(run))
+
+
+@api_view(["GET"])
+def gap_pipeline_detail(request: Request, run_id: str):
+    """Full pipeline payload — run header + every child table.
+
+    This is the endpoint the UI uses to render the 6 stage panels. It
+    can be heavy (hundreds of LLM/SERP rows), so the frontend only hits
+    it after the run reaches a terminal state — or on a slower interval
+    while running for incremental refresh.
+    """
+    try:
+        run = GapPipelineRun.objects.get(pk=run_id)
+    except GapPipelineRun.DoesNotExist:
+        return Response(
+            {"detail": "run not found"}, status=status.HTTP_404_NOT_FOUND
+        )
+
+    payload = _serialize_run_header(run)
+    payload["queries"] = [
+        _serialize_query(q) for q in run.queries.all().order_by("order")
+    ]
+    payload["llm_results"] = [
+        _serialize_llm_result(r) for r in run.llm_results.all()
+    ]
+    payload["serp_results"] = [
+        _serialize_serp_result(r) for r in run.serp_results.all()
+    ]
+    payload["competitors"] = [
+        _serialize_competitor(c) for c in run.competitors.all().order_by("rank")
+    ]
+    payload["deep_crawls"] = [
+        _serialize_deep_crawl(c) for c in run.deep_crawls.all()
+    ]
+    payload["comparisons"] = [
+        _serialize_comparison(c) for c in run.comparisons.all().order_by("-priority")
+    ]
+    return Response(payload)
+
+
+@api_view(["GET"])
+def gap_pipeline_latest(request: Request):
+    """Return the most-recent run for a domain (or null payload).
+
+    The frontend opens the Competitors page and calls this first — if a
+    recent run exists it renders straight away; if not, the user clicks
+    "Run pipeline" to trigger ``gap_pipeline_start``.
+    """
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    run = (
+        GapPipelineRun.objects.filter(domain=domain)
+        .order_by("-started_at")
+        .first()
+    )
+    if run is None:
+        return Response({"available": False, "domain": domain})
+    payload = {"available": True, **_serialize_run_header(run)}
+    return Response(payload)
 
 
 # ── chat (SSE) ───────────────────────────────────────────────────────────

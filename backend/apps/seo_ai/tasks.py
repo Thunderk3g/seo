@@ -11,7 +11,8 @@ import logging
 from celery import shared_task
 
 from .agents.orchestrator import Orchestrator
-from .models import SEORun
+from .gap_pipeline.orchestrator import GapPipelineOrchestrator
+from .models import GapPipelineRun, SEORun
 
 logger = logging.getLogger("seo.ai.tasks")
 
@@ -32,4 +33,26 @@ def run_grade_task(self, run_id: str) -> str:
         logger.error("run_grade_task: SEORun %s not found", run_id)
         return "not_found"
     Orchestrator(run).execute()
+    return str(run.status)
+
+
+@shared_task(name="seo_ai.run_gap_pipeline", bind=True, max_retries=0)
+def run_gap_pipeline_task(
+    self, run_id: str, *, top_n: int = 10, query_count: int = 24
+) -> str:
+    """Execute a gap-detection pipeline run that's already in the DB.
+
+    Same split-create-then-execute pattern as :func:`run_grade_task`:
+    the API view creates the ``GapPipelineRun`` row so the client can
+    poll its status immediately, then enqueues this task. The 6-stage
+    pipeline writes intermediate data into child tables and updates
+    ``stage_status`` after each stage, which is what the polling UI
+    reads to render live progress.
+    """
+    try:
+        run = GapPipelineRun.objects.get(id=run_id)
+    except GapPipelineRun.DoesNotExist:
+        logger.error("run_gap_pipeline_task: GapPipelineRun %s not found", run_id)
+        return "not_found"
+    GapPipelineOrchestrator(run).execute(top_n=top_n, query_count=query_count)
     return str(run.status)
