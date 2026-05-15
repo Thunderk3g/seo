@@ -1,3 +1,3 @@
-from .provider import LLMProvider, LLMResponse, get_provider
+from .provider import LLMProvider, LLMResponse, StreamChunk, get_provider
 
-__all__ = ["LLMProvider", "LLMResponse", "get_provider"]
+__all__ = ["LLMProvider", "LLMResponse", "StreamChunk", "get_provider"]

@@ -21,11 +21,34 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from django.conf import settings
 
 logger = logging.getLogger("seo.ai.llm")
+
+
+@dataclass
+class StreamChunk:
+    """One frame emitted by :meth:`LLMProvider.stream_complete`.
+
+    Three kinds:
+      * ``text``      — ``text`` carries the delta to append to the
+                         assistant message buffer.
+      * ``tool_call`` — emitted once per fully-assembled tool call after
+                         the stream finishes. ``tool_call`` is a dict
+                         shaped like :attr:`LLMResponse.tool_calls`.
+      * ``done``      — terminal frame. Carries the final
+                         ``finish_reason`` plus token / cost totals.
+    """
+
+    kind: str
+    text: str = ""
+    tool_call: dict[str, Any] | None = None
+    finish_reason: str = ""
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
 
 
 @dataclass
@@ -66,6 +89,17 @@ class LLMProvider:
         temperature: float | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Iterator[StreamChunk]:  # pragma: no cover - interface
         raise NotImplementedError
 
 
@@ -234,6 +268,100 @@ class GroqProvider(LLMProvider):
             raw=resp.model_dump() if hasattr(resp, "model_dump") else None,
         )
 
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Iterator[StreamChunk]:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens or self._default_max_tokens,
+            "temperature": (
+                temperature if temperature is not None else self._default_temperature
+            ),
+            "stream": True,
+            # include_usage adds a trailing chunk with prompt/completion totals.
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            kwargs["tools"] = tools
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
+
+        # Tool calls arrive as a stream of deltas indexed per call. We
+        # accumulate per-index until the stream ends, then emit one
+        # ``tool_call`` chunk per assembled call with parsed arguments.
+        tc_acc: dict[int, dict[str, Any]] = {}
+        last_finish_reason = ""
+        final_usage: Any = None
+
+        stream = self._client.chat.completions.create(**kwargs)
+        for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                final_usage = usage
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            text = getattr(delta, "content", None)
+            if text:
+                yield StreamChunk(kind="text", text=text)
+
+            for tc in getattr(delta, "tool_calls", None) or []:
+                idx = getattr(tc, "index", 0) or 0
+                slot = tc_acc.setdefault(
+                    idx, {"id": "", "name": "", "args_buf": ""}
+                )
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["args_buf"] += fn.arguments
+
+            fr = getattr(choice, "finish_reason", None)
+            if fr:
+                last_finish_reason = fr
+
+        for idx in sorted(tc_acc.keys()):
+            slot = tc_acc[idx]
+            try:
+                args = json.loads(slot["args_buf"] or "{}")
+            except json.JSONDecodeError:
+                args = {"_raw": slot["args_buf"]}
+            yield StreamChunk(
+                kind="tool_call",
+                tool_call={
+                    "id": slot["id"],
+                    "name": slot["name"],
+                    "arguments": args,
+                },
+            )
+
+        tokens_in = getattr(final_usage, "prompt_tokens", 0) if final_usage else 0
+        tokens_out = (
+            getattr(final_usage, "completion_tokens", 0) if final_usage else 0
+        )
+        yield StreamChunk(
+            kind="done",
+            finish_reason=last_finish_reason,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=_estimate_cost(self.model, tokens_in, tokens_out),
+        )
+
 
 # ── Stub (no network) ──────────────────────────────────────────────────
 
@@ -267,6 +395,18 @@ class StubProvider(LLMProvider):
             model=self.model,
             finish_reason="stop",
         )
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Iterator[StreamChunk]:
+        yield StreamChunk(kind="text", text="(stub provider — no LLM configured)")
+        yield StreamChunk(kind="done", finish_reason="stop")
 
 
 def _resolve_ssl_verify(raw: str) -> bool | str:

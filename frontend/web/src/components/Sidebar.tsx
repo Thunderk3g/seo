@@ -1,10 +1,11 @@
 // Sidebar.tsx — left rail of the Bajaj SEO dashboard.
 //
-// Reshaped around the SEO AI grading flow: Overview + SEO Grade are
-// the primary surfaces. The "Data Sources" group surfaces the raw
-// inputs that feed the agents (Search Console, SEMrush, AEM sitemap)
-// as standalone dashboards. The embedded Crawler Engine (v2) sits in
-// its own group below.
+// The primary surface is the conversational Assistant at "/". Static
+// dashboards (Overview / Grade / Pages / Issues) were retired — the
+// assistant fronts the same agents and data. The "Data Sources" group
+// surfaces the raw inputs that feed the agents (Search Console,
+// SEMrush, AEM sitemap, Competitors) as drill-down dashboards. The
+// embedded Crawler Engine (v2) sits in its own group below.
 
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
@@ -13,7 +14,6 @@ import QuickStats from './QuickStats';
 import { useActiveSite } from '../api/hooks/useActiveSite';
 import { useWebsites } from '../api/hooks/useWebsites';
 import { useSessions } from '../api/hooks/useSessions';
-import { useIssues } from '../api/hooks/useIssues';
 
 interface NavItem {
   id: string;
@@ -23,10 +23,7 @@ interface NavItem {
 }
 
 const PRIMARY_NAV: NavItem[] = [
-  { id: 'overview', label: 'Overview', icon: 'dashboard', path: '/' },
-  { id: 'grade', label: 'SEO Grade', icon: 'analytics', path: '/grade' },
-  { id: 'pages', label: 'Pages / URLs', icon: 'pages', path: '/pages' },
-  { id: 'issues', label: 'Issues', icon: 'issues', path: '/issues' },
+  { id: 'chat', label: 'Assistant', icon: 'analytics', path: '/' },
 ];
 
 const DATA_SOURCE_NAV: NavItem[] = [
@@ -60,16 +57,10 @@ export default function Sidebar() {
   const sites = websites.data?.results ?? [];
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? null;
 
-  // Latest session of the active site — drives the Issues nav badge and
-  // the QuickStats inset. Sessions come back ordered by -started_at, so the
-  // head is the latest.
+  // Latest session of the active site — drives the QuickStats inset.
+  // Sessions come back ordered by -started_at, so the head is latest.
   const sessions = useSessions(activeSiteId);
   const latestSessionId = sessions.data?.[0]?.id ?? null;
-  const issues = useIssues(latestSessionId);
-  const errorIssueCount = (issues.data ?? []).reduce(
-    (sum, i) => sum + (i.severity === 'error' ? i.count : 0),
-    0,
-  );
 
   // Close the project dropdown on outside mousedown. Only attach the
   // listener while the menu is open so we're not paying for it otherwise.
@@ -101,19 +92,10 @@ export default function Sidebar() {
           <Link
             key={it.id}
             href={it.path}
-            className={
-              'nav-item ' +
-              (isActive(it.path, location) ||
-              (it.path === '/grade' && location.startsWith('/grade'))
-                ? 'active'
-                : '')
-            }
+            className={'nav-item ' + (isActive(it.path, location) ? 'active' : '')}
           >
             <Icon name={it.icon} size={16} />
             <span>{it.label}</span>
-            {it.id === 'issues' && errorIssueCount > 0 && (
-              <span className="nav-badge">{errorIssueCount}</span>
-            )}
           </Link>
         ))}
       </nav>
