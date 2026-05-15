@@ -2406,3 +2406,606 @@ button { font: inherit; }
 }
 .gap-card-toggle:hover { text-decoration: underline; }
 
+/* ── Gap Detection Pipeline (Phase 3) ───────────────────────────────── */
+.gap-pipe-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.gap-pipe-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.gap-pipe-header-stats {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.gap-pipe-stat {
+  min-width: 72px;
+}
+.gap-pipe-stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.gap-pipe-stat-value {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.gap-pipe-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 16px;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+.gap-pipe-step {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  gap: 10px;
+  position: relative;
+  transition: border-color 120ms, background 120ms;
+}
+.gap-pipe-step-index {
+  font-size: 11px;
+  font-weight: 700;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.gap-pipe-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.gap-pipe-step-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.gap-pipe-step-sub {
+  font-size: 10px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+.gap-pipe-step--running {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.gap-pipe-step--running .gap-pipe-step-index {
+  background: var(--accent);
+  color: #fff;
+}
+.gap-pipe-step--ok,
+.gap-pipe-step--no_gaps_found {
+  border-color: var(--accent-soft);
+}
+.gap-pipe-step--ok .gap-pipe-step-index,
+.gap-pipe-step--no_gaps_found .gap-pipe-step-index {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.gap-pipe-step--failed { border-color: var(--error); }
+.gap-pipe-step--failed .gap-pipe-step-index {
+  background: var(--error-soft);
+  color: var(--error);
+}
+.gap-pipe-step--skipped,
+.gap-pipe-step--empty {
+  opacity: 0.7;
+}
+
+.gap-pipe-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gap-pipe-summary-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 0 14px;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 12px;
+}
+.gap-pipe-summary-cell {
+  min-width: 100px;
+}
+.gap-pipe-summary-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.gap-pipe-summary-value {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 600;
+}
+.gap-pipe-summary-unit {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.gap-pipe-summary-sub {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.gap-pipe-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.gap-pipe-tab {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.gap-pipe-tab:hover { color: var(--text); }
+.gap-pipe-tab--active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.gap-pipe-tab-count {
+  font-size: 10px;
+  background: var(--surface-3);
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--text-3);
+}
+.gap-pipe-tab--active .gap-pipe-tab-count {
+  background: var(--accent);
+  color: #fff;
+}
+
+.gap-pill {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.gap-pill-info        { background: var(--accent-soft);  color: var(--accent); }
+.gap-pill-commercial  { background: var(--warning-soft); color: var(--warning); }
+.gap-pill-comparison  { background: rgba(168,85,247,0.12); color: rgb(168,85,247); }
+.gap-pill-brand       { background: rgba(244,114,182,0.12); color: rgb(244,114,182); }
+.gap-pill-longtail    { background: rgba(96,165,250,0.12); color: rgb(96,165,250); }
+.gap-pill-conv        { background: rgba(45,212,191,0.12); color: rgb(45,212,191); }
+.gap-pill-yes         { background: var(--accent-soft);  color: var(--accent); }
+.gap-pill-no          { background: var(--error-soft);   color: var(--error); }
+.gap-pill-mid         { background: var(--warning-soft); color: var(--warning); }
+.gap-pill-skipped     { background: var(--surface-3);    color: var(--text-3); }
+
+.gap-pipe-us-row td {
+  background: var(--accent-soft);
+}
+
+@media (max-width: 1100px) {
+  .gap-pipe-timeline {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .gap-pipe-timeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── Competitors-page tab strip (GSC-style 3-tab layout) ──────────────── */
+.competitor-tab-strip {
+  display: flex;
+  gap: 4px;
+  margin: 16px 0 12px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+  flex-wrap: wrap;
+}
+.competitor-tab-strip .tab {
+  padding: 8px 14px;
+  font-size: 13px;
+  border-radius: 6px 6px 0 0;
+}
+.competitor-tab-strip .tab.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+  background: var(--surface-2);
+}
+
+.competitor-tab-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.competitor-tab-body .gap-section {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* ── Stage timeline as interactive sub-tab nav ───────────────────────── */
+.gap-pipe-step {
+  padding: 0;          /* button inside owns the padding now */
+}
+.gap-pipe-step-btn {
+  background: transparent;
+  border: 0;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border-radius: 10px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.gap-pipe-step-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.gap-pipe-step-btn:disabled {
+  cursor: not-allowed;
+}
+.gap-pipe-step--pending {
+  opacity: 0.55;
+}
+.gap-pipe-step--active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.gap-pipe-step--active .gap-pipe-step-index {
+  background: var(--accent);
+  color: #fff;
+}
+.gap-pipe-step--active .gap-pipe-step-title {
+  color: var(--accent);
+}
+
+/* ── Pipeline tab slim head (above the timeline) ─────────────────────── */
+.gap-pipe-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.gap-pipe-tab-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 4px 0 0;
+}
+.gap-pipe-tab-head-left {
+  flex: 1;
+  min-width: 0;
+}
+.gap-pipe-panel-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Detection-findings tab: 3 grouped section cards ─────────────────── */
+.findings-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.findings-group {
+  /* The wrapper .seo-card already supplies padding + border. We just
+     adjust the inner grid spacing so the agent cards inside breathe. */
+}
+.findings-group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+@media (max-width: 900px) {
+  .findings-group-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Detection-findings tab: GSC / SEMrush-style disclosure blocks.
+   Scoped under .findings-tab so the legacy .gap-card visuals stay
+   intact wherever else they're used. Design rules:
+     – NO severity colour anywhere on rows. No coloured bars, no
+       coloured pills. Severity is a small uppercase neutral label
+       in the row foot (matches GSC's "Error / Warning / Valid"
+       treatment in the Coverage report).
+     – Each agent card is a click-to-collapse disclosure block.
+       Head row is a full-width button; right-side caret signals
+       open/closed state.
+     – Right-side count chip is a plain neutral number-prominent
+       chip ("6 findings"), no severity tinting.
+     – Findings inside an expanded card are flat rows separated by
+       1 px hairlines. Title prominent, description muted, foot in
+       small grey text with evidence disclosure.
+     – Evidence collapses behind a second disclosure ("View N
+       evidence items") so the raw refs don't bomb the page. */
+
+/* Group card head — slightly stronger separator. */
+.findings-tab .findings-group > .seo-card-head {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.findings-tab .findings-group > .seo-card-head h2 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Agent card = a disclosure block. Flat surface, no body padding —
+   the head button + body own their own padding so the click target
+   spans edge-to-edge (GSC pattern). */
+.findings-tab .gap-card {
+  padding: 0;
+  gap: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: box-shadow 120ms;
+}
+.findings-tab .gap-card.gap-card-open {
+  box-shadow: 0 1px 0 rgba(0, 44, 110, 0.04);
+}
+
+/* Head row = full-width button. No background tint, hover gives a
+   subtle surface-2 tint so users know it's clickable. */
+.findings-tab .gap-card-head-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 14px 18px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: background 120ms;
+}
+.findings-tab .gap-card-head-btn:hover {
+  background: var(--surface-2);
+}
+.findings-tab .gap-card-collapsed .gap-card-head-btn {
+  /* No bottom border in collapsed state — the head is the whole card. */
+}
+.findings-tab .gap-card-open .gap-card-head-btn {
+  border-bottom: 1px solid var(--border);
+}
+
+.findings-tab .gap-card-head-meta { min-width: 0; flex: 1; }
+.findings-tab .gap-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.findings-tab .gap-card-sub {
+  font-size: 11.5px;
+  margin-top: 3px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.findings-tab .gap-card-head-aside {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+.findings-tab .gap-card-caret {
+  font-size: 11px;
+  color: var(--text-3);
+  width: 14px;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Count chip — plain neutral. No severity tinting, no background. */
+.findings-tab .gap-status-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.findings-tab .gap-status-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.findings-tab .gap-status-label {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.findings-tab .gap-status-text {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  font-weight: 500;
+}
+.findings-tab .gap-status-empty,
+.findings-tab .gap-status-skipped { color: var(--text-3); }
+.findings-tab .gap-status-crashed { color: var(--error); }
+
+/* Body = the disclosure target. Hidden when card is collapsed. */
+.findings-tab .gap-card-body {
+  padding: 4px 18px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Findings list — flat rows separated by hairlines. Critically, NO
+   coloured left bar. Severity is text-only in the foot. */
+.findings-tab .gap-card-findings {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.findings-tab .gap-finding {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  border-left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.findings-tab .gap-finding:last-child { border-bottom: 0; }
+.findings-tab .gap-finding:first-child { padding-top: 8px; }
+
+.findings-tab .gap-finding-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+.findings-tab .gap-finding-desc {
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+  color: var(--text-2);
+}
+
+/* Row foot — uppercase severity label + bullet + evidence disclosure.
+   Everything in neutral grey; severity has no colour. */
+.findings-tab .gap-finding-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0;
+}
+.findings-tab .gap-sev-text {
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.findings-tab .gap-finding-foot-sep {
+  color: var(--border-2, rgba(0, 44, 110, 0.20));
+  font-weight: 400;
+}
+
+/* Evidence disclosure — chevron-prefixed inline button. */
+.findings-tab .gap-finding-evidence-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  letter-spacing: 0;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.findings-tab .gap-finding-evidence-toggle::before {
+  content: '›';
+  display: inline-block;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-weight: 600;
+  transition: transform 120ms;
+  color: var(--text-3);
+  width: 8px;
+  text-align: center;
+}
+.findings-tab .gap-finding-evidence-toggle.is-open::before {
+  transform: rotate(90deg);
+}
+.findings-tab .gap-finding-evidence-toggle:hover {
+  color: var(--accent);
+}
+.findings-tab .gap-finding-evidence-toggle:hover::before { color: var(--accent); }
+
+.findings-tab .gap-finding-refs {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.findings-tab .gap-finding-refs code {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--text-2);
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+/* "Show all 6 findings" toggle — text link inside the body. */
+.findings-tab .gap-card-toggle {
+  font-size: 12px;
+  padding: 12px 0 0;
+  color: var(--accent);
+  margin-top: 4px;
+  font-weight: 500;
+  border-top: 1px solid var(--border);
+  align-self: flex-start;
+}
+
+/* Skipped / crashed / empty inside body. */
+.findings-tab .gap-card-skip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 10px 12px;
+  color: var(--text-2);
+  margin: 8px 0 0;
+}
+.findings-tab .gap-card-skip.gap-card-crashed {
+  background: rgba(211, 47, 47, 0.04);
+  border-color: rgba(211, 47, 47, 0.20);
+  color: var(--error);
+}
+.findings-tab .gap-card-empty {
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 8px 0 0;
+}
+

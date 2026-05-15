@@ -446,6 +446,210 @@ export interface CompetitorGapResponse {
   agent_status?: Record<string, AgentStatus>;
 }
 
+// ── Gap Detection Pipeline (Phase 3) ────────────────────────────────
+// New transparent multi-stage pipeline backed by /api/v1/seo/gap-pipeline/.
+// Each stage is a panel the user can drill into.
+
+export type GapPipelineStatus =
+  | 'pending'
+  | 'running'
+  | 'complete'
+  | 'degraded'
+  | 'failed';
+
+export type GapStageStatus =
+  | 'pending'
+  | 'running'
+  | 'ok'
+  | 'skipped'
+  | 'failed'
+  | 'empty'
+  | 'no_gaps_found';
+
+export type GapStageName =
+  | 'queries'
+  | 'llm_search'
+  | 'serp_search'
+  | 'competitors'
+  | 'deep_crawl'
+  | 'comparison';
+
+export interface GapStageSlot {
+  status: GapStageStatus;
+  started_at?: string | null;
+  finished_at?: string | null;
+  data?: Record<string, unknown>;
+  error?: string;
+  trace?: string;
+}
+
+export interface GapPipelineRunHeader {
+  id: string;
+  domain: string;
+  status: GapPipelineStatus;
+  triggered_by: string;
+  started_at: string | null;
+  finished_at: string | null;
+  query_count: number;
+  seed_keyword_count: number;
+  llm_provider_count: number;
+  llm_call_count: number;
+  llm_total_cost_usd: number;
+  serp_engine_count: number;
+  serp_call_count: number;
+  competitor_count: number;
+  deep_crawl_pages: number;
+  stage_status: Partial<Record<GapStageName, GapStageSlot>>;
+  config_snapshot: Record<string, unknown>;
+  error: string;
+}
+
+export interface GapPipelineLatest extends Partial<GapPipelineRunHeader> {
+  available: boolean;
+  domain: string;
+}
+
+export type GapQueryIntent =
+  | 'informational'
+  | 'commercial'
+  | 'comparison'
+  | 'brand_specific'
+  | 'long_tail'
+  | 'conversational';
+
+export interface GapQuery {
+  id: string;
+  query: string;
+  intent: GapQueryIntent | string;
+  rationale: string;
+  source_keywords: string[];
+  order: number;
+}
+
+export interface GapLLMResultRow {
+  id: string;
+  query_id: string;
+  provider: string;
+  model: string;
+  answer_text: string;
+  cited_urls: string[];
+  cited_domains: string[];
+  mentions_our_brand: boolean;
+  web_search_used: boolean;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  latency_ms: number;
+  cached: boolean;
+  error: string;
+}
+
+export interface GapSerpOrganicRow {
+  position: number;
+  title: string;
+  url: string;
+  domain: string;
+  snippet: string;
+}
+
+export interface GapSerpResultRow {
+  id: string;
+  query_id: string;
+  engine: string;
+  organic: GapSerpOrganicRow[];
+  featured_snippet?: {
+    title?: string;
+    url?: string;
+    domain?: string;
+    snippet?: string;
+  } | null;
+  ai_overview?: {
+    text_blocks?: string[];
+    citations?: { title?: string; url?: string; domain?: string }[];
+  } | null;
+  people_also_ask: string[];
+  related_searches: string[];
+  our_position: number | null;
+  cached: boolean;
+  latency_ms: number;
+  error: string;
+}
+
+export interface GapCompetitorRow {
+  id: string;
+  domain: string;
+  rank: number;
+  score: number;
+  llm_citation_count: number;
+  serp_appearance_count: number;
+  serp_top3_count: number;
+  featured_snippet_count: number;
+  ai_overview_citation_count: number;
+  queries_appeared_for: string[];
+  score_breakdown: Record<string, unknown>;
+}
+
+export interface GapCrawlProfile {
+  page_count?: number;
+  ok_count?: number;
+  avg_word_count?: number;
+  median_word_count?: number;
+  avg_response_ms?: number;
+  schema_pct?: number;
+  h1_pct?: number;
+  schema_types?: string[];
+  page_types?: Record<string, number>;
+  has_pricing_page?: boolean;
+  has_llms_txt?: boolean;
+  has_pricing_md?: boolean;
+  ai_citability_score?: number;
+  sample_pages?: {
+    url: string;
+    title: string;
+    word_count: number;
+    has_schema: boolean;
+    page_type: string;
+  }[];
+}
+
+export interface GapDeepCrawlRow {
+  id: string;
+  competitor_id: string | null;
+  domain: string;
+  is_us: boolean;
+  sitemap_url_count: number;
+  pages_attempted: number;
+  pages_ok: number;
+  profile: GapCrawlProfile;
+  error: string;
+}
+
+export interface GapComparisonRow {
+  id: string;
+  dimension: string;
+  severity: 'critical' | 'warning' | 'notice';
+  headline: string;
+  our_value: Record<string, unknown>;
+  competitor_median: Record<string, unknown>;
+  delta: Record<string, unknown>;
+  evidence: Record<string, unknown>;
+  priority: number;
+}
+
+export interface GapPipelineDetail extends GapPipelineRunHeader {
+  queries: GapQuery[];
+  llm_results: GapLLMResultRow[];
+  serp_results: GapSerpResultRow[];
+  competitors: GapCompetitorRow[];
+  deep_crawls: GapDeepCrawlRow[];
+  comparisons: GapComparisonRow[];
+}
+
+export interface GapPipelineStartResponse {
+  id: string;
+  status: GapPipelineStatus;
+}
+
 // ── Conversational chat ─────────────────────────────────────────────
 
 export type ChatRole = 'user' | 'assistant' | 'tool';

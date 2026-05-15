@@ -1,19 +1,52 @@
-// GapDetectionSection — the 7-card grid surfaced beneath the existing
-// CompetitorsPage rosters. Renders one card per detection agent. The
-// grid stays usable even when most agents are skipped (missing API
-// keys) — those cards just show a muted "not configured" badge.
+// GapDetectionSection — the Phase-2 detection findings, now grouped
+// into three logical sections inside the Competitors page's "Detection
+// Findings" tab:
+//
+//   Visibility            — AI Visibility + SERP Visibility
+//   Competitor Discovery  — Competitor Discovery (single, full-width)
+//   Deep Audit            — Technical + Architecture + Content + Commercial
+//
+// Each group renders as its own .seo-card with a small head, and the
+// agent cards sit inside in a 2-column responsive grid (reusing
+// .seo-row-2-balanced). The single-card Discovery group spans full
+// width naturally because only one cell renders.
+//
+// AgentFindingsCard itself is unchanged — same component, regrouped.
 
 import { useCompetitorGap } from '../../api/hooks/useCompetitorGap';
 import AgentFindingsCard from './AgentFindingsCard';
 
-const DETECTION_AGENTS: string[] = [
-  'ai_visibility',
-  'serp_visibility',
-  'competitor_discovery',
-  'technical_audit',
-  'architecture_audit',
-  'content_extractability',
-  'product_commercial',
+interface FindingGroup {
+  id: string;
+  label: string;
+  sub: string;
+  agents: string[];
+}
+
+const FINDING_GROUPS: FindingGroup[] = [
+  {
+    id: 'visibility',
+    label: 'Visibility',
+    sub: 'How discoverable we are on AI search + traditional SERP',
+    agents: ['ai_visibility', 'serp_visibility'],
+  },
+  {
+    id: 'discovery',
+    label: 'Competitor Discovery',
+    sub: 'Unified rival roster across AI, SERP, and SEMrush sources',
+    agents: ['competitor_discovery'],
+  },
+  {
+    id: 'audit',
+    label: 'Deep Audit',
+    sub: 'Technical / architectural / content / commercial signals',
+    agents: [
+      'technical_audit',
+      'architecture_audit',
+      'content_extractability',
+      'product_commercial',
+    ],
+  },
 ];
 
 export default function GapDetectionSection({ domain }: { domain?: string }) {
@@ -22,18 +55,7 @@ export default function GapDetectionSection({ domain }: { domain?: string }) {
   );
 
   return (
-    <section className="gap-section">
-      <header className="gap-section-head">
-        <div>
-          <h2>Gap Detection</h2>
-          <div className="gap-section-sub">
-            Detection-only findings from the AI Visibility, SERP Visibility,
-            and deep-audit agents. Fix recommendations ship in a later
-            iteration; for now this surfaces <em>what to look at</em>.
-          </div>
-        </div>
-      </header>
-
+    <div className="findings-tab">
       {isLoading && (
         <div className="seo-empty">Loading detection findings…</div>
       )}
@@ -49,18 +71,61 @@ export default function GapDetectionSection({ domain }: { domain?: string }) {
           Assistant page or the top-bar Run Grade button.
         </div>
       )}
+
       {data && data.available && (
-        <div className="gap-grid">
-          {DETECTION_AGENTS.map((agent) => (
-            <AgentFindingsCard
-              key={agent}
-              agent={agent}
-              findings={data.findings_by_agent?.[agent] || []}
-              status={data.agent_status?.[agent]}
+        <>
+          {FINDING_GROUPS.map((group) => (
+            <FindingsGroupCard
+              key={group.id}
+              group={group}
+              findingsByAgent={data.findings_by_agent}
+              agentStatus={data.agent_status}
             />
           ))}
-        </div>
+        </>
       )}
-    </section>
+    </div>
+  );
+}
+
+function FindingsGroupCard({
+  group,
+  findingsByAgent,
+  agentStatus,
+}: {
+  group: FindingGroup;
+  findingsByAgent?: Record<string, import('../../api/seoTypes').DetectionFinding[]>;
+  agentStatus?: Record<string, import('../../api/seoTypes').AgentStatus>;
+}) {
+  // Two-column responsive grid inside each group. Single-card groups
+  // (Discovery) get a single full-width slot.
+  const inner =
+    group.agents.length === 1 ? (
+      <AgentFindingsCard
+        agent={group.agents[0]}
+        findings={findingsByAgent?.[group.agents[0]] || []}
+        status={agentStatus?.[group.agents[0]]}
+      />
+    ) : (
+      <div className="findings-group-grid">
+        {group.agents.map((agent) => (
+          <AgentFindingsCard
+            key={agent}
+            agent={agent}
+            findings={findingsByAgent?.[agent] || []}
+            status={agentStatus?.[agent]}
+          />
+        ))}
+      </div>
+    );
+
+  return (
+    <div className="seo-card findings-group">
+      <div className="seo-card-head">
+        <h2>{group.label}</h2>
+        <span className="seo-card-sub">{group.sub}</span>
+      </div>
+      {inner}
+    </div>
   );
 }
