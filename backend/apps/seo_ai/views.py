@@ -23,9 +23,13 @@ the grading agents consume so the UI can render the source tables.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict
 
+from django.http import StreamingHttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.request import Request
@@ -33,6 +37,7 @@ from rest_framework.response import Response
 
 from .adapters import GSCCSVAdapter, SemrushAdapter, SitemapAEMAdapter
 from .adapters.semrush import SemrushError
+from .chat import ChatRouter
 from .models import SEORun
 from .overview import build_overview, read_daily_series
 from .serializers import (
@@ -345,3 +350,44 @@ def sitemap_page_detail(request: Request):
         {"detail": "page not found in current AEM snapshot"},
         status=status.HTTP_404_NOT_FOUND,
     )
+
+
+# ── chat (SSE) ───────────────────────────────────────────────────────────
+
+
+@csrf_exempt
+@require_POST
+def chat_stream(request):
+    """Streaming conversational endpoint.
+
+    Body: ``{"messages": [{"role": "user", "content": "..."}, ...],
+    "domain": "bajajlifeinsurance.com"}``.
+
+    Returns ``text/event-stream`` with these event kinds:
+      * ``token`` — incremental assistant text
+      * ``tool_call`` — completed tool invocation (name, args, result)
+      * ``card``     — structured payload to render inline
+      * ``done``     — final usage stats
+      * ``error``    — terminal error
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return StreamingHttpResponse(
+            iter([
+                "event: error\ndata: {\"message\":\"invalid JSON body\"}\n\n"
+            ]),
+            content_type="text/event-stream",
+            status=400,
+        )
+    messages = body.get("messages") or []
+    domain = (body.get("domain") or "bajajlifeinsurance.com").strip()
+    router = ChatRouter(domain=domain)
+    response = StreamingHttpResponse(
+        router.handle_sse(messages),
+        content_type="text/event-stream",
+    )
+    # Disable upstream buffering so tokens flush as they're produced.
+    response["X-Accel-Buffering"] = "no"
+    response["Cache-Control"] = "no-cache"
+    return response

@@ -406,3 +406,31 @@ export interface SitemapDashboard {
   least_recent_modification?: string | null;
   pages?: SitemapPageRow[];
 }
+
+// ── Conversational chat ─────────────────────────────────────────────
+
+export type ChatRole = 'user' | 'assistant' | 'tool';
+
+export interface ChatToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result: unknown;
+}
+
+export interface ChatCard {
+  card_type: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+  toolCalls?: ChatToolCall[];
+  cards?: ChatCard[];
+  // Set on the assistant message once a stream finishes.
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number;
+  timestamp: number;
+}
