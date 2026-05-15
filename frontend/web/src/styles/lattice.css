@@ -2256,3 +2256,153 @@ button { font: inherit; }
   color: var(--error);
 }
 
+/* ── Competitor Gap Detection section ──────────────────────────────── */
+.gap-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.gap-section-head {
+  margin-bottom: 14px;
+}
+.gap-section-head h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 4px;
+  color: var(--text);
+}
+.gap-section-sub {
+  font-size: 13px;
+  color: var(--text-3);
+  max-width: 720px;
+}
+
+.gap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 14px;
+}
+
+.gap-card {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gap-card-skipped, .gap-card-empty {
+  opacity: 0.75;
+}
+.gap-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.gap-card-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+.gap-card-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.gap-status-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.gap-status-badge.ok       { background: var(--accent-soft); color: var(--accent); }
+.gap-status-badge.skipped  { background: var(--surface-3); color: var(--text-3); }
+.gap-status-badge.crashed  { background: var(--error-soft); color: var(--error); }
+.gap-status-badge.empty    { background: var(--surface-3); color: var(--text-3); }
+
+.gap-card-skip {
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.gap-card-skip.gap-card-crashed {
+  background: var(--error-soft);
+  color: var(--error);
+}
+.gap-card-empty {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.gap-card-findings {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gap-finding {
+  border-left: 2px solid var(--border-2);
+  padding: 6px 0 6px 10px;
+}
+.gap-finding.sev-critical { border-left-color: var(--error); }
+.gap-finding.sev-warning  { border-left-color: var(--warning); }
+.gap-finding.sev-notice   { border-left-color: var(--accent); }
+.gap-finding-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gap-sev {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.gap-sev.sev-critical { background: var(--error-soft);   color: var(--error); }
+.gap-sev.sev-warning  { background: var(--warning-soft); color: var(--warning); }
+.gap-sev.sev-notice   { background: var(--accent-soft);  color: var(--accent); }
+.gap-finding-title {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.gap-finding-desc {
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+.gap-finding-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.gap-finding-refs code {
+  font-size: 10px;
+  background: var(--surface-3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+.gap-card-toggle {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.gap-card-toggle:hover { text-decoration: underline; }
+

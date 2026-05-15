@@ -5,6 +5,7 @@ from .views import (
     SEORunViewSet,
     chat_stream,
     competitor_dashboard,
+    competitor_gap_detection,
     gsc_dashboard,
     overview,
     semrush_dashboard,
@@ -26,6 +27,11 @@ urlpatterns = [
     path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
     path("sitemap/page/", sitemap_page_detail, name="sitemap-page-detail"),
     path("competitor/", competitor_dashboard, name="competitor-dashboard"),
+    path(
+        "competitor/gap/",
+        competitor_gap_detection,
+        name="competitor-gap-detection",
+    ),
     path("chat/stream/", chat_stream, name="chat-stream"),
     path("", include(_router.urls)),
 ]

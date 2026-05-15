@@ -407,6 +407,45 @@ export interface SitemapDashboard {
   pages?: SitemapPageRow[];
 }
 
+// ── Competitor Gap Detection (Phase 2 — 7 detection agents) ────────
+
+export type DetectionAgentName =
+  | 'ai_visibility'
+  | 'serp_visibility'
+  | 'competitor_discovery'
+  | 'technical_audit'
+  | 'architecture_audit'
+  | 'content_extractability'
+  | 'product_commercial';
+
+export interface DetectionFinding {
+  id: string;
+  agent: DetectionAgentName | string;
+  severity: SEOFindingSeverity;
+  category: string;
+  title: string;
+  description: string;
+  recommendation: string;
+  evidence_refs: string[];
+  impact: string;
+  effort: string;
+  priority: number;
+}
+
+export interface AgentStatus {
+  status: 'skipped' | 'crashed';
+  reason: string;
+}
+
+export interface CompetitorGapResponse {
+  available: boolean;
+  domain: string;
+  run_id?: string;
+  finished_at?: string | null;
+  findings_by_agent?: Record<string, DetectionFinding[]>;
+  agent_status?: Record<string, AgentStatus>;
+}
+
 // ── Conversational chat ─────────────────────────────────────────────
 
 export type ChatRole = 'user' | 'assistant' | 'tool';

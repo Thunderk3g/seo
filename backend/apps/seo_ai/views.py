@@ -352,6 +352,65 @@ def sitemap_page_detail(request: Request):
     )
 
 
+# ── competitor gap detection ─────────────────────────────────────────────
+
+
+@api_view(["GET"])
+def competitor_gap_detection(request: Request):
+    """Per-agent detection findings for the latest completed run.
+
+    Returns one bucket per detection agent (the 7 Phase-2 agents). Each
+    bucket is a list of finding rows; an empty bucket means either the
+    agent was skipped (missing API key) or it ran and found nothing.
+    The caller can disambiguate by reading the run's audit messages.
+    """
+    from .agents.orchestrator import DETECTION_AGENTS
+    from .models import SEORunStatus
+
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    run = (
+        SEORun.objects.filter(domain=domain, status=SEORunStatus.COMPLETE)
+        .order_by("-finished_at")
+        .first()
+    )
+    if run is None:
+        return Response({"available": False, "domain": domain})
+
+    agent_names = [getattr(c, "name", c.__name__) for c in DETECTION_AGENTS]
+    by_agent: dict[str, list] = {n: [] for n in agent_names}
+    for f in run.findings.filter(agent__in=agent_names).order_by("-priority"):
+        by_agent[f.agent].append(SEORunFindingSerializer(f).data)
+
+    # Lightweight skip / crash audit so the UI can show "skipped: no
+    # API key" rather than mistaking empty for "ran clean".
+    audit: dict[str, dict[str, str]] = {}
+    for msg in run.messages.filter(role="system").only(
+        "from_agent", "content"
+    ):
+        event = (msg.content or {}).get("event") or ""
+        if not event.endswith(".skipped") and not event.endswith(".crashed"):
+            continue
+        agent_key = event.rsplit(".", 1)[0]
+        if agent_key in by_agent:
+            audit[agent_key] = {
+                "status": event.rsplit(".", 1)[1],
+                "reason": ((msg.content or {}).get("data") or {}).get(
+                    "reason", ""
+                )[:300],
+            }
+
+    return Response(
+        {
+            "available": True,
+            "domain": domain,
+            "run_id": str(run.id),
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "findings_by_agent": by_agent,
+            "agent_status": audit,
+        }
+    )
+
+
 # ── chat (SSE) ───────────────────────────────────────────────────────────
 
 

@@ -185,6 +185,77 @@ COMPETITOR = {
 }
 
 # ─────────────────────────────────────────────────────────────
+# AI Search Visibility (Phase 2 of the competitor-gap detection suite)
+# ─────────────────────────────────────────────────────────────
+# Probes multiple LLM-based search engines to detect whether the focus
+# domain is cited / mentioned vs. its rivals. Every provider key is
+# independent — missing OPENAI_API_KEY skips the OpenAI probe but the
+# Anthropic / Gemini / Perplexity / xAI probes still run. The agent
+# itself is disabled silently when AI_VISIBILITY_ENABLED is "false" or
+# every provider key is empty.
+AI_VISIBILITY = {
+    "enabled": os.environ.get("AI_VISIBILITY_ENABLED", "true").lower()
+    in ("1", "true", "yes", "on"),
+    "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
+    "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+    "google_api_key": os.environ.get("GOOGLE_API_KEY", ""),
+    "perplexity_api_key": os.environ.get("PERPLEXITY_API_KEY", ""),
+    "xai_api_key": os.environ.get("XAI_API_KEY", ""),
+    # Optional model overrides per provider — leave blank to use each
+    # adapter's documented default.
+    "openai_model": os.environ.get("OPENAI_AI_VISIBILITY_MODEL", "gpt-4o-mini"),
+    "anthropic_model": os.environ.get(
+        "ANTHROPIC_AI_VISIBILITY_MODEL", "claude-3-5-haiku-latest"
+    ),
+    "google_model": os.environ.get(
+        "GOOGLE_AI_VISIBILITY_MODEL", "gemini-2.0-flash"
+    ),
+    "perplexity_model": os.environ.get(
+        "PERPLEXITY_AI_VISIBILITY_MODEL", "sonar"
+    ),
+    "xai_model": os.environ.get("XAI_AI_VISIBILITY_MODEL", "grok-2-latest"),
+    "max_queries": int(os.environ.get("AI_VISIBILITY_MAX_QUERIES", "20")),
+    "request_timeout_sec": int(
+        os.environ.get("AI_VISIBILITY_REQUEST_TIMEOUT_SEC", "30")
+    ),
+    "cache_ttl_seconds": int(
+        os.environ.get("AI_VISIBILITY_CACHE_TTL", str(7 * 24 * 3600))
+    ),
+    "ssl_verify": os.environ.get("AI_VISIBILITY_SSL_VERIFY", "").strip(),
+}
+
+# ─────────────────────────────────────────────────────────────
+# SERP API (Phase 3 of the competitor-gap detection suite)
+# ─────────────────────────────────────────────────────────────
+# Traditional SERP visibility via SerpAPI. The provider key allows
+# swapping in DataForSEO / Zenserp later without changing the adapter
+# interface; only SerpAPI is implemented this iteration. The agent is
+# silently skipped when no SERPAPI_API_KEY is configured.
+SERP_API = {
+    "enabled": os.environ.get("SERP_API_ENABLED", "true").lower()
+    in ("1", "true", "yes", "on"),
+    "provider": os.environ.get("SERP_API_PROVIDER", "serpapi"),
+    "api_key": os.environ.get("SERPAPI_API_KEY", ""),
+    "engines": tuple(
+        e.strip()
+        for e in os.environ.get(
+            "SERP_API_ENGINES", "google,bing,duckduckgo"
+        ).split(",")
+        if e.strip()
+    ),
+    "country": os.environ.get("SERP_API_COUNTRY", "in"),
+    "language": os.environ.get("SERP_API_LANGUAGE", "en"),
+    "max_queries": int(os.environ.get("SERP_API_MAX_QUERIES", "20")),
+    "request_timeout_sec": int(
+        os.environ.get("SERP_API_REQUEST_TIMEOUT_SEC", "30")
+    ),
+    "cache_ttl_seconds": int(
+        os.environ.get("SERP_API_CACHE_TTL", str(7 * 24 * 3600))
+    ),
+    "ssl_verify": os.environ.get("SERP_API_SSL_VERIFY", "").strip(),
+}
+
+# ─────────────────────────────────────────────────────────────
 # Logging Configuration
 # ─────────────────────────────────────────────────────────────
 LOGGING = {

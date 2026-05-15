@@ -29,16 +29,38 @@ from ..models import (
     SEORunStatus,
 )
 from .. import scoring
+from .ai_visibility import AISearchVisibilityAgent
+from .architecture_audit import ArchitectureAuditAgent
+from .base import Agent, FindingDraft
 from .competitor import CompetitorAgent
+from .competitor_discovery import CompetitorDiscoveryAgent
+from .content_extractability import ContentExtractabilityAgent
 from .critic import CriticAgent
 from .keyword import KeywordAgent
 from .narrator import NarratorAgent
+from .product_commercial import ProductCommercialAgent
+from .serp_visibility import SERPVisibilityAgent
 from .technical import TechnicalAgent
+from .technical_audit import TechnicalAuditAgent
 
 logger = logging.getLogger("seo.ai.orchestrator")
 
 
 _SEVERITY_PRIORITY = {"critical": 95, "warning": 70, "notice": 45}
+
+
+# Detection-only agents run in Stage 1B. Order matters because some
+# agents read prior agents' findings from the DB (e.g. TechnicalAudit
+# uses CompetitorDiscovery's host list).
+DETECTION_AGENTS: list[type[Agent]] = [
+    AISearchVisibilityAgent,
+    SERPVisibilityAgent,
+    CompetitorDiscoveryAgent,
+    TechnicalAuditAgent,
+    ArchitectureAuditAgent,
+    ContentExtractabilityAgent,
+    ProductCommercialAgent,
+]
 
 
 class Orchestrator:
@@ -66,6 +88,14 @@ class Orchestrator:
             competitor_payload, competitor_facts = self._run_competitor(
                 domain=run.domain
             )
+
+            # ── Stage 1B: detection-only gap agents ───────────────────
+            # Each agent is fully optional: it self-gates on its API
+            # keys / settings flags and the runner below catches any
+            # exception so one crashing agent never aborts the whole
+            # grading pipeline.
+            for agent_cls in DETECTION_AGENTS:
+                self._run_detection(agent_cls, domain=run.domain)
 
             # ── Stage 2: critic on combined findings ──────────────────
             combined = (
@@ -238,6 +268,56 @@ class Orchestrator:
             logger.warning("competitor agent skipped (other): %s", exc)
             self._log_skip("competitor.skipped", reason=str(exc)[:200])
             return None, None
+
+    def _run_detection(
+        self, agent_cls: type[Agent], *, domain: str
+    ) -> list[SEORunFinding]:
+        """Run one detection-only agent and persist its FindingDrafts.
+
+        Catches every exception so a buggy / network-flaky agent never
+        aborts the run. Findings land in :class:`SEORunFinding` with
+        ``recommendation=""`` since detection is the current scope.
+        """
+        agent_name = getattr(agent_cls, "name", agent_cls.__name__)
+        try:
+            agent = agent_cls(run=self.run, step_index_start=self.step)
+            drafts = agent.detect(domain=domain)
+            self.step = agent.step_index
+        except Exception as exc:  # noqa: BLE001 - keep the run alive
+            logger.exception(
+                "detection agent %s crashed: %s", agent_name, exc
+            )
+            self._log_skip(
+                f"{agent_name}.crashed",
+                reason=f"{type(exc).__name__}: {exc}"[:300],
+            )
+            return []
+
+        if not drafts:
+            return []
+
+        max_n = settings.SEO_AI["max_findings_per_agent"]
+        created: list[SEORunFinding] = []
+        for d in drafts[:max_n]:
+            severity = d.severity if d.severity in FindingSeverity.values else "notice"
+            row = SEORunFinding.objects.create(
+                run=self.run,
+                agent=agent_name,
+                severity=severity,
+                category=(d.category or "")[:128],
+                title=(d.title or "")[:255],
+                description=(d.description or "")[:4000],
+                recommendation="",  # Detection-only: fixes ship later.
+                evidence_refs=list(d.evidence_refs or []),
+                impact=(d.impact or "medium")[:16],
+                effort=(d.effort or "")[:16],
+                priority=_SEVERITY_PRIORITY.get(severity, 40),
+            )
+            created.append(row)
+        logger.info(
+            "detection agent %s wrote %d findings", agent_name, len(created)
+        )
+        return created
 
     def _log_skip(self, event: str, *, reason: str) -> None:
         """Audit-trail entry when an optional stage is skipped."""

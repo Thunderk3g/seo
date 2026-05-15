@@ -21,6 +21,7 @@ import type {
   CompetitorTopicGap,
   CompetitorVolumeDelta,
 } from '../api/seoTypes';
+import GapDetectionSection from '../components/competitors/GapDetectionSection';
 
 export default function CompetitorsPage() {
   const { data, isLoading, isError, error } = useCompetitorDashboard();
@@ -62,6 +63,10 @@ export default function CompetitorsPage() {
       )}
 
       {data && data.available && <CompetitorBody data={data} />}
+
+      {/* Phase-2 detection layer — 7 agent cards. Renders even when
+          the legacy competitor dashboard above is unavailable. */}
+      <GapDetectionSection domain={data?.domain} />
     </div>
   );
 }
