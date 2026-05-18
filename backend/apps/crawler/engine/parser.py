@@ -44,6 +44,39 @@ _FOLLOW_LINK_RELS = {"canonical", "alternate", "next", "prev", "prerender"}
 # data-* attributes commonly used to stash a navigation target.
 _DATA_URL_ATTRS = ("data-href", "data-url", "data-link", "data-target-url", "data-redirect-url")
 
+# Non-URL values that components routinely store in `data-*` attributes as
+# config flags. Treating them as URLs (e.g. ``data-link="false"`` on the
+# floating-feedback widget) caused spurious /false 404 entries across the
+# whole site. Filter them out before normalize() ever sees them.
+_NON_URL_DATA_VALUES = {
+    "", "true", "false", "null", "undefined", "none", "0", "1",
+    "yes", "no",
+}
+
+
+def _looks_like_url(value: str) -> bool:
+    """Quick sanity check that a string value could plausibly be a URL.
+
+    Used to filter out booleans / nulls / numeric config flags that
+    AEM-style components stash in ``data-*`` attributes alongside legitimate
+    navigation targets.
+    """
+    if not value:
+        return False
+    v = value.strip()
+    if not v:
+        return False
+    if v.lower() in _NON_URL_DATA_VALUES:
+        return False
+    # Real URLs start with a scheme, "//", "/", "?", "#", or look relative
+    # ("./foo", "../foo", "foo/bar"). Reject anything that is a single
+    # bareword (no slash, no dot, no colon) — those are almost always
+    # config flags, not paths.
+    if v.startswith(("http://", "https://", "//", "/", "?", "#",
+                     "./", "../")):
+        return True
+    return "/" in v or "." in v or ":" in v
+
 
 def _collect_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     """Pull every plausibly-navigable URL out of the DOM, normalized & deduped."""
@@ -67,7 +100,9 @@ def _collect_links(soup: BeautifulSoup, base_url: str) -> list[str]:
             add(el.get("href"))
     for attr in _DATA_URL_ATTRS:
         for el in soup.find_all(attrs={attr: True}):
-            add(el.get(attr))
+            value = el.get(attr)
+            if isinstance(value, str) and _looks_like_url(value):
+                add(value)
     return out
 
 

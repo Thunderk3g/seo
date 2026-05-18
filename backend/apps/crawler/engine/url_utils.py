@@ -47,9 +47,12 @@ def normalize(url: str, base: str | None = None) -> str | None:
         netloc = netloc[:-3]
     if netloc.endswith(":443") and p.scheme == "https":
         netloc = netloc[:-4]
+    # Preserve the trailing slash as written. The Bajaj origin treats
+    # ``/foo/`` and ``/foo`` as different resources (no canonical redirect
+    # between them), so stripping a trailing slash silently turns a live
+    # page into a 404 in our reports. Example: /underinsurance-calculator/
+    # is HTTP 200; /underinsurance-calculator is HTTP 404.
     path = p.path or "/"
-    if len(path) > 1 and path.endswith("/"):
-        path = path[:-1]
     return urlunparse((p.scheme.lower(), netloc, path, "", _strip_tracking(p.query), ""))
 
 
