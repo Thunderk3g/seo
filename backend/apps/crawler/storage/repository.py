@@ -52,20 +52,10 @@ CATALOG: dict[str, dict] = {
         "description": "Non-404 HTTP error responses (5xx, 4xx other).",
         "categorized": False,
     },
-    "errors_connection": {
-        "file": "crawl_errors_connectionerror.csv",
-        "label": "Connection Errors",
-        "icon": "wifi_off",
-        "description": "TCP / DNS / refused-connection failures.",
-        "categorized": False,
-    },
-    "errors_chunked": {
-        "file": "crawl_errors_chunkedencodingerror.csv",
-        "label": "Chunked Encoding Errors",
-        "icon": "broken_image",
-        "description": "Responses with malformed chunked transfer encoding.",
-        "categorized": False,
-    },
+    # Removed unused tables: errors_connection / errors_chunked. They added
+    # noise to the raw-data drawer without informing any UI surface. The
+    # CSVs may still exist on disk from prior crawls; they're no longer
+    # written or read by this app.
     "console": {
         "file": "crawl_console_log.csv",
         "label": "Console Log",
@@ -322,11 +312,9 @@ def summary_breakdown() -> dict:
     # Per-error-type counts come from the small per-file CSVs, not a re-scan
     # of the full results — quicker and these are already populated.
     by_error_type = {
-        "errors_404":        read_csv("errors_404")["count"],
-        "errors_http":       read_csv("errors_http")["count"],
-        "errors_connection": read_csv("errors_connection")["count"],
-        "errors_chunked":    read_csv("errors_chunked")["count"],
-        "console":           read_csv("console")["count"],
+        "errors_404":  read_csv("errors_404")["count"],
+        "errors_http": read_csv("errors_http")["count"],
+        "console":     read_csv("console")["count"],
     }
 
     # Categories metadata so the UI can map keys -> labels in one place.

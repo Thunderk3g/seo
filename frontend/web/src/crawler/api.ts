@@ -141,8 +141,7 @@ export interface SummaryBreakdown {
   by_error_type: {
     errors_404: number;
     errors_http: number;
-    errors_connection: number;
-    errors_chunked: number;
+    // errors_connection / errors_chunked retired — no UI surface uses them.
     console: number;
   };
   noise_404_branch_not_indexed: number;

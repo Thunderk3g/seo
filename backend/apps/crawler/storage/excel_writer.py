@@ -201,8 +201,6 @@ def _build_summary(ws: Worksheet, totals: dict) -> None:
     breakdown = [
         ("404 Not Found", totals["errors_404"]),
         ("HTTP Error (non-404)", totals["errors_http"]),
-        ("Connection Error", totals["errors_connection"]),
-        ("Chunked Encoding Error", totals["errors_chunked"]),
         ("Console Errors (in source)", totals["console_entries"]),
     ]
     start_row = 12
@@ -240,8 +238,8 @@ RAW_SHEETS: list[tuple[str, str, str | None, str | None]] = [
     ("All Results (raw)", "crawl_results.csv", "status", "status_code"),
     ("All 404 Errors (raw)", "crawl_404_errors.csv", None, None),
     ("HTTP Errors", "crawl_errors_httperror.csv", None, None),
-    ("Connection Errors", "crawl_errors_connectionerror.csv", None, None),
-    ("Chunked Errors", "crawl_errors_chunkedencodingerror.csv", None, None),
+    # Connection / Chunked-encoding sheets retired — they were rarely
+    # non-empty and not actioned on by any operator workflow.
     ("All Errors", "crawl_errors.csv", None, None),
     ("Console Log", "crawl_console_log.csv", None, None),
     ("Discovered Edges", "crawl_discovered.csv", None, None),
@@ -532,8 +530,6 @@ def _compute_totals(res_hdr: list[str], res_rows: list[list[str]]) -> dict:
         "total_errors": count("crawl_errors.csv"),
         "errors_404": count("crawl_404_errors.csv"),
         "errors_http": count("crawl_errors_httperror.csv"),
-        "errors_connection": count("crawl_errors_connectionerror.csv"),
-        "errors_chunked": count("crawl_errors_chunkedencodingerror.csv"),
         "console_entries": count("crawl_console_log.csv"),
         "discovered_edges": count("crawl_discovered.csv"),
     }

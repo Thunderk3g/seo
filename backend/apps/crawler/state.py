@@ -37,8 +37,7 @@ class CrawlState:
     errors: list[dict] = field(default_factory=list)
     error_404: list[dict] = field(default_factory=list)
     error_http: list[dict] = field(default_factory=list)
-    error_connection: list[dict] = field(default_factory=list)
-    error_chunked: list[dict] = field(default_factory=list)
+    # error_connection / error_chunked retired — not surfaced anywhere.
     console_logs: list[dict] = field(default_factory=list)
     discovered_edges: list[dict] = field(default_factory=list)
 
@@ -61,8 +60,6 @@ class CrawlState:
             self.errors.clear()
             self.error_404.clear()
             self.error_http.clear()
-            self.error_connection.clear()
-            self.error_chunked.clear()
             self.console_logs.clear()
             self.discovered_edges.clear()
             self.sitemap_urls.clear()
