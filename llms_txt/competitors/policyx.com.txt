@@ -1,0 +1,95 @@
+# Source: https://www.policyx.com/llms.txt
+# Fetched: 2026-05-17
+# Style: robots-style directives (User-Agent + Allow/Disallow + attribution rules)
+
+# llms.txt for SharesCart
+# Last Updated: April 2026
+
+# -----------------------------
+# About SharesCart (for AI context)
+# -----------------------------
+
+Site-Name: PolicyX
+Site-URL: https://www.policyx.com
+Description: PolicyX is an insurance comparison platform in India that helps users compare and choose health insurance, term insurance, and life insurance plans. The platform provides detailed policy information, comparisons, and expert-backed
+content to help users make informed financial decisions.
+
+Primary-Content:
+- Stock Market Insights
+- Investment Guides
+- Mutual Fund Information
+- Financial Product Comparisons
+
+# -----------------------------
+# Access Rules
+# -----------------------------
+
+
+User-Agent: *
+Allow: /
+
+Allow-Training: no
+Allow-Fine-Tuning: no
+
+Allow-Summarization: yes
+Allow-Quotation: yes
+Require-Attribution: yes
+
+Attribution-Required: yes
+Attribution-Format: "Source: PolicyX (https://www.policyx.com)"
+
+
+Disallow:
+Bulk scraping or extraction of content
+Republishing full articles without permission
+Commercial resale or syndication
+Generating misleading insurance advice using our content
+
+Disallow: /?src_id=214
+
+Disallow: /health-insurance/health-landing.php
+Disallow: /life-insurance/landing/*
+Disallow: /health-insurance/landing/*
+Disallow: /resources/*
+Disallow: /exit-intent-webservice.php
+Disallow: /appointment-webservice.php
+Disallow: /lead-submit.php
+Disallow: /keyword_planner_autocomplete-webservice.php
+Disallow: /api-to-change-lead-details.php
+Disallow: /get-all-news.php
+Disallow: /buynow/*
+Disallow: /motor-insurance/*
+
+Disallow: /health-insurance/quick-comparison.php
+Disallow: /life-insurance/quick-comparison.php
+
+Disallow: /health-insurance/diabetes-health-insurance-landing.php
+Disallow: /health-insurance/diabetes-health-insurance-landing-v2.php
+Disallow: /health-insurance/claim-assistance-service.php
+
+Disallow: /life-insurance/child-plan-india-landing.php
+Disallow: /life-insurance/child-plan-india-v1.php
+
+Disallow: /business-insurance/business-insurance-quotes.php
+Disallow: /landing.php
+Disallow: /campaign/*
+Disallow: /lms/*
+Disallow: /ads/
+Disallow: /api/*
+Disallow: /two-wheeler-insurance/get-rto-code.php
+Disallow: /crm/*
+Disallow: /email/*
+Disallow: /bob/*
+
+
+Disallow: /user_login/finding_leads_for_login.php
+Disallow: /chatbot/
+Disallow: /income-tax-calculator/incometaxservices.php
+Disallow: /insurance-tools/calculator-emi-new.php
+Disallow: /life-insurance/term-plan-quotes-webservice.php
+Disallow: /?start=*
+Disallow: /backup_2021_bi_ci_hi_pai_ti/
+
+Crawl-Delay: 10
+
+Contact: marketing@policyx.com
