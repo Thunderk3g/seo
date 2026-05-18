@@ -33,3 +33,12 @@ django-cors-headers>=4.3.0
 openai>=1.40
 pydantic>=2.5
 jsonschema>=4.20
+
+# Google Search Console API client. Used by:
+#   - backend/scripts/gsc_pull.py (Search Analytics + sitemaps export)
+#   - apps.crawler.storage.gsc_coverage_builder.upgrade_with_url_inspection
+#     (per-URL verdicts via URL Inspection API)
+# OAuth token lives in backend/data/gsc/ (gitignored).
+google-api-python-client>=2.100
+google-auth>=2.20
+google-auth-oauthlib>=1.0
