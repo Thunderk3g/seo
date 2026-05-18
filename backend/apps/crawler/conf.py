@@ -125,6 +125,19 @@ class CrawlerSettings:
         default_factory=lambda: _env_int("SITEMAP_MAX_DEPTH", 6)
     )
 
+    # ── Phase-2 console capture (Playwright) ──────────────────────────
+    # After the static crawl finishes, optionally launch headless
+    # Chromium on a subset of www HTTP-200 pages to capture real JS
+    # errors. Adds ~3 sec/URL — at limit=200 that's ~10 minutes after
+    # the regular crawl. Set CRAWLER_CAPTURE_CONSOLE_AFTER_CRAWL=false
+    # in .env to skip the phase entirely.
+    capture_console_after_crawl: bool = field(
+        default_factory=lambda: _env_bool("CAPTURE_CONSOLE_AFTER_CRAWL", True)
+    )
+    console_capture_limit: int = field(
+        default_factory=lambda: _env_int("CONSOLE_CAPTURE_LIMIT", 200)
+    )
+
     # ── Data dirs ────────────────────────────────────────────
     data_dir: str = field(default_factory=lambda: _env_str("DATA_DIR", ""))
     reports_dir: str = field(default_factory=lambda: _env_str("REPORTS_DIR", ""))

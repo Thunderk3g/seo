@@ -434,6 +434,44 @@ def _run_crawl_body() -> None:
                 if per_request_pause > 0:
                     time.sleep(per_request_pause)
 
+    # ── Phase 2: browser-side console capture ────────────────────────────
+    # The static crawl above only sees the HTML at fetch time — it cannot
+    # observe JavaScript errors that happen at runtime. Run a Playwright
+    # pass on the www HTTP-200 pages we just crawled to capture real
+    # console errors, page errors, and failed network requests. Disabled
+    # if `settings.capture_console_after_crawl` is False (default True).
+    if getattr(settings, "capture_console_after_crawl", True) and not STATE.should_stop:
+        try:
+            from . import browser_console
+            console_targets = browser_console.select_target_urls(
+                limit=getattr(settings, "console_capture_limit", 200),
+                subdomain="www",
+                only_status="200",
+            )
+            if console_targets:
+                log_bus.post({
+                    "type": "info",
+                    "message": (
+                        f"Phase 2 — capturing real browser console for "
+                        f"{len(console_targets)} URL(s) via Playwright..."
+                    ),
+                    "timestamp": datetime.now().isoformat(),
+                })
+                # Streams are already open from phase 1; capture writes
+                # into the existing console_logs stream.
+                browser_console.capture(
+                    console_targets,
+                    wait_after_load_ms=1500,
+                    levels=("error", "warning"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("phase 2 console capture failed: %s", exc)
+            log_bus.post({
+                "type": "warning",
+                "message": f"Console capture skipped: {exc}",
+                "timestamp": datetime.now().isoformat(),
+            })
+
     # Normal completion. The outer try/finally in run_crawl() also handles
     # the close_streams / finished_at fallbacks, so it's safe if any of
     # this raises.
