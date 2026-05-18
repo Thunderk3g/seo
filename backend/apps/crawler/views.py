@@ -234,6 +234,30 @@ def gsc_coverage_build_view(request):
         return Response({"ok": False, "error": str(exc)}, status=500)
 
 
+@api_view(["POST"])
+def gsc_inspect_unknowns_view(request):
+    """Upgrade `unknown` rows to definitive verdicts via URL Inspection API.
+
+    Rate-limited (~2000/day per property). Idempotent — already-inspected
+    URLs are skipped because they're no longer ``unknown``.
+    """
+    from .storage import gsc_coverage_builder
+    site = request.query_params.get("site") or "https://www.bajajlifeinsurance.com/"
+    try:
+        max_urls = int(request.query_params.get("max", "1900"))
+    except (TypeError, ValueError):
+        max_urls = 1900
+    try:
+        res = gsc_coverage_builder.upgrade_with_url_inspection(
+            site_url=site, max_urls=max_urls,
+        )
+        if not res.get("ok"):
+            return Response(res, status=400)
+        return Response(res)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"ok": False, "error": str(exc)}, status=500)
+
+
 class _StringBuffer:
     """Minimal write-then-flush buffer for csv.writer in a generator."""
 

@@ -33,7 +33,8 @@ _STATUS_MAP: dict[str, str] = {
     "submitted and indexed": "indexed",
     "indexed, not submitted in sitemap": "indexed",
     "indexed": "indexed",
-    # not indexed (Google saw the page, chose not to index)
+    # not indexed (only emitted when Google explicitly says so — via the
+    # Coverage UI export or URL Inspection API, never derived heuristically)
     "crawled - currently not indexed": "not_indexed",
     "discovered - currently not indexed": "not_indexed",
     # excluded (by directive, redirect, alt canonical, or unreachable)
@@ -50,6 +51,10 @@ _STATUS_MAP: dict[str, str] = {
     "server error (5xx)": "excluded",
     "blocked due to access forbidden (403)": "excluded",
     "blocked due to unauthorized request (401)": "excluded",
+    # derived: crawler found it, no GSC performance signal, but URL is
+    # not yet definitively classified. Stays "unknown" so the UI doesn't
+    # mislabel low-traffic indexed pages as "not indexed".
+    "no gsc signal": "unknown",
 }
 
 # Tracking / campaign params to strip during URL normalisation. Anything not

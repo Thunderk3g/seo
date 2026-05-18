@@ -214,9 +214,16 @@ def _derive_status(url: str,
                    indexed: set[str],
                    sitemap_set: set[str],
                    crawler_status: dict[str, str]) -> str:
-    """Map (indexed?, in_sitemap?, crawler_status_code?) -> GSC-style status."""
+    """Map (indexed?, in_sitemap?, crawler_status_code?) -> GSC-style status.
+
+    Important: we can confidently emit `indexed` (impressions exist) and
+    `excluded` (crawler proved the URL is broken). For URLs without a GSC
+    performance signal we deliberately emit a NEUTRAL status so the UI
+    doesn't mislabel low-traffic indexed pages as "not indexed". A real
+    not_indexed verdict only comes from URL Inspection API (see
+    ``upgrade_with_url_inspection`` below) or a manual Coverage export.
+    """
     if url in indexed:
-        # Indexed-confirmed: nuance based on whether it's in sitemap.
         if url in sitemap_set:
             return "Submitted and indexed"
         return "Indexed, not submitted in sitemap"
@@ -225,14 +232,10 @@ def _derive_status(url: str,
         return "Not found (404)"
     if code and code.startswith(("4", "5")):
         return "URL is not on Google"
-    if url in sitemap_set:
-        # Sitemap declared it but no GSC performance signal => Google saw
-        # the submission but hasn't surfaced the URL in results.
-        return "Crawled - currently not indexed"
-    # Crawler found it, no sitemap, no performance: discovered-not-indexed.
-    if code == "200":
-        return "Discovered - currently not indexed"
-    return "URL is not on Google"
+    # No performance signal — we honestly don't know. Don't claim
+    # "not_indexed". Keep it unknown so the UI shows the right hedge.
+    # (gsc_loader._STATUS_MAP turns this into the `unknown` bucket.)
+    return "No GSC signal"
 
 
 def _bucket_of(status: str) -> str:
@@ -362,6 +365,136 @@ def _rewrite_column(path: Path, *, column: str, value_fn) -> dict:
         except OSError:
             pass
         return {"status": "error", "updated": updated, "detail": str(exc)}
+
+
+# ── URL Inspection API upgrade ─────────────────────────────────────────────
+#
+# Quota: ~2,000 inspections / day per property. The puller persists progress
+# so it can resume the next day. Use this to convert the "unknown" rows
+# (no GSC performance signal) into definitive indexed / not_indexed /
+# excluded verdicts straight from Google.
+def upgrade_with_url_inspection(
+    site_url: str = "https://www.bajajlifeinsurance.com/",
+    *,
+    max_urls: int = 1900,           # leave headroom on the 2000/day quota
+    only_unknown: bool = True,
+    sleep_between: float = 0.4,     # rate-limit politely
+) -> dict:
+    """Call URL Inspection API for URLs whose status is `unknown` and
+    rewrite the coverage CSV + crawler indexed_status with real verdicts.
+
+    Requires OAuth credentials already in ``backend/data/gsc/`` (i.e. the
+    user has run ``python backend/scripts/gsc_pull.py`` at least once).
+    Falls back gracefully if the Google client libs aren't installed.
+    """
+    try:
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+    except ImportError:
+        return {"ok": False, "error": "google-api-python-client not installed"}
+
+    import time
+    token = settings.data_path / "gsc" / "token.json"
+    if not token.exists():
+        return {"ok": False,
+                "error": "No GSC OAuth token. Run backend/scripts/gsc_pull.py first."}
+
+    scopes = ["https://www.googleapis.com/auth/webmasters.readonly"]
+    creds = Credentials.from_authorized_user_file(str(token), scopes)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+
+    svc = build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+
+    # Pick the URLs to inspect.
+    cov = gsc_loader.load_coverage_map()
+    targets: list[str] = []
+    if only_unknown:
+        # Look at crawler URLs that currently resolve to unknown.
+        crawler_status = _crawler_status_map(None)
+        for url, code in crawler_status.items():
+            if cov.get(url, "unknown") == "unknown":
+                targets.append(url)
+    targets = targets[:max_urls]
+    if not targets:
+        return {"ok": True, "inspected": 0, "msg": "No unknown URLs to inspect."}
+
+    # Inspect + collect.
+    updates: dict[str, str] = {}
+    successes = errors = 0
+    for i, url in enumerate(targets):
+        try:
+            resp = svc.urlInspection().index().inspect(body={
+                "inspectionUrl": url,
+                "siteUrl": site_url,
+            }).execute()
+            state = (resp.get("inspectionResult", {})
+                          .get("indexStatusResult", {})
+                          .get("coverageState", "")
+                          .strip())
+            if state:
+                updates[url] = state
+                successes += 1
+        except HttpError as exc:
+            status = getattr(exc.resp, "status", None)
+            if status == 429:
+                # quota hit — stop early
+                log.warning("upgrade_with_url_inspection: 429 quota — stopping")
+                break
+            errors += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("upgrade_with_url_inspection: %s failed: %s", url, exc)
+            errors += 1
+        if sleep_between:
+            time.sleep(sleep_between)
+
+    # Merge updates into the coverage CSV and rewrite crawler indexed_status.
+    merged = _merge_into_coverage(updates)
+    backfill = backfill_indexed_status()
+    return {
+        "ok": True,
+        "inspected": successes,
+        "errors": errors,
+        "remaining": max(0, len([u for u in targets if u not in updates])),
+        "merged_into_coverage": merged,
+        "backfill": backfill,
+    }
+
+
+def _merge_into_coverage(updates: dict[str, str]) -> int:
+    """Append URL Inspection verdicts to the latest coverage CSV (or write a
+    fresh one if none exists). Returns the number of rows updated/added.
+    """
+    if not updates:
+        return 0
+    COVERAGE_DIR.mkdir(parents=True, exist_ok=True)
+    # Read latest coverage so we can union without losing prior rows.
+    cov_path = None
+    candidates = sorted(COVERAGE_DIR.glob("coverage_*.csv"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+    cov_path = candidates[0] if candidates else None
+    rows: dict[str, str] = {}
+    if cov_path:
+        with open(cov_path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                u = (r.get("URL") or r.get("url") or "").strip()
+                s = (r.get("Indexing status") or r.get("status") or "").strip()
+                if u:
+                    rows[gsc_loader.normalize_url(u)] = s
+    for url, status in updates.items():
+        rows[url] = status
+    today = datetime.now().strftime("%Y-%m-%d")
+    out_path = COVERAGE_DIR / f"coverage_inspection_{today}.csv"
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["URL", "Indexing status", "Last crawled"])
+        for url, status in sorted(rows.items()):
+            w.writerow([url, status, ""])
+    gsc_loader.invalidate_cache()
+    return len(updates)
 
 
 # ── Convenience for CLI / debugger ─────────────────────────────────────────

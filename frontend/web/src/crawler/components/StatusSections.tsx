@@ -22,11 +22,15 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
     <div className="cc-sections">
 
       {/* ---- Indexing status ---- */}
-      <Section title="Indexing status" hint="From the latest GSC Coverage CSV under backend/data/gsc/coverage/">
+      <Section
+        title="Indexing status"
+        hint="Indexed = confirmed by GSC impressions. Not indexed / Excluded come from a Coverage CSV or URL Inspection — never from heuristics."
+      >
         <StatusCard
           icon="check_circle"
           tone="ok"
           title="Indexed by Google"
+          desc="Confirmed: this URL has produced impressions or clicks in the last 16 months."
           count={breakdown.by_indexed_status.indexed}
           to={detailLink('results', { ...subFilter, indexed: 'indexed' })}
           csv={crawlerApi.downloadUrl('results', { ...subFilter, indexed: 'indexed' })}
@@ -34,8 +38,8 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
         <StatusCard
           icon="cancel"
           tone="bad"
-          title="Not indexed by Google"
-          desc="Crawled / discovered but Google chose not to index"
+          title="Not indexed (verified)"
+          desc="Coverage CSV or URL Inspection says Google saw it and chose not to index."
           count={breakdown.by_indexed_status.not_indexed}
           to={detailLink('results', { ...subFilter, indexed: 'not_indexed' })}
           csv={crawlerApi.downloadUrl('results', { ...subFilter, indexed: 'not_indexed' })}
@@ -44,7 +48,7 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
           icon="block"
           tone="warn"
           title="Excluded by Google"
-          desc="4xx, redirected, alt-canonical, blocked by directive"
+          desc="Cannot be indexed: 4xx, 5xx, redirected, alt-canonical, or blocked by directive."
           count={breakdown.by_indexed_status.excluded}
           to={detailLink('results', { ...subFilter, indexed: 'excluded' })}
           csv={crawlerApi.downloadUrl('results', { ...subFilter, indexed: 'excluded' })}
@@ -52,8 +56,8 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
         <StatusCard
           icon="help_outline"
           tone="muted"
-          title="Unknown (no GSC data)"
-          desc="Drop a Coverage CSV in backend/data/gsc/coverage/ and refresh"
+          title="No GSC signal yet"
+          desc="Crawler found these, but no GSC impressions. Could be indexed-but-low-traffic OR not indexed. Run URL Inspection to confirm per URL."
           count={breakdown.by_indexed_status.unknown}
           to={detailLink('results', { ...subFilter, indexed: 'unknown' })}
           csv={crawlerApi.downloadUrl('results', { ...subFilter, indexed: 'unknown' })}

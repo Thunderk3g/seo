@@ -14,7 +14,7 @@ import { crawlerApi } from '../api';
  *     a coverage CSV themselves and just needs the in-memory cache flushed.
  */
 export default function GscCoverageUploader() {
-  const [busy, setBusy] = useState<'build' | 'refresh' | null>(null);
+  const [busy, setBusy] = useState<'build' | 'inspect' | 'refresh' | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,9 +31,9 @@ export default function GscCoverageUploader() {
       const c = res.coverage;
       const bf = res.backfill;
       const lines: string[] = [
-        `Coverage built: ${c.indexed.toLocaleString()} indexed, `
-          + `${c.not_indexed.toLocaleString()} not indexed, `
-          + `${c.excluded.toLocaleString()} excluded.`,
+        `Coverage built: ${c.indexed.toLocaleString()} indexed (proven), `
+          + `${c.excluded.toLocaleString()} excluded, `
+          + `${c.unknown.toLocaleString()} unknown (run URL Inspection to verify).`,
         `From ${c.indexed_urls_seen.toLocaleString()} performing URLs and `
           + `${c.sitemap_urls_seen.toLocaleString()} sitemap URLs.`,
       ];
@@ -42,7 +42,39 @@ export default function GscCoverageUploader() {
         lines.push(`Sitemap backfill: ${total.toLocaleString()} rows updated.`);
       }
       setStatus(lines.join(' '));
-      window.setTimeout(() => window.location.reload(), 800);
+      window.setTimeout(() => window.location.reload(), 1200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function inspectUnknowns() {
+    setBusy('inspect');
+    setStatus(null);
+    setError(null);
+    try {
+      const res = await crawlerApi.inspectGscUnknowns({ max: 1900 });
+      if (!res.ok) {
+        setError(res.error || 'URL Inspection failed.');
+        return;
+      }
+      if (res.msg) {
+        setStatus(res.msg);
+        return;
+      }
+      const inspected = res.inspected ?? 0;
+      const remaining = res.remaining ?? 0;
+      const errors = res.errors ?? 0;
+      setStatus(
+        `Inspected ${inspected.toLocaleString()} URLs via GSC. `
+        + (remaining > 0
+            ? `${remaining.toLocaleString()} still unknown — run again tomorrow (2,000/day quota).`
+            : 'All unknowns processed.')
+        + (errors > 0 ? ` (${errors} errors skipped.)` : ''),
+      );
+      window.setTimeout(() => window.location.reload(), 1500);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -94,6 +126,16 @@ export default function GscCoverageUploader() {
         >
           <Icon name={busy === 'build' ? 'hourglass_empty' : 'cloud_download'} />
           {busy === 'build' ? 'Pulling…' : 'Pull coverage from GSC'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-accent"
+          onClick={inspectUnknowns}
+          disabled={busy !== null}
+          title="Calls URL Inspection API for the 'No GSC signal' set. Quota: 2,000/day."
+        >
+          <Icon name={busy === 'inspect' ? 'hourglass_empty' : 'verified'} />
+          {busy === 'inspect' ? 'Inspecting…' : 'Verify unknowns'}
         </button>
         <button
           type="button"

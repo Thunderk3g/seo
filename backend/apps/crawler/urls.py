@@ -30,6 +30,10 @@ urlpatterns = [
     # data + a fresh sitemap.xml fetch (no URL Inspection quota burn).
     path("gsc/coverage/build", views.gsc_coverage_build_view,
          name="gsc-coverage-build"),
+    # GSC URL Inspection runner — convert `unknown` rows into definitive
+    # indexed / not_indexed / excluded verdicts. Rate-limited (2000/day).
+    path("gsc/coverage/inspect", views.gsc_inspect_unknowns_view,
+         name="gsc-coverage-inspect"),
 
     # Site tree
     path("tree", views.tree_view, name="tree"),

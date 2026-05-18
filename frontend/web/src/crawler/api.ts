@@ -265,4 +265,18 @@ export const crawlerApi = {
       { method: 'POST' },
     );
   },
+  inspectGscUnknowns: (opts: { max?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.max) qs.set('max', String(opts.max));
+    const tail = qs.toString();
+    return request<{
+      ok: boolean;
+      error?: string;
+      inspected?: number;
+      errors?: number;
+      remaining?: number;
+      msg?: string;
+      backfill?: { files: Record<string, { status: string; updated: number }> };
+    }>(`/gsc/coverage/inspect${tail ? `?${tail}` : ''}`, { method: 'POST' });
+  },
 };
