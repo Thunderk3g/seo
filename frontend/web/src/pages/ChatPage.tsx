@@ -41,6 +41,44 @@ export default function ChatPage() {
   const lastIdx = messages.length - 1;
   const empty = messages.length === 0;
 
+  // Layout flips between two modes:
+  //   Empty (hero):   composer centred vertically, title above, suggestions below.
+  //   Conversation:   messages scroll, composer fixed at the bottom.
+  if (empty) {
+    return (
+      <div className="chat-page chat-page--hero">
+        <div className="chat-hero">
+          <h1 className="chat-hero-title">Bajaj SEO Assistant</h1>
+          <div className="chat-hero-sub">
+            How can I help with <strong>{domain}</strong>?
+          </div>
+          <div className="chat-hero-composer">
+            <Composer
+              hero
+              disabled={streaming}
+              streaming={streaming}
+              onSend={send}
+              onStop={stop}
+            />
+          </div>
+          <div className="chat-suggestions chat-suggestions--hero">
+            {SUGGESTIONS.map((s) => (
+              <button
+                key={s}
+                type="button"
+                className="chat-suggestion"
+                onClick={() => send(s)}
+                disabled={streaming}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="chat-page">
       <header className="chat-page-head">
@@ -50,45 +88,24 @@ export default function ChatPage() {
             How can I help with <strong>{domain}</strong>?
           </div>
         </div>
-        {messages.length > 0 && (
-          <button
-            type="button"
-            className="chat-page-clear"
-            onClick={clear}
-            disabled={streaming}
-          >
-            New conversation
-          </button>
-        )}
+        <button
+          type="button"
+          className="chat-page-clear"
+          onClick={clear}
+          disabled={streaming}
+        >
+          New conversation
+        </button>
       </header>
 
       <div className="chat-scroll" ref={scrollRef}>
-        {empty ? (
-          <div className="chat-empty">
-            <p>Ask anything about Bajaj search performance, content, competitors, or technical health.</p>
-            <div className="chat-suggestions">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  className="chat-suggestion"
-                  onClick={() => send(s)}
-                  disabled={streaming}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          messages.map((m, i) => (
-            <ChatBubble
-              key={i}
-              message={m}
-              streaming={streaming && i === lastIdx}
-            />
-          ))
-        )}
+        {messages.map((m, i) => (
+          <ChatBubble
+            key={i}
+            message={m}
+            streaming={streaming && i === lastIdx}
+          />
+        ))}
       </div>
 
       <div className="chat-footer">

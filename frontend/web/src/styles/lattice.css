@@ -2253,15 +2253,20 @@ button { font: inherit; }
   flex: 1;
   resize: none;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
+  border-radius: 14px;
+  padding: 14px 16px;
   font-family: inherit;
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.5;
   color: var(--text);
   background: var(--surface);
   outline: none;
-  transition: border-color 120ms;
+  transition: border-color 120ms, box-shadow 120ms;
+  min-height: 56px;
+  /* No internal scroll — the textarea auto-grows with content (see
+     Composer.tsx). Vertical overflow is hidden so a single line never
+     shows the scroll thumb during the height-recalc tick. */
+  overflow-y: hidden;
 }
 .chat-composer-input:focus {
   border-color: var(--accent);
@@ -2270,19 +2275,27 @@ button { font: inherit; }
 .chat-composer-input:disabled { background: var(--surface-2); color: var(--text-3); }
 .chat-composer-send,
 .chat-composer-stop {
+  /* Round icon button, sits flush with the textarea bottom. */
   border: 0;
-  border-radius: 10px;
-  padding: 10px 18px;
-  font-size: 13px;
-  font-weight: 500;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  transition: background 120ms;
+  transition: background 120ms, transform 120ms, box-shadow 120ms;
+  flex-shrink: 0;
 }
 .chat-composer-send {
   background: var(--accent);
   color: #fff;
 }
-.chat-composer-send:hover:not(:disabled) { background: var(--accent-hover); }
+.chat-composer-send:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
 .chat-composer-send:disabled {
   background: var(--surface-3);
   color: var(--text-4);
@@ -2291,6 +2304,71 @@ button { font: inherit; }
 .chat-composer-stop {
   background: var(--error-soft);
   color: var(--error);
+}
+.chat-composer-stop:hover { background: var(--error); color: #fff; }
+
+/* ── Hero (empty-state) layout — composer centred ─────────────────── */
+.chat-page--hero {
+  /* Override the chat-page grid so there's no footer slot — hero owns
+     the whole content area. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-hero {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.chat-hero-title {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text);
+}
+.chat-hero-sub {
+  font-size: 15px;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.chat-hero-sub strong { color: var(--text); font-weight: 600; }
+.chat-hero-composer {
+  /* Bigger composer for the hero variant. The .chat-composer--hero
+     class on the Composer itself bumps the textarea min-height and
+     font size; this wrapper just centres it. */
+  width: 100%;
+}
+.chat-composer--hero .chat-composer-input {
+  min-height: 96px;
+  font-size: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+.chat-composer--hero .chat-composer-send,
+.chat-composer--hero .chat-composer-stop {
+  width: 52px;
+  height: 52px;
+}
+
+/* Suggestions row sits BELOW the hero composer, horizontal pill row. */
+.chat-suggestions--hero {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.chat-suggestions--hero .chat-suggestion {
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 
 /* ── Competitor Gap Detection section ──────────────────────────────── */
