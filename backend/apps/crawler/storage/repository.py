@@ -270,13 +270,22 @@ def _bump(bucket: dict, row: dict) -> None:
 
 
 def summary_breakdown() -> dict:
-    """Aggregate the results CSV by subdomain and category.
+    """Aggregate the results CSV by subdomain, category, indexing status,
+    and sitemap source.
 
-    Drives the Reports landing page badges and the Excel pivot. Computed by
-    a single streaming pass so we don't load the whole CSV into memory.
+    Drives the Reports landing page sections and the Excel pivot. Computed
+    in a single streaming pass so we don't load the whole CSV into memory.
     """
     by_subdomain: dict[str, dict] = {}
     by_category: dict[str, dict] = {}
+    by_indexed: dict[str, int] = {
+        "indexed": 0, "not_indexed": 0, "excluded": 0, "unknown": 0,
+    }
+    by_sitemap: dict[str, int] = {
+        "from_sitemap": 0, "discovered_only": 0, "unknown_source": 0,
+    }
+    sitemap_failed = 0          # in sitemap but did not return HTTP 200
+    sitemap_404 = 0             # in sitemap but 404 — broken sitemap entries
     noise_branch_404 = 0
     for row in iter_rows("results"):
         sub = row.get("subdomain") or "external"
@@ -285,24 +294,60 @@ def summary_breakdown() -> dict:
         by_category.setdefault(cat, _zero_counts())
         _bump(by_subdomain[sub], row)
         _bump(by_category[cat], row)
+
+        idx = row.get("indexed_status") or "unknown"
+        if idx in by_indexed:
+            by_indexed[idx] += 1
+        else:
+            by_indexed["unknown"] += 1
+
+        src = row.get("from_sitemap") or ""
+        code = row.get("status_code") or ""
+        if src == "1":
+            by_sitemap["from_sitemap"] += 1
+            if code != "200":
+                sitemap_failed += 1
+            if code == "404":
+                sitemap_404 += 1
+        elif src == "0":
+            by_sitemap["discovered_only"] += 1
+        else:
+            by_sitemap["unknown_source"] += 1
+
         if (sub == "branch"
-                and row.get("status_code") == "404"
-                and row.get("indexed_status") != "indexed"):
+                and code == "404"
+                and idx != "indexed"):
             noise_branch_404 += 1
-    # Add per-category metadata so the UI doesn't have to mirror CATEGORY_DEFS.
+
+    # Per-error-type counts come from the small per-file CSVs, not a re-scan
+    # of the full results — quicker and these are already populated.
+    by_error_type = {
+        "errors_404":        read_csv("errors_404")["count"],
+        "errors_http":       read_csv("errors_http")["count"],
+        "errors_connection": read_csv("errors_connection")["count"],
+        "errors_chunked":    read_csv("errors_chunked")["count"],
+        "console":           read_csv("console")["count"],
+    }
+
+    # Categories metadata so the UI can map keys -> labels in one place.
     cat_meta = {c["key"]: c for c in url_classifier.CATEGORY_DEFS}
     categories = []
     for c in url_classifier.CATEGORY_DEFS:
         counts = by_category.get(c["key"], _zero_counts())
         categories.append({**c, "counts": counts})
-    # Also expose any unexpected categories that snuck in (defensive).
     for k, counts in by_category.items():
         if k not in cat_meta:
             categories.append({"key": k, "label": k, "subdomain": "external",
                                "icon": "help_outline", "counts": counts})
+
     return {
         "by_subdomain": by_subdomain,
         "by_category": {c["key"]: c["counts"] for c in categories},
         "categories": categories,
+        "by_indexed_status": by_indexed,
+        "by_sitemap_source": by_sitemap,
+        "sitemap_failed_count": sitemap_failed,
+        "sitemap_404_count": sitemap_404,
+        "by_error_type": by_error_type,
         "noise_404_branch_not_indexed": noise_branch_404,
     }

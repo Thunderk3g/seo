@@ -1,39 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation } from 'wouter';
-import BreakdownGrid from '../components/BreakdownGrid';
-import CategoryTabs from '../components/CategoryTabs';
+import { useLocation } from 'wouter';
 import GscCoverageUploader from '../components/GscCoverageUploader';
 import Icon from '../components/Icon';
-import ReportCard from '../components/ReportCard';
-import ReportFiltersPanel from '../components/ReportFilters';
+import StatusSections from '../components/StatusSections';
 import SubdomainTabs from '../components/SubdomainTabs';
-import {
-  crawlerApi,
-  type ReportFilters,
-  type SummaryBreakdown,
-  type TableMeta,
-  type TablesResponse,
-} from '../api';
+import { crawlerApi, type SummaryBreakdown, type TablesResponse } from '../api';
 
 type SubKey = 'all' | 'www' | 'branch' | 'investmentcorner';
 
-const CATEGORISED_KEYS = new Set([
-  'results',
-  'errors',
-  'errors_404',
-  'discovered',
-  'console',
-]);
-
 /**
- * The Reports page is the heart of the Crawler Engine UI. It used to be a
- * flat grid of `ReportCard`s; the rewrite below organises everything by
- * subdomain → category, with a sidebar of orthogonal filters (indexed
- * status, sitemap origin, branch-noise toggle) and a banner for plugging
- * in GSC Coverage data.
+ * Reports landing page — sectioned by what actually matters operationally:
  *
- * Filter state lives in the URL (?sub=, ?cat=, ?indexed=, ?noise=) so deep
- * links from the rest of the app continue to work.
+ *   1. Indexing status (from GSC Coverage CSV)
+ *      indexed / not_indexed / excluded / unknown
+ *   2. Sitemap presence
+ *      in sitemap / discovered only / sitemap-broken
+ *   3. Errors by type
+ *      404 / HTTP / connection / chunked / console
+ *
+ * No filter sidebar — drilling in is a click on a card, which
+ * navigates to the detail view with the right filter pre-applied.
  */
 export default function CrawlerReports() {
   const [tables, setTables] = useState<TablesResponse | null>(null);
@@ -41,23 +27,15 @@ export default function CrawlerReports() {
   const [error, setError] = useState<string | null>(null);
   const [location, setLocation] = useLocation();
 
-  // ── URL-synced filter state ──────────────────────────────────────────
-  const filters = useMemo(() => readFilters(location), [location]);
-  const subdomain: SubKey = (filters.subdomain as SubKey) || 'all';
-  const category = filters.category ?? null;
-
-  function updateFilters(next: ReportFilters) {
-    setLocation('/crawler/reports' + writeFilters(next));
-  }
+  // Subdomain scope is the only top-level filter on this page.
+  const subdomain = useMemo<SubKey>(() => parseSubdomain(location), [location]);
   function setSubdomain(s: SubKey) {
-    const { category: _c, ...rest } = filters;
-    updateFilters({ ...rest, subdomain: s === 'all' ? undefined : s });
-  }
-  function setCategory(c: string | null) {
-    updateFilters({ ...filters, category: c ?? undefined });
+    const qs = new URLSearchParams();
+    if (s !== 'all') qs.set('subdomain', s);
+    const tail = qs.toString();
+    setLocation('/crawler/reports' + (tail ? `?${tail}` : ''));
   }
 
-  // ── Data load ────────────────────────────────────────────────────────
   useEffect(() => {
     let alive = true;
     Promise.all([crawlerApi.tables(), crawlerApi.breakdown()])
@@ -72,27 +50,6 @@ export default function CrawlerReports() {
     };
   }, []);
 
-  // ── Derived data for the active scope ────────────────────────────────
-  const activeTable = useMemo(() => {
-    if (!tables) return null;
-    // We surface the categorised "results" table as the primary grid;
-    // user can switch focus by clicking individual ReportCards below.
-    return tables.tables.find((t) => t.key === 'results') ?? null;
-  }, [tables]);
-
-  const filteredCategories = useMemo(() => {
-    if (!breakdown) return [];
-    return breakdown.categories.filter((c) =>
-      subdomain === 'all' ? true : c.subdomain === subdomain,
-    );
-  }, [breakdown, subdomain]);
-
-  const nonCategorisedTables = useMemo<TableMeta[]>(() => {
-    if (!tables) return [];
-    return tables.tables.filter((t) => !CATEGORISED_KEYS.has(t.key));
-  }, [tables]);
-
-  // ── Render ───────────────────────────────────────────────────────────
   return (
     <div className="cc-scope">
       <div className="page-head">
@@ -110,13 +67,11 @@ export default function CrawlerReports() {
             <span className="material-icons-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4 }}>
               segment
             </span>
-            Crawl artefacts segregated by subdomain, page category, and Google index status.
+            Indexing status, sitemap coverage, and error breakdown — pulled from your latest crawl
+            and the most recent Google Search Console Coverage export.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <a className="btn btn-ghost" href={crawlerApi.downloadUrl('results', filters)}>
-            <Icon name="download" /> Filtered CSV
-          </a>
           <a className="btn btn-accent" href={crawlerApi.xlsxUrl()}>
             <Icon name="insert_chart" /> Download Excel Bundle
           </a>
@@ -136,86 +91,42 @@ export default function CrawlerReports() {
         onChange={setSubdomain}
         bySubdomain={breakdown?.by_subdomain}
       />
-      {breakdown && (
-        <CategoryTabs
-          categories={breakdown.categories}
-          subdomain={subdomain}
-          value={category}
-          onChange={setCategory}
-        />
+
+      {breakdown ? (
+        <StatusSections breakdown={breakdown} subdomain={subdomain} />
+      ) : (
+        !error && <div className="cc-empty"><Icon name="hourglass_empty" /> Loading breakdown…</div>
       )}
 
-      <div className="cc-reports-grid">
-        <ReportFiltersPanel
-          value={filters}
-          onChange={updateFilters}
-          noiseCount={breakdown?.noise_404_branch_not_indexed}
-        />
-        <div>
-          <h3 style={{ margin: '4px 0 8px', fontSize: 14, color: 'var(--text-secondary)' }}>
-            {activeTable?.label ?? 'Crawl results'} — by category
-          </h3>
-          {breakdown && (
-            <BreakdownGrid
-              categories={filteredCategories}
-              filters={filters}
-              tableKey="results"
-            />
-          )}
-
-          {nonCategorisedTables.length > 0 && (
-            <>
-              <h3 style={{ margin: '24px 0 8px', fontSize: 14, color: 'var(--text-secondary)' }}>
-                Other tables
-              </h3>
-              <div className="report-grid">
-                {nonCategorisedTables.map((t) => (
-                  <ReportCard key={t.key} table={t} />
-                ))}
-              </div>
-            </>
-          )}
-
-          <div style={{ marginTop: 18, fontSize: 12, color: 'var(--text-muted)' }}>
-            <Icon name="info" size="14px" /> Tip — click any category card to drill into the filtered
-            row list. The CSV download honours every filter you have set above.{' '}
-            <Link href="/crawler/reports?indexed=not_indexed&subdomain=www">
-              Show only www pages Google did not index →
-            </Link>
-          </div>
-        </div>
-      </div>
+      {tables && tables.tables.length > 0 && (
+        <details className="cc-raw-tables">
+          <summary>
+            <Icon name="dataset" /> Raw data tables ({tables.tables.length} files in backend/data/)
+          </summary>
+          <ul className="cc-raw-tables__list">
+            {tables.tables.map((t) => (
+              <li key={t.key}>
+                <a href={`/crawler/reports/${t.key}`}>
+                  <Icon name={t.icon} />
+                  <span className="cc-raw-tables__label">{t.label}</span>
+                  <span className="cc-raw-tables__count">{t.count.toLocaleString()}</span>
+                </a>
+                <a className="cc-raw-tables__csv" href={crawlerApi.downloadUrl(t.key)}>
+                  <Icon name="download" /> CSV
+                </a>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
 
-// ── Filter <-> URL helpers ──────────────────────────────────────────────
-function readFilters(loc: string): ReportFilters {
+function parseSubdomain(loc: string): SubKey {
   const qIdx = loc.indexOf('?');
-  if (qIdx < 0) return {};
+  if (qIdx < 0) return 'all';
   const sp = new URLSearchParams(loc.slice(qIdx + 1));
-  const out: ReportFilters = {};
-  const sub = sp.get('subdomain') ?? sp.get('sub');
-  const cat = sp.get('category') ?? sp.get('cat');
-  if (sub) out.subdomain = sub;
-  if (cat) out.category = cat;
-  if (sp.get('indexed')) out.indexed = sp.get('indexed') ?? undefined;
-  if (sp.get('from_sitemap')) out.from_sitemap = sp.get('from_sitemap') ?? undefined;
-  if (sp.get('page_type')) out.page_type = sp.get('page_type') ?? undefined;
-  if (sp.get('noise') === 'hide' || sp.get('hide_branch_404_noise') === '1') {
-    out.hide_branch_404_noise = true;
-  }
-  return out;
-}
-
-function writeFilters(f: ReportFilters): string {
-  const qs = new URLSearchParams();
-  if (f.subdomain) qs.set('subdomain', f.subdomain);
-  if (f.category) qs.set('category', f.category);
-  if (f.indexed) qs.set('indexed', f.indexed);
-  if (f.from_sitemap) qs.set('from_sitemap', f.from_sitemap);
-  if (f.page_type) qs.set('page_type', f.page_type);
-  if (f.hide_branch_404_noise) qs.set('noise', 'hide');
-  const s = qs.toString();
-  return s ? `?${s}` : '';
+  const v = (sp.get('subdomain') ?? sp.get('sub') ?? 'all') as SubKey;
+  return (['all', 'www', 'branch', 'investmentcorner'] as const).includes(v as any) ? v : 'all';
 }

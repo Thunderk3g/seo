@@ -125,6 +125,26 @@ export interface SummaryBreakdown {
   by_subdomain: Record<string, CategoryCounts>;
   by_category: Record<string, CategoryCounts>;
   categories: CategoryMeta[];
+  by_indexed_status: {
+    indexed: number;
+    not_indexed: number;
+    excluded: number;
+    unknown: number;
+  };
+  by_sitemap_source: {
+    from_sitemap: number;
+    discovered_only: number;
+    unknown_source: number;
+  };
+  sitemap_failed_count: number;
+  sitemap_404_count: number;
+  by_error_type: {
+    errors_404: number;
+    errors_http: number;
+    errors_connection: number;
+    errors_chunked: number;
+    console: number;
+  };
   noise_404_branch_not_indexed: number;
 }
 

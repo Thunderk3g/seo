@@ -3,29 +3,29 @@ import { Link, useLocation, useParams } from 'wouter';
 import DataTable from '../components/DataTable';
 import EmptyState from '../components/EmptyState';
 import Icon from '../components/Icon';
-import ReportFiltersPanel from '../components/ReportFilters';
-import {
-  crawlerApi,
-  type ReportFilters,
-  type SummaryBreakdown,
-  type TableData,
-} from '../api';
+import { crawlerApi, type ReportFilters, type TableData } from '../api';
 
+/**
+ * Report detail — shows one CSV with any filters from the URL applied.
+ * No sidebar UI. Filters are passed in by the card that linked here and
+ * surfaced as chips at the top of the page so the user can see what's
+ * active and clear individual filters.
+ */
 export default function CrawlerReportDetail() {
   const params = useParams<{ key: string }>();
   const key = params.key;
   const [data, setData] = useState<TableData | null>(null);
-  const [breakdown, setBreakdown] = useState<SummaryBreakdown | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [location, setLocation] = useLocation();
 
   const filters = useMemo(() => readFilters(location), [location]);
 
-  function updateFilters(next: ReportFilters) {
+  function clearFilter(name: keyof ReportFilters) {
+    const next: ReportFilters = { ...filters };
+    delete next[name];
     setLocation(`/crawler/reports/${key}${writeFilters(next)}`);
   }
 
-  // Re-load on key or filter change.
   useEffect(() => {
     let alive = true;
     setData(null);
@@ -39,34 +39,28 @@ export default function CrawlerReportDetail() {
     };
   }, [key, location]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Breakdown loaded once — needed for the "hide branch 404 noise" badge count.
-  useEffect(() => {
-    let alive = true;
-    crawlerApi.breakdown().then((b) => alive && setBreakdown(b)).catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const activeFilterChips = chipsFromFilters(filters);
+  const chips = chipsFromFilters(filters);
 
   return (
     <div className="cc-scope">
       <div className="page-head">
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
             <Link href="/crawler/reports" className="btn btn-ghost" style={{ padding: '4px 10px' }}>
               <Icon name="arrow_back" size="16px" /> Back to reports
             </Link>
-            {activeFilterChips.length > 0 && (
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {activeFilterChips.map((chip) => (
-                  <span key={chip.key} className="cc-tab__chip cc-tab__chip--ok">
-                    <strong>{chip.label}</strong>: {chip.value}
-                  </span>
-                ))}
-              </div>
-            )}
+            {chips.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                className="cc-active-chip"
+                title="Click to remove this filter"
+                onClick={() => clearFilter(chip.key as keyof ReportFilters)}
+              >
+                <strong>{chip.label}</strong>: {chip.value}
+                <Icon name="close" />
+              </button>
+            ))}
           </div>
           <h1>
             <span
@@ -87,7 +81,7 @@ export default function CrawlerReportDetail() {
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <a className="btn btn-ghost" href={crawlerApi.downloadUrl(key, filters)}>
-            <Icon name="download" /> Filtered CSV
+            <Icon name="download" /> {chips.length ? 'Filtered CSV' : 'CSV'}
           </a>
           <a className="btn btn-accent" href={crawlerApi.xlsxUrl()}>
             <Icon name="insert_chart" /> Full XLSX
@@ -95,31 +89,22 @@ export default function CrawlerReportDetail() {
         </div>
       </div>
 
-      <div className="cc-reports-grid">
-        <ReportFiltersPanel
-          value={filters}
-          onChange={updateFilters}
-          noiseCount={breakdown?.noise_404_branch_not_indexed}
+      {error && <EmptyState icon="error" title="Could not load table" hint={error} />}
+      {!error && data && data.count === 0 && (
+        <EmptyState
+          icon="inbox"
+          title="No rows match these filters"
+          hint={chips.length ? "Clear a chip above to widen the search." : "Run a crawl to populate this table."}
         />
-        <div>
-          {error && <EmptyState icon="error" title="Could not load table" hint={error} />}
-          {!error && data && data.count === 0 && (
-            <EmptyState
-              icon="inbox"
-              title="No rows match these filters"
-              hint="Loosen the filters above or run a fresh crawl."
-            />
-          )}
-          {!error && data && data.count > 0 && (
-            <DataTable headers={data.headers} rows={data.rows} />
-          )}
-        </div>
-      </div>
+      )}
+      {!error && data && data.count > 0 && (
+        <DataTable headers={data.headers} rows={data.rows} />
+      )}
     </div>
   );
 }
 
-// ── Filter <-> URL helpers (mirrors CrawlerReports.tsx) ─────────────────
+// ── Filter <-> URL helpers ──────────────────────────────────────────────
 function readFilters(loc: string): ReportFilters {
   const qIdx = loc.indexOf('?');
   if (qIdx < 0) return {};
@@ -159,9 +144,9 @@ function chipsFromFilters(f: ReportFilters): { key: string; label: string; value
     chips.push({
       key: 'from_sitemap',
       label: 'Source',
-      value: f.from_sitemap === '1' ? 'sitemap' : 'links',
+      value: f.from_sitemap === '1' ? 'sitemap' : f.from_sitemap === '0' ? 'links only' : f.from_sitemap,
     });
   if (f.hide_branch_404_noise)
-    chips.push({ key: 'noise', label: 'Noise', value: 'hidden' });
+    chips.push({ key: 'hide_branch_404_noise', label: 'Noise', value: 'hidden' });
   return chips;
 }
