@@ -105,9 +105,9 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
       </Section>
 
       {/* ---- Errors by type ---- */}
-      {/* Connection / Chunked / Console-heuristic cards removed per request.   */}
-      {/* Real browser console logs need headless browser (Playwright);         */}
-      {/* until that lands we don't surface heuristic-only console signals.     */}
+      {/* Console log uses Playwright headless capture (real JS execution),     */}
+      {/* not regex-on-HTML heuristics. Run `Capture console` from the banner  */}
+      {/* on the Reports page to populate it after a crawl.                    */}
       <Section title="Errors by type" hint="One card per error-class CSV — drill in to see every failing URL.">
         <StatusCard
           icon="link_off"
@@ -125,6 +125,15 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
           count={breakdown.by_error_type.errors_http}
           to={detailLink('errors_http')}
           csv={crawlerApi.downloadUrl('errors_http')}
+        />
+        <StatusCard
+          icon="terminal"
+          tone="warn"
+          title="Console log entries"
+          desc="Real JS errors + warnings captured via headless Chromium. Run 'Capture console' to refresh."
+          count={breakdown.by_error_type.console}
+          to={detailLink('console', subFilter)}
+          csv={crawlerApi.downloadUrl('console', subFilter)}
         />
       </Section>
     </div>

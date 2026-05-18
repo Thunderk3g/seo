@@ -19,6 +19,15 @@ COPY requirements/ /app/requirements/
 RUN pip install --no-cache-dir -r requirements/base.txt \
     && if [ "$INSTALL_DEV" = "1" ]; then pip install --no-cache-dir -r requirements/dev.txt; fi
 
+# Playwright Chromium binary (used by apps.crawler.engine.browser_console).
+# `--with-deps` installs the apt packages Chromium needs; in a corporate-MITM
+# network the binary download can hit TLS issues, so we leave NODE_TLS_REJECT
+# unforced here — a build behind a strict proxy can re-run with
+# `docker exec ... NODE_TLS_REJECT_UNAUTHORIZED=0 playwright install chromium`
+# inside the container if the default fails.
+RUN playwright install --with-deps chromium || \
+    (NODE_TLS_REJECT_UNAUTHORIZED=0 playwright install chromium)
+
 COPY . /app/
 
 CMD ["gunicorn", "config.wsgi", "-b", "0.0.0.0:8000"]

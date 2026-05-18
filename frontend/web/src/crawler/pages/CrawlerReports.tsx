@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearch } from 'wouter';
+import ConsoleCaptureBanner from '../components/ConsoleCaptureBanner';
 import GscCoverageUploader from '../components/GscCoverageUploader';
 import Icon from '../components/Icon';
 import StatusSections from '../components/StatusSections';
@@ -82,6 +83,7 @@ export default function CrawlerReports() {
       )}
 
       <GscCoverageUploader />
+      <ConsoleCaptureBanner />
 
       {breakdown ? (
         <StatusSections breakdown={breakdown} subdomain={subdomain} />

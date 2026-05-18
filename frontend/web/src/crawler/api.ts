@@ -279,4 +279,38 @@ export const crawlerApi = {
       backfill?: { files: Record<string, { status: string; updated: number }> };
     }>(`/gsc/coverage/inspect${tail ? `?${tail}` : ''}`, { method: 'POST' });
   },
+  startConsoleCapture: (opts: {
+    limit?: number;
+    subdomain?: string;
+    status?: string;
+    levels?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.limit) qs.set('limit', String(opts.limit));
+    if (opts.subdomain) qs.set('subdomain', opts.subdomain);
+    if (opts.status) qs.set('status', opts.status);
+    if (opts.levels) qs.set('levels', opts.levels);
+    const tail = qs.toString();
+    return request<{
+      ok: boolean;
+      message?: string;
+      target_count?: number;
+    }>(`/console/capture${tail ? `?${tail}` : ''}`, { method: 'POST' });
+  },
+  consoleCaptureStatus: () =>
+    request<{
+      is_running: boolean;
+      should_stop: boolean;
+      total: number;
+      processed: number;
+      failed: number;
+      console_rows_written: number;
+      last_url: string;
+      started_at: number | null;
+      finished_at: number | null;
+    }>('/console/capture/status'),
+  stopConsoleCapture: () =>
+    request<{ ok: boolean; message?: string }>('/console/capture/stop', {
+      method: 'POST',
+    }),
 };
