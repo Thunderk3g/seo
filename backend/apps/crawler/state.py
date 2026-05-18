@@ -42,6 +42,10 @@ class CrawlState:
     console_logs: list[dict] = field(default_factory=list)
     discovered_edges: list[dict] = field(default_factory=list)
 
+    # URLs harvested from sitemap.xml during _seed(); read by csv_writer to
+    # stamp ``from_sitemap`` on each row. Normalised via engine.url_utils.
+    sitemap_urls: set[str] = field(default_factory=set)
+
     stats: CrawlStats = field(default_factory=CrawlStats)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -61,6 +65,7 @@ class CrawlState:
             self.error_chunked.clear()
             self.console_logs.clear()
             self.discovered_edges.clear()
+            self.sitemap_urls.clear()
             self.stats = CrawlStats()
             self.should_stop = False
 

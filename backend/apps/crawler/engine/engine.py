@@ -86,6 +86,11 @@ def _seed(session, rp, robots_sitemaps) -> int:
         "message": f"Harvested {len(sitemap_urls)} URL(s) from sitemap(s)",
         "timestamp": datetime.now().isoformat(),
     })
+    # Register sitemap-origin URLs so csv_writer can stamp `from_sitemap` on
+    # each row. We normalise here (same as the eligibility check below) so a
+    # later lookup against the visited URL matches by identity.
+    with STATE.lock:
+        STATE.sitemap_urls.update(normalize(u) for u in sitemap_urls if u)
     added = 0
     for raw in [settings.seed_url, *sitemap_urls]:
         url = _eligible(normalize(raw), rp)
@@ -292,10 +297,37 @@ def _limit_reached() -> bool:
 
 
 def run_crawl() -> None:
-    """Top-level crawl runner. Blocks until the frontier is drained or stop requested."""
+    """Top-level crawl runner. Blocks until the frontier is drained or stop requested.
+
+    The whole body is wrapped in try/finally so ``is_running`` ALWAYS
+    clears on exit — clean finish, exception, or thread kill. Previously
+    a crash anywhere between ``is_running=True`` and the bottom of the
+    function left the singleton flag stuck on, and every subsequent Start
+    API call got rejected with 409 until the container was restarted.
+    """
     STATE.is_running = True
     STATE.should_stop = False
+    try:
+        _run_crawl_body()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("crawl-engine thread crashed: %s", exc)
+        log_bus.post({
+            "type": "error",
+            "message": f"Crawl thread crashed: {type(exc).__name__}: {exc}",
+            "timestamp": datetime.now().isoformat(),
+        })
+    finally:
+        STATE.is_running = False
+        STATE.stats.finished_at = STATE.stats.finished_at or time.time()
+        STATE.stats.active_workers = 0
+        try:
+            csv_writer.flush_streams()
+            csv_writer.close_streams()
+        except Exception:  # noqa: BLE001
+            pass
 
+
+def _run_crawl_body() -> None:
     session = new_session()
     rp, robots_sitemaps = robots_mod.load(session)
     delay = robots_mod.crawl_delay(rp)
@@ -402,9 +434,10 @@ def run_crawl() -> None:
                 if per_request_pause > 0:
                     time.sleep(per_request_pause)
 
+    # Normal completion. The outer try/finally in run_crawl() also handles
+    # the close_streams / finished_at fallbacks, so it's safe if any of
+    # this raises.
     STATE.stats.finished_at = time.time()
-    csv_writer.flush_streams()
-    csv_writer.close_streams()
     csv_writer.save_state(final=True)
     elapsed = (STATE.stats.finished_at or 0) - (STATE.stats.started_at or 0)
     log_bus.post({
@@ -416,7 +449,6 @@ def run_crawl() -> None:
         "timestamp": datetime.now().isoformat(),
         "stats": STATE.stats.as_dict(),
     })
-    STATE.is_running = False
     log.info(
         "Crawl done — %d pages, %d errors, %.1fs",
         STATE.stats.crawled, STATE.stats.errors, elapsed,

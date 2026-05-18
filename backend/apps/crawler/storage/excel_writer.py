@@ -1,14 +1,22 @@
 """Beautified XLSX report bundler.
 
-Produces ``crawl_report.xlsx`` with Bajaj-branded styling: Summary +
-Results + 404s + HTTP / Connection / Chunked errors + Console Log +
-Discovered Edges, each sheet with frozen header, auto-filter, fitted
-column widths, brand-coloured header, zebra-striped body, conditional
-formatting on status / HTTP code, plus a pie chart of error distribution.
+Produces ``crawl_report.xlsx`` with Bajaj-branded styling. The workbook is
+organised by URL category (subdomain + page-type), not just by error type:
+
+  * Summary sheet — KPIs + error pie chart + a category × indexed_status
+    pivot block grouping product / knowledge / branch / etc.
+  * Per-subdomain overview sheets — www / branch / investmentcorner.
+  * Per-category data sheets — only emitted when non-empty.
+  * Existing raw sheets — Results / All Errors / 404s / HTTP / Connection /
+    Chunked / Console / Discovered — preserved with the five new enrichment
+    columns and auto-filter so users can re-slice in Excel.
+  * Noise sheet — branch 404s where ``indexed_status != indexed`` — split
+    out so the user can ignore it without scrolling past it.
 """
 from __future__ import annotations
 
 import csv
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +28,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from ..conf import settings
+from . import url_classifier
 
 # ── Bajaj brand palette ────────────────────────────────────────────────────
 BRAND_NAVY = "003DA5"
@@ -95,6 +104,7 @@ def _dump_table(ws: Worksheet, headers: list[str], rows: list[list[str]],
         return
     status_idx = headers.index(status_col) + 1 if status_col and status_col in headers else None
     code_idx = headers.index(code_col) + 1 if code_col and code_col in headers else None
+    idx_idx = headers.index("indexed_status") + 1 if "indexed_status" in headers else None
 
     ws.append(headers)
     _style_header(ws, 1, len(headers))
@@ -126,6 +136,15 @@ def _dump_table(ws: Worksheet, headers: list[str], rows: list[list[str]],
             if val == "200":
                 sc.font = Font(name="Calibri", size=10, bold=True, color=OK_GREEN)
             elif val.startswith("4") or val.startswith("5"):
+                sc.font = Font(name="Calibri", size=10, bold=True, color=ERR_RED)
+        if idx_idx:
+            val = padded[idx_idx - 1]
+            sc = ws.cell(row=ri, column=idx_idx)
+            if val == "indexed":
+                sc.fill = _OK_FILL
+                sc.font = Font(name="Calibri", size=10, bold=True, color=OK_GREEN)
+            elif val == "not_indexed":
+                sc.fill = _ERR_FILL
                 sc.font = Font(name="Calibri", size=10, bold=True, color=ERR_RED)
 
     if freeze:
@@ -217,9 +236,9 @@ def _build_summary(ws: Worksheet, totals: dict) -> None:
         ws.add_chart(chart, "E10")
 
 
-SHEETS: list[tuple[str, str, str | None, str | None]] = [
-    ("Results", "crawl_results.csv", "status", "status_code"),
-    ("404 Errors", "crawl_404_errors.csv", None, None),
+RAW_SHEETS: list[tuple[str, str, str | None, str | None]] = [
+    ("All Results (raw)", "crawl_results.csv", "status", "status_code"),
+    ("All 404 Errors (raw)", "crawl_404_errors.csv", None, None),
     ("HTTP Errors", "crawl_errors_httperror.csv", None, None),
     ("Connection Errors", "crawl_errors_connectionerror.csv", None, None),
     ("Chunked Errors", "crawl_errors_chunkedencodingerror.csv", None, None),
@@ -237,10 +256,38 @@ def build_report(output_path: Path | None = None) -> Path:
     summary_ws = wb.active
     summary_ws.title = "Summary"
 
-    totals = _compute_totals()
+    res_hdr, res_rows = _read_csv("crawl_results.csv")
+    totals = _compute_totals(res_hdr, res_rows)
+    breakdown = _compute_breakdown(res_hdr, res_rows)
     _build_summary(summary_ws, totals)
+    _build_category_pivot(summary_ws, breakdown)
 
-    for sheet_name, csv_file, status_col, code_col in SHEETS:
+    # Per-subdomain overview sheets — readable at-a-glance KPIs per surface.
+    for sub in ("www", "branch", "investmentcorner"):
+        sub_rows = _filter_rows_by(res_hdr, res_rows, "subdomain", sub)
+        if not sub_rows:
+            continue
+        ws = wb.create_sheet(title=f"{_pretty_sub(sub)} Overview")
+        _build_subdomain_overview(ws, sub, res_hdr, sub_rows, breakdown)
+
+    # Per-category data sheets — only emit when there is at least one row.
+    for cat in url_classifier.CATEGORY_DEFS:
+        cat_rows = _filter_rows_by(res_hdr, res_rows, "category_key", cat["key"])
+        if not cat_rows:
+            continue
+        ws = wb.create_sheet(title=_sheet_name_for_category(cat))
+        _dump_table(ws, res_hdr, cat_rows, status_col="status",
+                    code_col="status_code")
+
+    # Noise sheet — branch 404s that GSC says are NOT indexed.
+    noise_rows = _branch_404_noise_rows(res_hdr, res_rows)
+    if noise_rows:
+        ws = wb.create_sheet(title="Branch 404 Noise")
+        _dump_table(ws, res_hdr, noise_rows, status_col="status",
+                    code_col="status_code")
+
+    # Preserved raw sheets for in-Excel re-slicing.
+    for sheet_name, csv_file, status_col, code_col in RAW_SHEETS:
         ws = wb.create_sheet(title=sheet_name)
         headers, rows = _read_csv(csv_file)
         _dump_table(ws, headers, rows, status_col=status_col, code_col=code_col)
@@ -249,21 +296,238 @@ def build_report(output_path: Path | None = None) -> Path:
     return out
 
 
-def _compute_totals() -> dict:
+# ── New helpers ────────────────────────────────────────────────────────────
+
+
+def _filter_rows_by(headers: list[str], rows: list[list[str]],
+                    column: str, value: str) -> list[list[str]]:
+    if column not in headers:
+        return []
+    idx = headers.index(column)
+    return [r for r in rows if idx < len(r) and r[idx] == value]
+
+
+def _branch_404_noise_rows(headers: list[str],
+                           rows: list[list[str]]) -> list[list[str]]:
+    if not headers:
+        return []
+    try:
+        sub_i = headers.index("subdomain")
+        code_i = headers.index("status_code")
+        idx_i = headers.index("indexed_status")
+    except ValueError:
+        return []
+    out = []
+    for r in rows:
+        if max(sub_i, code_i, idx_i) >= len(r):
+            continue
+        if r[sub_i] == "branch" and r[code_i] == "404" and r[idx_i] != "indexed":
+            out.append(r)
+    return out
+
+
+def _sheet_name_for_category(cat: dict) -> str:
+    """Build a stable, Excel-safe sheet name (max 31 chars)."""
+    sub = _pretty_sub(cat["subdomain"])
+    label = cat["label"]
+    raw = f"{sub} · {label}"
+    cleaned = raw.replace("·", "-").replace(":", "-").replace("/", "-")
+    return cleaned[:31]
+
+
+def _pretty_sub(sub: str) -> str:
+    return {
+        "www": "WWW",
+        "branch": "Branch",
+        "investmentcorner": "InvCorner",
+        "external": "External",
+    }.get(sub, sub.title())
+
+
+def _compute_breakdown(headers: list[str],
+                       rows: list[list[str]]) -> dict:
+    """Per-subdomain × per-category counts for the Summary pivot block."""
+    out: dict = {
+        "by_subdomain": defaultdict(lambda: Counter()),
+        "by_category": defaultdict(lambda: Counter()),
+        "noise_404_branch_not_indexed": 0,
+    }
+    if not headers:
+        return out
+    try:
+        i_sub = headers.index("subdomain")
+        i_cat = headers.index("category_key")
+        i_code = headers.index("status_code")
+        i_idx = headers.index("indexed_status")
+        i_src = headers.index("from_sitemap")
+    except ValueError:
+        return out
+
+    for r in rows:
+        if max(i_sub, i_cat, i_code, i_idx, i_src) >= len(r):
+            continue
+        sub = r[i_sub] or "external"
+        cat = r[i_cat] or "unknown"
+        code = r[i_code] or ""
+        idx = r[i_idx] or "unknown"
+        src = r[i_src] or ""
+
+        for bucket_key, bucket in (("by_subdomain", out["by_subdomain"][sub]),
+                                   ("by_category",  out["by_category"][cat])):
+            bucket["crawled"] += 1
+            if code == "200":
+                bucket["ok"] += 1
+            elif code == "404":
+                bucket["errors_404"] += 1
+                bucket["errors"] += 1
+            elif code and not code.startswith("2"):
+                bucket["errors"] += 1
+            bucket[f"index_{idx}"] += 1
+            if src == "1":
+                bucket["from_sitemap"] += 1
+
+        if sub == "branch" and code == "404" and idx != "indexed":
+            out["noise_404_branch_not_indexed"] += 1
+    return out
+
+
+def _build_category_pivot(ws: Worksheet, breakdown: dict) -> None:
+    """Render the category × indexed pivot block on the Summary sheet."""
+    start_row = 20
+    ws.cell(row=start_row, column=2, value="Category breakdown").font = _SUBHEAD_FONT
+
+    headers = ["Subdomain", "Category", "Crawled", "OK", "404",
+               "Other errors", "Indexed", "Not indexed", "Excluded",
+               "Unknown", "From sitemap"]
+    header_row = start_row + 1
+    for i, h in enumerate(headers, start=2):
+        cell = ws.cell(row=header_row, column=i, value=h)
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+        cell.alignment = _CENTER
+        cell.border = _BORDER
+
+    row = header_row + 1
+    cat_counts = breakdown["by_category"]
+    for cat in url_classifier.CATEGORY_DEFS:
+        c = cat_counts.get(cat["key"], Counter())
+        if not c:
+            continue
+        values = [
+            _pretty_sub(cat["subdomain"]),
+            cat["label"],
+            c.get("crawled", 0),
+            c.get("ok", 0),
+            c.get("errors_404", 0),
+            max(c.get("errors", 0) - c.get("errors_404", 0), 0),
+            c.get("index_indexed", 0),
+            c.get("index_not_indexed", 0),
+            c.get("index_excluded", 0),
+            c.get("index_unknown", 0),
+            c.get("from_sitemap", 0),
+        ]
+        for i, v in enumerate(values, start=2):
+            cell = ws.cell(row=row, column=i, value=v)
+            cell.font = Font(name="Calibri", size=10, color=TEXT_DARK)
+            cell.border = _BORDER
+            if row % 2 == 0:
+                cell.fill = _ZEBRA_FILL
+        # Conditional red fill on `Not indexed` for product / knowledge
+        # categories — these are the ones we genuinely care about.
+        ni_cell = ws.cell(row=row, column=8)
+        if cat["key"].startswith("product") or cat["key"] == "knowledge":
+            if (ni_cell.value or 0) > 0:
+                ni_cell.fill = _ERR_FILL
+                ni_cell.font = Font(name="Calibri", size=10, bold=True, color=ERR_RED)
+        row += 1
+
+    ws.cell(row=row + 1, column=2,
+            value=f"Noise: branch 404s NOT indexed = "
+                  f"{breakdown.get('noise_404_branch_not_indexed', 0)}"
+            ).font = _SUB_FONT
+
+
+def _build_subdomain_overview(ws: Worksheet, sub: str,
+                              headers: list[str], rows: list[list[str]],
+                              breakdown: dict) -> None:
+    """Per-subdomain summary + the top 20 problem URLs on that surface."""
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 2
+    for col in ("B", "C", "D", "E", "F"):
+        ws.column_dimensions[col].width = 22
+
+    title = f"{_pretty_sub(sub)} surface"
+    ws["B2"] = title
+    ws["B2"].font = _TITLE_FONT
+    ws["B3"] = f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ·  {len(rows)} rows"
+    ws["B3"].font = _SUB_FONT
+    ws.merge_cells("B2:F2")
+    ws.merge_cells("B3:F3")
+
+    counts = breakdown["by_subdomain"].get(sub, Counter())
+    cards = [
+        ("Pages", counts.get("crawled", len(rows))),
+        ("OK (200)", counts.get("ok", 0)),
+        ("Errors", counts.get("errors", 0)),
+        ("Indexed", counts.get("index_indexed", 0)),
+        ("Not Indexed", counts.get("index_not_indexed", 0)),
+    ]
+    for i, (label, value) in enumerate(cards):
+        col = 2 + i
+        ws.cell(row=6, column=col, value=label).font = _KPI_LABEL
+        ws.cell(row=6, column=col).alignment = _CENTER
+        vc = ws.cell(row=7, column=col, value=value)
+        vc.font = _KPI_VALUE
+        vc.alignment = _CENTER
+
+    # Top problem URLs — anything non-200 on this surface.
+    code_i = headers.index("status_code") if "status_code" in headers else None
+    url_i = headers.index("url") if "url" in headers else 0
+    idx_i = headers.index("indexed_status") if "indexed_status" in headers else None
+    cat_i = headers.index("category_key") if "category_key" in headers else None
+    problems = []
+    if code_i is not None:
+        for r in rows:
+            if code_i < len(r) and r[code_i] not in ("200", ""):
+                problems.append([
+                    r[url_i] if url_i < len(r) else "",
+                    r[code_i],
+                    r[idx_i] if idx_i is not None and idx_i < len(r) else "",
+                    r[cat_i] if cat_i is not None and cat_i < len(r) else "",
+                ])
+    problems = problems[:20]
+
+    if problems:
+        block = 11
+        for i, h in enumerate(["URL", "Status", "Indexed", "Category"], start=2):
+            cell = ws.cell(row=block, column=i, value=h)
+            cell.font = _HEADER_FONT
+            cell.fill = _HEADER_FILL
+            cell.alignment = _CENTER
+            cell.border = _BORDER
+        for ri, row in enumerate(problems, start=block + 1):
+            for ci, v in enumerate(row, start=2):
+                c = ws.cell(row=ri, column=ci, value=v)
+                c.font = Font(name="Calibri", size=10, color=TEXT_DARK)
+                c.border = _BORDER
+                if ri % 2 == 0:
+                    c.fill = _ZEBRA_FILL
+
+
+def _compute_totals(res_hdr: list[str], res_rows: list[list[str]]) -> dict:
     def count(name: str) -> int:
         _, rows = _read_csv(name)
         return len(rows)
 
-    r_hdr, r_rows = _read_csv("crawl_results.csv")
     ok = 0
-    if r_hdr:
+    if res_hdr:
         try:
-            idx = r_hdr.index("status_code")
-            ok = sum(1 for r in r_rows if idx < len(r) and r[idx] == "200")
+            idx = res_hdr.index("status_code")
+            ok = sum(1 for r in res_rows if idx < len(r) and r[idx] == "200")
         except ValueError:
             pass
     return {
-        "pages_crawled": len(r_rows),
+        "pages_crawled": len(res_rows),
         "ok_pages": ok,
         "total_errors": count("crawl_errors.csv"),
         "errors_404": count("crawl_404_errors.csv"),

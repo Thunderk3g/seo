@@ -1,17 +1,49 @@
-import { useEffect, useState } from 'react';
-import ReportCard from '../components/ReportCard';
+import { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'wouter';
+import GscCoverageUploader from '../components/GscCoverageUploader';
 import Icon from '../components/Icon';
-import { crawlerApi, type TableMeta } from '../api';
+import StatusSections from '../components/StatusSections';
+import SubdomainTabs from '../components/SubdomainTabs';
+import { crawlerApi, type SummaryBreakdown, type TablesResponse } from '../api';
 
+type SubKey = 'all' | 'www' | 'branch' | 'investmentcorner';
+
+/**
+ * Reports landing page — sectioned by what actually matters operationally:
+ *
+ *   1. Indexing status (from GSC Coverage CSV)
+ *      indexed / not_indexed / excluded / unknown
+ *   2. Sitemap presence
+ *      in sitemap / discovered only / sitemap-broken
+ *   3. Errors by type
+ *      404 / HTTP / connection / chunked / console
+ *
+ * No filter sidebar — drilling in is a click on a card, which
+ * navigates to the detail view with the right filter pre-applied.
+ */
 export default function CrawlerReports() {
-  const [tables, setTables] = useState<TableMeta[]>([]);
+  const [tables, setTables] = useState<TablesResponse | null>(null);
+  const [breakdown, setBreakdown] = useState<SummaryBreakdown | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [location, setLocation] = useLocation();
+
+  // Subdomain scope is the only top-level filter on this page.
+  const subdomain = useMemo<SubKey>(() => parseSubdomain(location), [location]);
+  function setSubdomain(s: SubKey) {
+    const qs = new URLSearchParams();
+    if (s !== 'all') qs.set('subdomain', s);
+    const tail = qs.toString();
+    setLocation('/crawler/reports' + (tail ? `?${tail}` : ''));
+  }
 
   useEffect(() => {
     let alive = true;
-    crawlerApi
-      .tables()
-      .then((d) => alive && setTables(d.tables))
+    Promise.all([crawlerApi.tables(), crawlerApi.breakdown()])
+      .then(([t, b]) => {
+        if (!alive) return;
+        setTables(t);
+        setBreakdown(b);
+      })
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
@@ -33,15 +65,13 @@ export default function CrawlerReports() {
           </h1>
           <p>
             <span className="material-icons-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4 }}>
-              summarize
+              segment
             </span>
-            Every crawl artefact, beautified. Pick a report to drill in — or grab the full bundle.
+            Indexing status, sitemap coverage, and error breakdown — pulled from your latest crawl
+            and the most recent Google Search Console Coverage export.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <a className="btn btn-ghost" href={crawlerApi.downloadUrl('results')}>
-            <Icon name="download" /> Raw CSV
-          </a>
           <a className="btn btn-accent" href={crawlerApi.xlsxUrl()}>
             <Icon name="insert_chart" /> Download Excel Bundle
           </a>
@@ -54,40 +84,49 @@ export default function CrawlerReports() {
         </div>
       )}
 
-      <div
-        className="card"
-        style={{ marginBottom: 18, padding: 14, display: 'flex', gap: 14, alignItems: 'flex-start' }}
-      >
-        <div
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 10,
-            background: 'var(--accent-light)',
-            display: 'grid',
-            placeItems: 'center',
-            flexShrink: 0,
-          }}
-        >
-          <Icon name="insert_chart" style={{ color: '#8A6200' }} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Beautified Excel workbook</div>
-          <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 2 }}>
-            One XLSX file · every report as a separate sheet · summary page with KPIs and a pie chart · brand-coloured
-            headers, frozen panes, auto-filters, and conditional formatting on status columns.
-          </div>
-        </div>
-        <a className="btn btn-primary" href={crawlerApi.xlsxUrl()}>
-          <Icon name="download" /> Generate &amp; Download
-        </a>
-      </div>
+      <GscCoverageUploader />
 
-      <div className="report-grid">
-        {tables.map((t) => (
-          <ReportCard key={t.key} table={t} />
-        ))}
-      </div>
+      <SubdomainTabs
+        value={subdomain}
+        onChange={setSubdomain}
+        bySubdomain={breakdown?.by_subdomain}
+      />
+
+      {breakdown ? (
+        <StatusSections breakdown={breakdown} subdomain={subdomain} />
+      ) : (
+        !error && <div className="cc-empty"><Icon name="hourglass_empty" /> Loading breakdown…</div>
+      )}
+
+      {tables && tables.tables.length > 0 && (
+        <details className="cc-raw-tables">
+          <summary>
+            <Icon name="dataset" /> Raw data tables ({tables.tables.length} files in backend/data/)
+          </summary>
+          <ul className="cc-raw-tables__list">
+            {tables.tables.map((t) => (
+              <li key={t.key}>
+                <a href={`/crawler/reports/${t.key}`}>
+                  <Icon name={t.icon} />
+                  <span className="cc-raw-tables__label">{t.label}</span>
+                  <span className="cc-raw-tables__count">{t.count.toLocaleString()}</span>
+                </a>
+                <a className="cc-raw-tables__csv" href={crawlerApi.downloadUrl(t.key)}>
+                  <Icon name="download" /> CSV
+                </a>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
+}
+
+function parseSubdomain(loc: string): SubKey {
+  const qIdx = loc.indexOf('?');
+  if (qIdx < 0) return 'all';
+  const sp = new URLSearchParams(loc.slice(qIdx + 1));
+  const v = (sp.get('subdomain') ?? sp.get('sub') ?? 'all') as SubKey;
+  return (['all', 'www', 'branch', 'investmentcorner'] as const).includes(v as any) ? v : 'all';
 }

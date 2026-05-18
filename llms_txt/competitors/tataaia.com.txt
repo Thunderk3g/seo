@@ -1,0 +1,25 @@
+# Source: https://www.tataaia.com/llms.txt
+# Fetched: 2026-05-17
+# Style: markdown navigation tree (H1 + categorized link list with descriptions)
+
+# llms.txt for tataaia.com
+
+## TATA AIA - Life Insurance
+
+### Overview
+Tata AIA Life Insurance is one of India's leading life insurance providers, offering a range of term plans, savings plans, retirement plans, and investment solutions tailored for individuals and families.
+
+- [Life Insurance](https://www.tataaia.com/ ): Get an overview of our life insurance products, tools, resources, and latest announcements.
+- [Term Insurance](https://www.tataaia.com/life-insurance-plans/term-insurance.html): Explore affordable and comprehensive term life insurance plans to secure your family's future.announcements.
+- [Savings Plans](https://www.tataaia.com/life-insurance-plans/savings-solutions.html): Discover insurance plans that help you save for future financial goals while offering life coverage.
+- [ULIP Plans](https://www.tataaia.com/life-insurance-plans/wealth-solutions.html): Get Best ULIP Plans in India 2025: Up to 28.66% Returns* to build long-term wealth.
+- [Investment Plans](https://www.tataaia.com/life-insurance-plans/investment-plans.html):30 Best Investment Plans in India 2025 for High Returns
+- [Retirement Plans](https://www.tataaia.com/life-insurance-plans/retirement-and-pension-solutions.html): Secure your post-retirement life with guaranteed income and pension-based plans.
+- [Health Insurance](https://www.tataaia.com/health-insurance-plans.html): Health insurance plans that provide financial protection against medical emergencies.
+- [Claims](https://www.tataaia.com/life-insurance-plans/claim-settlement-ratio.html): Tata AIA has a 99.13% claim settlement ratio for 2025, and we strive to enable faster settlement of claims.
+- [Customer Support](https://www.tataaia.com/customer-service.html): Access policy details, download forms, update nominee, and get support for all services.
+- [Blog / Knowledge Centre](https://www.tataaia.com/blogs.html): Read about life insurance tips, tax benefits, and personal finance guides.
+- [Contact Us](https://www.tataaia.com/contact-us.html): Get in touch via email, phone, or request a callback.
+- [Terms and Conditions](https://www.tataaia.com/terms-and-conditions.html)
+- [Sitemap](https://www.tataaia.com/sitemap.xml)
+- [Contact](customercare@tataaia.com)

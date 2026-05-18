@@ -2,23 +2,26 @@
 
 Endpoint map (all under ``/api/v1/crawler/``):
 
-  GET  /status            — current crawl state + stats
-  POST /start             — kick off a new crawl in a background thread
-  POST /stop              — signal the running crawl to drain & stop
-  GET  /summary           — high-level counters for dashboard cards
-  GET  /tables            — list of CSV-backed tables with row counts
-  GET  /tables/<key>      — full headers + rows of one table
-  GET  /download/<key>    — raw CSV download
-  GET  /reports/xlsx      — multi-sheet styled XLSX report download
-  GET  /tree              — hierarchical site graph derived from discovered edges
-  GET  /logs              — polling log feed (replaces FastAPI WebSocket)
+  GET  /status                    — current crawl state + stats
+  POST /start                     — kick off a new crawl in a background thread
+  POST /stop                      — signal the running crawl to drain & stop
+  GET  /summary                   — high-level counters for dashboard cards
+  GET  /summary/breakdown         — per-subdomain / per-category counts
+  GET  /tables                    — list of CSV-backed tables with row counts
+  GET  /tables/<key>              — full headers + rows of one table (filterable)
+  GET  /download/<key>            — raw CSV download (filterable)
+  GET  /reports/xlsx              — multi-sheet styled XLSX report download
+  POST /gsc/coverage/refresh      — flush the GSC coverage cache
+  GET  /tree                      — hierarchical site graph derived from discovered edges
+  GET  /logs                      — polling log feed (replaces FastAPI WebSocket)
 """
 from __future__ import annotations
 
+import csv as _csv
 from collections import defaultdict, deque
 from pathlib import Path
 
-from django.http import FileResponse, JsonResponse
+from django.http import FileResponse, JsonResponse, StreamingHttpResponse
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
@@ -26,7 +29,27 @@ from . import log_bus
 from .conf import settings
 from .services import crawler_service, report_service
 from .state import STATE
-from .storage import repository as repo
+from .storage import gsc_loader, repository as repo
+from .storage import url_classifier
+
+
+# ── Filter param parsing ────────────────────────────────────────────────────
+
+
+_FILTER_KEYS = ("subdomain", "category", "category_key", "page_type",
+                "indexed", "indexed_status", "from_sitemap")
+
+
+def _extract_filters(request) -> dict:
+    """Pull the supported filter query params off a DRF request."""
+    out: dict[str, str | bool] = {}
+    for k in _FILTER_KEYS:
+        v = request.query_params.get(k)
+        if v:
+            out[k] = v
+    if request.query_params.get("hide_branch_404_noise") in {"1", "true", "yes"}:
+        out["hide_branch_404_noise"] = True
+    return out
 
 
 # ── Crawler lifecycle ───────────────────────────────────────────
@@ -72,26 +95,60 @@ def summary_view(_request):
 
 
 @api_view(["GET"])
+def summary_breakdown_view(_request):
+    """Per-subdomain / per-category aggregates for the Reports landing page."""
+    return Response(repo.summary_breakdown())
+
+
+@api_view(["GET"])
 def tables_list_view(_request):
+    """List every catalog entry; categorised entries include a per-category breakdown."""
+    breakdown = repo.summary_breakdown()
+    by_subdomain = breakdown.get("by_subdomain", {})
+    categories_meta = {c["key"]: c for c in breakdown.get("categories", [])}
     items = []
     for key, meta in repo.CATALOG.items():
-        count = repo.read_csv(key)["count"]
-        items.append({
+        total = repo.read_csv(key)["count"]
+        entry = {
             "key": key,
             "label": meta["label"],
             "icon": meta["icon"],
             "description": meta["description"],
-            "count": count,
-        })
-    return Response({"tables": items})
+            "count": total,
+            "categorized": bool(meta.get("categorized")),
+        }
+        if meta.get("categorized"):
+            # Build per-category badges from the same breakdown — saves the
+            # frontend an extra round-trip.
+            entry["categories"] = [
+                {
+                    "key": c["key"],
+                    "label": c["label"],
+                    "subdomain": c["subdomain"],
+                    "icon": c["icon"],
+                    "counts": categories_meta.get(c["key"], {}).get(
+                        "counts", c.get("counts", {})
+                    ),
+                }
+                for c in url_classifier.CATEGORY_DEFS
+            ]
+            entry["by_subdomain"] = by_subdomain
+        items.append(entry)
+    return Response({
+        "tables": items,
+        "noise_404_branch_not_indexed": breakdown.get(
+            "noise_404_branch_not_indexed", 0
+        ),
+    })
 
 
 @api_view(["GET"])
-def table_detail_view(_request, key: str):
+def table_detail_view(request, key: str):
     meta = repo.CATALOG.get(key)
     if not meta:
         return Response({"error": "Unknown table"}, status=404)
-    data = repo.read_csv(key)
+    filters = _extract_filters(request)
+    data = repo.read_csv(key, filters=filters or None)
     return Response({
         "key": key,
         "label": meta["label"],
@@ -100,24 +157,121 @@ def table_detail_view(_request, key: str):
         "headers": data["headers"],
         "rows": data["rows"],
         "count": data["count"],
+        "filters": filters,
     })
 
 
 @api_view(["GET"])
-def download_csv_view(_request, key: str):
+def download_csv_view(request, key: str):
     meta = repo.CATALOG.get(key)
     if not meta:
         return JsonResponse({"error": "Unknown file"}, status=404)
     path: Path = settings.data_path / meta["file"]
     if not path.exists():
         return JsonResponse({"error": "File not yet generated"}, status=404)
-    # FileResponse opens the file in binary mode and streams it.
-    return FileResponse(
-        open(path, "rb"),
-        as_attachment=True,
-        filename=meta["file"],
-        content_type="text/csv",
-    )
+    filters = _extract_filters(request)
+    if not filters:
+        # No filters — stream the raw file untouched (fastest path, no parse).
+        return FileResponse(
+            open(path, "rb"),
+            as_attachment=True,
+            filename=meta["file"],
+            content_type="text/csv",
+        )
+    # Filtered download — stream rows one-at-a-time through repo.iter_rows().
+    data = repo.read_csv(key, filters=filters)
+    headers = data["headers"]
+
+    def _stream():
+        # Each row is yielded as a CSV-encoded string with proper escaping.
+        buf = _StringBuffer()
+        writer = _csv.writer(buf)
+        writer.writerow(headers)
+        yield buf.flush()
+        rows = repo.iter_rows(key, filters=filters)
+        for row in rows:
+            writer.writerow([row.get(h, "") for h in headers])
+            yield buf.flush()
+
+    suffix_parts = []
+    for k, v in filters.items():
+        if k == "hide_branch_404_noise" and v:
+            suffix_parts.append("nonoise")
+        elif v:
+            suffix_parts.append(f"{k}-{v}")
+    suffix = "_" + "_".join(suffix_parts) if suffix_parts else ""
+    fname = meta["file"].replace(".csv", f"{suffix}.csv")
+    resp = StreamingHttpResponse(_stream(), content_type="text/csv")
+    resp["Content-Disposition"] = f'attachment; filename="{fname}"'
+    return resp
+
+
+@api_view(["POST"])
+def gsc_coverage_refresh_view(_request):
+    """Flush the in-memory GSC coverage cache; the next read picks up the latest CSV."""
+    gsc_loader.invalidate_cache()
+    cov = gsc_loader.load_coverage_map()
+    return Response({"ok": True, "loaded_urls": len(cov)})
+
+
+@api_view(["POST"])
+def gsc_coverage_build_view(request):
+    """Derive a fresh coverage CSV from already-pulled GSC performance data
+    plus a live sitemap fetch. Returns counts so the UI can show a toast.
+    """
+    from .storage import gsc_coverage_builder
+    sitemap = request.query_params.get("sitemap") or gsc_coverage_builder.DEFAULT_SITEMAP
+    backfill = request.query_params.get("backfill") in {"1", "true", "yes"}
+    try:
+        coverage = gsc_coverage_builder.build_coverage(sitemap_seed=sitemap)
+        result = {"ok": True, "coverage": coverage}
+        if backfill:
+            result["backfill"] = gsc_coverage_builder.backfill_from_sitemap(
+                sitemap_seed=sitemap,
+            )
+        return Response(result)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"ok": False, "error": str(exc)}, status=500)
+
+
+@api_view(["POST"])
+def gsc_inspect_unknowns_view(request):
+    """Upgrade `unknown` rows to definitive verdicts via URL Inspection API.
+
+    Rate-limited (~2000/day per property). Idempotent — already-inspected
+    URLs are skipped because they're no longer ``unknown``.
+    """
+    from .storage import gsc_coverage_builder
+    site = request.query_params.get("site") or "https://www.bajajlifeinsurance.com/"
+    try:
+        max_urls = int(request.query_params.get("max", "1900"))
+    except (TypeError, ValueError):
+        max_urls = 1900
+    try:
+        res = gsc_coverage_builder.upgrade_with_url_inspection(
+            site_url=site, max_urls=max_urls,
+        )
+        if not res.get("ok"):
+            return Response(res, status=400)
+        return Response(res)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"ok": False, "error": str(exc)}, status=500)
+
+
+class _StringBuffer:
+    """Minimal write-then-flush buffer for csv.writer in a generator."""
+
+    def __init__(self) -> None:
+        self._chunks: list[str] = []
+
+    def write(self, s: str) -> int:  # csv.writer calls this
+        self._chunks.append(s)
+        return len(s)
+
+    def flush(self) -> str:
+        out = "".join(self._chunks)
+        self._chunks.clear()
+        return out
 
 
 # ── Report download ─────────────────────────────────────────────

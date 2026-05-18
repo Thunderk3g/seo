@@ -65,12 +65,40 @@ export interface CrawlerSummary {
   state: CrawlerStats | null;
 }
 
+export interface CategoryCounts {
+  crawled?: number;
+  ok?: number;
+  errors?: number;
+  errors_404?: number;
+  indexed?: number;
+  not_indexed?: number;
+  excluded?: number;
+  unknown_index?: number;
+  from_sitemap?: number;
+}
+
+export interface CategoryMeta {
+  key: string;
+  label: string;
+  subdomain: string;
+  icon: string;
+  counts: CategoryCounts;
+}
+
 export interface TableMeta {
   key: string;
   label: string;
   icon: string;
   description: string;
   count: number;
+  categorized?: boolean;
+  categories?: CategoryMeta[];
+  by_subdomain?: Record<string, CategoryCounts>;
+}
+
+export interface TablesResponse {
+  tables: TableMeta[];
+  noise_404_branch_not_indexed?: number;
 }
 
 export interface TableData {
@@ -81,6 +109,71 @@ export interface TableData {
   headers: string[];
   rows: string[][];
   count: number;
+  filters?: ReportFilters;
+}
+
+export interface ReportFilters {
+  subdomain?: string;
+  category?: string;
+  page_type?: string;
+  indexed?: string; // comma-separated when multi-select
+  from_sitemap?: string;
+  hide_branch_404_noise?: boolean;
+}
+
+export interface SummaryBreakdown {
+  by_subdomain: Record<string, CategoryCounts>;
+  by_category: Record<string, CategoryCounts>;
+  categories: CategoryMeta[];
+  by_indexed_status: {
+    indexed: number;
+    not_indexed: number;
+    excluded: number;
+    unknown: number;
+  };
+  by_sitemap_source: {
+    from_sitemap: number;
+    discovered_only: number;
+    unknown_source: number;
+  };
+  sitemap_failed_count: number;
+  sitemap_404_count: number;
+  by_error_type: {
+    errors_404: number;
+    errors_http: number;
+    errors_connection: number;
+    errors_chunked: number;
+    console: number;
+  };
+  noise_404_branch_not_indexed: number;
+}
+
+export interface GscRefreshResponse {
+  ok: boolean;
+  loaded_urls: number;
+}
+
+export interface GscCoverageBuildResponse {
+  ok: boolean;
+  error?: string;
+  coverage?: {
+    output: string;
+    indexed: number;
+    not_indexed: number;
+    excluded: number;
+    unknown: number;
+    indexed_urls_seen: number;
+    sitemap_urls_seen: number;
+    crawler_urls_seen: number;
+    indexed_status_backfill?: {
+      coverage_urls: number;
+      files: Record<string, { status: string; updated: number }>;
+    };
+  };
+  backfill?: {
+    sitemap_urls: number;
+    files: Record<string, { status: string; updated: number }>;
+  };
 }
 
 export interface TreeNodeData {
@@ -128,11 +221,26 @@ export interface CrawlerLogsResponse {
   stats: CrawlerStats;
 }
 
+function filterQuery(filters?: ReportFilters): string {
+  if (!filters) return '';
+  const qs = new URLSearchParams();
+  if (filters.subdomain) qs.set('subdomain', filters.subdomain);
+  if (filters.category) qs.set('category', filters.category);
+  if (filters.page_type) qs.set('page_type', filters.page_type);
+  if (filters.indexed) qs.set('indexed', filters.indexed);
+  if (filters.from_sitemap) qs.set('from_sitemap', filters.from_sitemap);
+  if (filters.hide_branch_404_noise) qs.set('hide_branch_404_noise', '1');
+  const s = qs.toString();
+  return s ? `?${s}` : '';
+}
+
 export const crawlerApi = {
   status: () => request<CrawlerStatus>('/status'),
   summary: () => request<CrawlerSummary>('/summary'),
-  tables: () => request<{ tables: TableMeta[] }>('/tables'),
-  table: (key: string) => request<TableData>(`/tables/${key}`),
+  breakdown: () => request<SummaryBreakdown>('/summary/breakdown'),
+  tables: () => request<TablesResponse>('/tables'),
+  table: (key: string, filters?: ReportFilters) =>
+    request<TableData>(`/tables/${key}${filterQuery(filters)}`),
   tree: (maxDepth = 4, maxNodes = 3000) =>
     request<TreeResponse>(`/tree?max_depth=${maxDepth}&max_nodes=${maxNodes}`),
   start: () => request<ActionResponse>('/start', { method: 'POST' }),
@@ -143,6 +251,32 @@ export const crawlerApi = {
     qs.set('limit', String(limit));
     return request<CrawlerLogsResponse>(`/logs?${qs.toString()}`);
   },
-  downloadUrl: (key: string) => `${BASE}/download/${key}`,
+  downloadUrl: (key: string, filters?: ReportFilters) =>
+    `${BASE}/download/${key}${filterQuery(filters)}`,
   xlsxUrl: () => `${BASE}/reports/xlsx`,
+  refreshGscCoverage: () =>
+    request<GscRefreshResponse>('/gsc/coverage/refresh', { method: 'POST' }),
+  buildGscCoverage: (opts: { backfill?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.backfill) qs.set('backfill', '1');
+    const tail = qs.toString();
+    return request<GscCoverageBuildResponse>(
+      `/gsc/coverage/build${tail ? `?${tail}` : ''}`,
+      { method: 'POST' },
+    );
+  },
+  inspectGscUnknowns: (opts: { max?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.max) qs.set('max', String(opts.max));
+    const tail = qs.toString();
+    return request<{
+      ok: boolean;
+      error?: string;
+      inspected?: number;
+      errors?: number;
+      remaining?: number;
+      msg?: string;
+      backfill?: { files: Record<string, { status: string; updated: number }> };
+    }>(`/gsc/coverage/inspect${tail ? `?${tail}` : ''}`, { method: 'POST' });
+  },
 };

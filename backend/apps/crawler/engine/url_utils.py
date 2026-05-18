@@ -6,7 +6,13 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from ..conf import settings
 
 _SKIP_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    # Document extensions ARE crawled — Google indexes PDFs / Office docs
+    # (policy documents, fund factsheets, brochures), and we want to surface
+    # broken / mis-served files in the report. The fetcher uses stream=True
+    # for non-HTML content types so we only download headers, not the body.
+    # 
+    # 
+    # .pdf / .doc / .docx / .xls / .xlsx / .ppt / .pptx intentionally allowed.
     ".zip", ".rar", ".7z", ".tar", ".gz",
     ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico", ".bmp",
     ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm",
@@ -47,9 +53,12 @@ def normalize(url: str, base: str | None = None) -> str | None:
         netloc = netloc[:-3]
     if netloc.endswith(":443") and p.scheme == "https":
         netloc = netloc[:-4]
+    # Preserve the trailing slash as written. The Bajaj origin treats
+    # ``/foo/`` and ``/foo`` as different resources (no canonical redirect
+    # between them), so stripping a trailing slash silently turns a live
+    # page into a 404 in our reports. Example: /underinsurance-calculator/
+    # is HTTP 200; /underinsurance-calculator is HTTP 404.
     path = p.path or "/"
-    if len(path) > 1 and path.endswith("/"):
-        path = path[:-1]
     return urlunparse((p.scheme.lower(), netloc, path, "", _strip_tracking(p.query), ""))
 
 
