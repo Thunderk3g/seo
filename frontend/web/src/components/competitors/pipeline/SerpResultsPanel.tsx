@@ -101,7 +101,7 @@ export default function SerpResultsPanel({
                 <th style={{ width: 80 }}>Our pos</th>
                 <th>Featured snippet</th>
                 <th>AI Overview</th>
-                <th>Top-3 organic</th>
+                <th>Top organic results</th>
               </tr>
             </thead>
             <tbody>
@@ -114,7 +114,11 @@ export default function SerpResultsPanel({
               ) : (
                 activeRows.map((r) => {
                   const q = queryById.get(r.query_id);
-                  const top3 = r.organic.slice(0, 3);
+                  // Surface every organic result the adapter captured
+                  // (up to SERP_API_RESULTS_PER_QUERY, default 25). The
+                  // backend already trims at result_per_query so we
+                  // don't need a UI-side cap.
+                  const organic = r.organic;
                   const aiHosts =
                     r.ai_overview?.citations
                       ?.slice(0, 3)
@@ -153,16 +157,32 @@ export default function SerpResultsPanel({
                         {aiHosts.length === 0 ? '—' : aiHosts.join(', ')}
                       </td>
                       <td
-                        className="seo-cell-query"
-                        title={top3.map((o) => o.domain).join(', ')}
-                        style={{ color: 'var(--text-2)' }}
+                        className="serp-organic-cell"
+                        title={organic.map((o) => `${o.position}. ${o.domain}`).join('\n')}
                       >
-                        {top3.map((o, i) => (
-                          <span key={o.url || `${i}`}>
-                            {i > 0 && ' › '}
-                            {o.domain}
+                        {organic.length === 0 ? (
+                          <span style={{ color: 'var(--text-2)' }}>—</span>
+                        ) : (
+                          <span className="serp-organic-list">
+                            {organic.map((o, i) => (
+                              <a
+                                key={o.url || `${i}`}
+                                href={o.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="serp-organic-chip"
+                                title={`#${o.position} · ${o.title || o.domain}`}
+                              >
+                                <span className="serp-organic-pos">
+                                  {o.position}
+                                </span>
+                                <span className="serp-organic-domain">
+                                  {o.domain}
+                                </span>
+                              </a>
+                            ))}
                           </span>
-                        ))}
+                        )}
                       </td>
                     </tr>
                   );
