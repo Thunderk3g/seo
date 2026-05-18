@@ -254,8 +254,13 @@ class SerpAPIAdapter:
     # ── cache ─────────────────────────────────────────────────────────
 
     def _cache_path(self, query: str, engine: str) -> Path:
+        # Include ``results_per_query`` in the cache key so changing the
+        # knob (e.g. 10 → 25) doesn't keep serving stale entries with the
+        # old result count. Each result-count config gets its own cache
+        # namespace; older entries age out naturally per TTL.
         h = hashlib.sha1(
-            f"{engine}|{self._country}|{self._language}|{query}".encode("utf-8")
+            f"{engine}|{self._country}|{self._language}"
+            f"|n={self._results_per_query}|{query}".encode("utf-8")
         ).hexdigest()
         return self._cache_dir / f"{h}.json"
 

@@ -1657,6 +1657,43 @@ button { font: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ── SERP organic cell — chip list of every captured competitor URL ─── */
+.serp-organic-cell {
+  font-size: 11.5px;
+  max-width: 640px;
+  padding: 6px 8px !important;
+}
+.serp-organic-list {
+  display: flex; flex-wrap: wrap; gap: 4px 6px;
+  align-items: center;
+}
+.serp-organic-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px 1px 4px;
+  border: 1px solid var(--border, #d6dbe5);
+  border-radius: 999px;
+  background: var(--surface-2, #f5f7fb);
+  color: var(--text, #1f2530);
+  text-decoration: none;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  transition: background .12s, border-color .12s;
+}
+.serp-organic-chip:hover {
+  background: var(--primary-light, #e6efff);
+  border-color: var(--primary, #2f6feb);
+}
+.serp-organic-pos {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--text-2, #6a7280);
+  min-width: 14px; text-align: right;
+}
+.serp-organic-domain {
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ── Empty / error / loading states ─────────────────────────────────────── */
 
 .seo-empty {
