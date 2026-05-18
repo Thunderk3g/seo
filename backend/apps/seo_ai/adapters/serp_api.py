@@ -94,6 +94,10 @@ class SerpAPIAdapter:
         self._timeout = int(cfg.get("request_timeout_sec", 30))
         self._ssl_verify = _resolve_ssl_verify(cfg.get("ssl_verify", ""))
         self._cache_ttl = int(cfg.get("cache_ttl_seconds", 7 * 24 * 3600))
+        # Number of organic results to ask SerpAPI for. Quota cost is the
+        # same regardless (one billed search per call) — this only changes
+        # response size.
+        self._results_per_query = max(1, int(cfg.get("results_per_query", 25)))
         self._cache_dir = (
             Path(settings.SEO_AI["data_dir"]) / "_serp_cache"
         )
@@ -135,6 +139,15 @@ class SerpAPIAdapter:
         # set them uniformly.
         params["gl"] = self._country
         params["hl"] = self._language
+        # Ask each engine for the top N organic results. SerpAPI bills
+        # one search per call regardless of `num`, so this is a free
+        # widening of competitor coverage.
+        if engine == "google":
+            params["num"] = self._results_per_query
+        elif engine == "bing":
+            params["count"] = self._results_per_query
+        # DuckDuckGo returns a fixed-size page on SerpAPI; no knob to
+        # ask for more results per call.
         try:
             resp = requests.get(
                 "https://serpapi.com/search.json",
@@ -231,7 +244,7 @@ class SerpAPIAdapter:
         return SerpResult(
             query=query,
             engine=engine,
-            organic=organic[:20],
+            organic=organic[:self._results_per_query],
             featured_snippet=featured,
             people_also_ask=paa[:10],
             ai_overview=ai_overview,
