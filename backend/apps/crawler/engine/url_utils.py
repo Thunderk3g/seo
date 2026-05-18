@@ -6,7 +6,13 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from ..conf import settings
 
 _SKIP_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    # Document extensions ARE crawled — Google indexes PDFs / Office docs
+    # (policy documents, fund factsheets, brochures), and we want to surface
+    # broken / mis-served files in the report. The fetcher uses stream=True
+    # for non-HTML content types so we only download headers, not the body.
+    # 
+    # 
+    # .pdf / .doc / .docx / .xls / .xlsx / .ppt / .pptx intentionally allowed.
     ".zip", ".rar", ".7z", ".tar", ".gz",
     ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico", ".bmp",
     ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm",

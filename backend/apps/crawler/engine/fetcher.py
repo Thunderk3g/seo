@@ -106,11 +106,19 @@ def fetch(url: str, session: requests.Session) -> tuple[dict, list[str]]:
 def _fetch_once(
     url: str, session: requests.Session,
 ) -> tuple[dict, list[str], bool, float | None]:
-    """One HTTP attempt. Returns (result, links, is_retryable, retry_after_seconds)."""
+    """One HTTP attempt. Returns (result, links, is_retryable, retry_after_seconds).
+
+    We use ``stream=True`` so we can inspect the response headers (status,
+    content-type) and only read the body for HTML/XML responses. PDFs and
+    other binary docs are recorded with a 0 word_count + the actual
+    Content-Type, but no megabyte-sized body download.
+    """
     result = _empty_result(url)
     start = time.time()
+    resp = None
     try:
-        resp = session.get(url, timeout=settings.request_timeout, allow_redirects=True)
+        resp = session.get(url, timeout=settings.request_timeout,
+                           allow_redirects=True, stream=True)
         result["response_time_ms"] = int((time.time() - start) * 1000)
         result["status_code"] = resp.status_code
         result["content_type"] = resp.headers.get("Content-Type", "")
@@ -120,7 +128,14 @@ def _fetch_once(
             result["status"] = "OK"
             ctype = result["content_type"].lower()
             if "html" not in ctype and "xml" not in ctype:
+                # PDF / image / other binary — we have the metadata we need
+                # from the headers; close without reading the body to avoid
+                # downloading multi-MB files. word_count stays 0 (no body
+                # parsed); the operator distinguishes binary URLs via the
+                # content_type column ("application/pdf" etc).
+                resp.close()
                 return result, [], False, None
+            # HTML/XML: now do the full read.
             parsed = parse_page(resp.text, str(resp.url))
             result["title"] = parsed["title"]
             result["word_count"] = parsed["word_count"]
