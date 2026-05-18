@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useLocation, useSearch } from 'wouter';
+import { useSearch } from 'wouter';
 import GscCoverageUploader from '../components/GscCoverageUploader';
 import Icon from '../components/Icon';
 import StatusSections from '../components/StatusSections';
-import SubdomainTabs from '../components/SubdomainTabs';
+// SubdomainTabs removed per request (Main site / Branch / InvCorner counts row).
+// Subdomain filter still works via ?subdomain=www style URLs for deep linking.
 import { crawlerApi, type SummaryBreakdown, type TablesResponse } from '../api';
 
 type SubKey = 'all' | 'www' | 'branch' | 'investmentcorner';
@@ -25,18 +26,12 @@ export default function CrawlerReports() {
   const [tables, setTables] = useState<TablesResponse | null>(null);
   const [breakdown, setBreakdown] = useState<SummaryBreakdown | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [, setLocation] = useLocation();
   // wouter v3: useLocation returns pathname only; query string lives in useSearch.
   const search = useSearch();
 
-  // Subdomain scope is the only top-level filter on this page.
+  // Subdomain scope is still respected via deep-link URLs (?subdomain=www),
+  // it just no longer has visible tab UI.
   const subdomain = useMemo<SubKey>(() => parseSubdomain(search), [search]);
-  function setSubdomain(s: SubKey) {
-    const qs = new URLSearchParams();
-    if (s !== 'all') qs.set('subdomain', s);
-    const tail = qs.toString();
-    setLocation('/crawler/reports' + (tail ? `?${tail}` : ''));
-  }
 
   useEffect(() => {
     let alive = true;
@@ -87,12 +82,6 @@ export default function CrawlerReports() {
       )}
 
       <GscCoverageUploader />
-
-      <SubdomainTabs
-        value={subdomain}
-        onChange={setSubdomain}
-        bySubdomain={breakdown?.by_subdomain}
-      />
 
       {breakdown ? (
         <StatusSections breakdown={breakdown} subdomain={subdomain} />
