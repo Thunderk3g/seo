@@ -82,22 +82,55 @@ def open_streams(resume: bool) -> None:
     truncated and a fresh header written. If a file we want to resume has
     an older header (pre-enrichment), the migration is auto-run first so the
     new appends line up with the new schema.
+
+    If a single file is locked at the OS level (Windows: someone has it
+    open in Excel, an indexer is scanning it, etc.) we **skip that stream**
+    rather than crashing the whole crawl. Rows that would have gone to that
+    stream are silently dropped for this run — the in-memory STATE still
+    accumulates them so they show up via the API; only the CSV-on-disk
+    misses out until the lock is released and the crawl is re-run.
     """
     d = settings.data_path
     d.mkdir(parents=True, exist_ok=True)
     if resume:
         _ensure_migrated(d)
+    skipped: list[str] = []
     with _lock:
         _close_locked()
         for name, (fname, fields) in _STREAMS.items():
             path = d / fname
             keep = resume and path.exists() and path.stat().st_size > 0
-            f = open(path, "a" if keep else "w", newline="", encoding="utf-8")
+            mode = "a" if keep else "w"
+            try:
+                f = open(path, mode, newline="", encoding="utf-8")
+            except PermissionError as exc:
+                log.warning(
+                    "csv_writer: %s is locked (%s) — skipping this stream "
+                    "for the current run. Close whatever has the file open "
+                    "(Excel, viewer, indexer) and re-run to capture it.",
+                    fname, exc,
+                )
+                skipped.append(fname)
+                continue
             w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             if not keep:
-                w.writeheader()
-                f.flush()
+                try:
+                    w.writeheader()
+                    f.flush()
+                except OSError as exc:
+                    log.warning(
+                        "csv_writer: header write failed on %s: %s — "
+                        "skipping stream.", fname, exc,
+                    )
+                    f.close()
+                    skipped.append(fname)
+                    continue
             _handles[name] = (f, w)
+    if skipped:
+        log.warning(
+            "csv_writer: %s/%s streams skipped due to file locks: %s",
+            len(skipped), len(_STREAMS), ", ".join(skipped),
+        )
 
 
 def _ensure_migrated(data_dir: Path) -> None:
