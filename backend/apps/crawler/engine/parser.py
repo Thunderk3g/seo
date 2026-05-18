@@ -1,4 +1,15 @@
-"""HTML parser — extracts title, word count, link list, console-error hints."""
+"""HTML parser — extracts title, word count, and link list.
+
+Heuristic console-error detection (regex-scanning the HTML for "Uncaught
+TypeError" strings and broken <img>/<script> src attributes) was removed
+per user request. Those signals were unreliable — a JS string literal
+inside a script tag would trip them, and an empty src on a hidden img
+isn't a real production bug. Real browser-console capture requires a
+headless browser (Playwright) — that's a separate feature.
+
+``detect_console_errors`` remains as an empty stub so existing call sites
+in engine.py keep working without changes; it always returns ``[]``.
+"""
 from __future__ import annotations
 
 import re
@@ -7,29 +18,12 @@ from bs4 import BeautifulSoup
 
 from .url_utils import normalize
 
-_CONSOLE_PATTERNS = [
-    (r"Uncaught\s+TypeError", "Uncaught TypeError detected in page source"),
-    (r"Uncaught\s+ReferenceError", "Uncaught ReferenceError detected in page source"),
-    (r"Uncaught\s+SyntaxError", "Uncaught SyntaxError detected in page source"),
-    (r"Cannot\s+read\s+propert(?:y|ies)\s+of\s+null", "Null reference error pattern"),
-    (r"Cannot\s+read\s+propert(?:y|ies)\s+of\s+undefined", "Undefined reference error pattern"),
-    (r"is\s+not\s+a\s+function", "'not a function' error pattern"),
-    (r"is\s+not\s+defined", "'not defined' error pattern"),
-]
-
 _WS = re.compile(r"\s+")
 
 
 def detect_console_errors(html: str, soup: BeautifulSoup) -> list[str]:
-    errors: list[str] = []
-    for pat, msg in _CONSOLE_PATTERNS:
-        if re.search(pat, html, re.IGNORECASE):
-            errors.append(msg)
-    for tag in soup.find_all(["img", "script", "link"], src=True):
-        src = (tag.get("src") or "").strip()
-        if not src or src == "#":
-            errors.append(f"Empty/broken src attribute on <{tag.name}> tag")
-    return errors
+    """Stub. Returns an empty list — heuristic detection was removed."""
+    return []
 
 
 # (tag, attribute) pairs that carry navigable in-site URLs.
