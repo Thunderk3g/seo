@@ -4,6 +4,20 @@ Rows are appended to their CSV files as soon as they are produced (O(1) per
 row) instead of rewriting whole files at every checkpoint, so crawls of
 100k+ pages do not degrade into O(n^2) disk churn. ``crawl_state.json``
 is written periodically so a crawl can resume after a crash.
+
+Every row is enriched at write-time with five trailing columns so reports
+can filter by category, sitemap-source, and Google index status without
+re-scanning the raw HTML:
+
+    subdomain        — www / branch / investmentcorner / external
+    page_type        — within www: product / knowledge / calculators / ...
+    category_key     — flat key combining subdomain + page-type
+    from_sitemap     — "1" if URL was harvested from sitemap.xml else "0"
+    indexed_status   — indexed / not_indexed / excluded / unknown
+
+If the CSV files on disk pre-date this schema, ``open_streams()`` auto-runs
+the one-shot migration before any new rows are appended so the headers
+match.
 """
 from __future__ import annotations
 
@@ -15,16 +29,25 @@ from pathlib import Path
 from ..conf import settings
 from ..logger import get_logger
 from ..state import STATE
+from . import gsc_loader, url_classifier
 
 log = get_logger(__name__)
+
+# Five enrichment columns appended to every stream's schema.
+_ENRICH_FIELDS = [
+    "subdomain", "page_type", "category_key",
+    "from_sitemap", "indexed_status",
+]
 
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
+    *_ENRICH_FIELDS,
 ]
-ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message"]
-CONSOLE_FIELDS = ["timestamp", "url", "error"]
-DISCOVERED_FIELDS = ["url", "discovered_from", "depth"]
+ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
+                *_ENRICH_FIELDS]
+CONSOLE_FIELDS = ["timestamp", "url", "error", *_ENRICH_FIELDS]
+DISCOVERED_FIELDS = ["url", "discovered_from", "depth", *_ENRICH_FIELDS]
 
 # stream name -> (filename, fieldnames)
 _STREAMS: dict[str, tuple[str, list[str]]] = {
@@ -56,10 +79,14 @@ def open_streams(resume: bool) -> None:
     """Open every CSV stream for appending.
 
     ``resume=True`` keeps any rows already on disk; otherwise the files are
-    truncated and a fresh header written.
+    truncated and a fresh header written. If a file we want to resume has
+    an older header (pre-enrichment), the migration is auto-run first so the
+    new appends line up with the new schema.
     """
     d = settings.data_path
     d.mkdir(parents=True, exist_ok=True)
+    if resume:
+        _ensure_migrated(d)
     with _lock:
         _close_locked()
         for name, (fname, fields) in _STREAMS.items():
@@ -73,9 +100,60 @@ def open_streams(resume: bool) -> None:
             _handles[name] = (f, w)
 
 
+def _ensure_migrated(data_dir: Path) -> None:
+    """Run the one-shot enrichment migration if any CSV has the old header."""
+    needs_migration = False
+    for name, (fname, _fields) in _STREAMS.items():
+        p = data_dir / fname
+        if not p.exists() or p.stat().st_size == 0:
+            continue
+        try:
+            with open(p, "r", encoding="utf-8", newline="") as f:
+                header = next(csv.reader(f), [])
+            if "category_key" not in header:
+                needs_migration = True
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    if needs_migration:
+        try:
+            from . import migrate_reports
+            migrate_reports.run(data_dir)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("csv_writer: auto-migration failed: %s", exc)
+
+
+def _enrich(row: dict) -> dict:
+    """Stamp the five trailing columns onto a row in-place.
+
+    Called from ``append()`` so the engine itself never has to know about
+    categories. Idempotent — if a key is already set (e.g. the caller pre-
+    populated it during migration), it is preserved.
+    """
+    url = row.get("url")
+    if not url:
+        return row
+    if "category_key" not in row:
+        c = url_classifier.classify(url)
+        row.setdefault("subdomain", c["subdomain"])
+        row.setdefault("page_type", c["page_type"])
+        row.setdefault("category_key", c["category_key"])
+    if "from_sitemap" not in row:
+        # STATE.sitemap_urls is set during engine._seed(). Empty during
+        # tests / standalone calls — defaults to "0".
+        row["from_sitemap"] = "1" if url in STATE.sitemap_urls else "0"
+    if "indexed_status" not in row:
+        try:
+            row["indexed_status"] = gsc_loader.status_for(url)
+        except Exception:  # noqa: BLE001  (defensive — bad coverage CSV must never break a crawl)
+            row["indexed_status"] = "unknown"
+    return row
+
+
 def append(stream: str, row: dict) -> None:
     """Append one row to a stream. Flushes periodically."""
     global _writes_since_flush
+    _enrich(row)
     with _lock:
         h = _handles.get(stream)
         if h is None:

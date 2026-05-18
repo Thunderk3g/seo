@@ -86,6 +86,11 @@ def _seed(session, rp, robots_sitemaps) -> int:
         "message": f"Harvested {len(sitemap_urls)} URL(s) from sitemap(s)",
         "timestamp": datetime.now().isoformat(),
     })
+    # Register sitemap-origin URLs so csv_writer can stamp `from_sitemap` on
+    # each row. We normalise here (same as the eligibility check below) so a
+    # later lookup against the visited URL matches by identity.
+    with STATE.lock:
+        STATE.sitemap_urls.update(normalize(u) for u in sitemap_urls if u)
     added = 0
     for raw in [settings.seed_url, *sitemap_urls]:
         url = _eligible(normalize(raw), rp)
