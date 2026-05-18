@@ -11,9 +11,10 @@ log = get_logger(__name__)
 
 _FILES = [
     "crawl_results.csv", "crawl_errors.csv", "crawl_404_errors.csv",
-    "crawl_errors_httperror.csv", "crawl_errors_connectionerror.csv",
-    "crawl_errors_chunkedencodingerror.csv", "crawl_console_log.csv",
+    "crawl_errors_httperror.csv", "crawl_console_log.csv",
     "crawl_discovered.csv", "crawl_results.json", "crawl_state.json",
+    # connection / chunked-encoding CSVs retired from the app; legacy
+    # bundles that contain them are no longer imported.
 ]
 
 

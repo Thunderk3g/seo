@@ -235,15 +235,12 @@ def _ingest(url: str, parent: str | None, depth: int,
                 STATE.error_404.append(error_entry)
                 STATE.stats.errors_404 += 1
                 error_stream = "error_404"
-            elif result["error_type"] == "ConnectionError":
-                STATE.error_connection.append(error_entry)
-                error_stream = "error_connection"
-            elif result["error_type"] == "ChunkedEncodingError":
-                STATE.error_chunked.append(error_entry)
-                error_stream = "error_chunked"
             elif result["error_type"] == "HTTPError":
                 STATE.error_http.append(error_entry)
                 error_stream = "error_http"
+            # ConnectionError / ChunkedEncodingError categories retired —
+            # they roll up into STATE.errors / crawl_errors.csv via the
+            # generic path above; no per-class CSV is written.
         for ce in result.get("console_errors") or []:
             entry = {"timestamp": result["timestamp"], "url": url, "error": ce}
             STATE.console_logs.append(entry)

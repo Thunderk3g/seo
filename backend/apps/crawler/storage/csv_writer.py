@@ -55,8 +55,8 @@ _STREAMS: dict[str, tuple[str, list[str]]] = {
     "errors": ("crawl_errors.csv", ERROR_FIELDS),
     "error_404": ("crawl_404_errors.csv", ERROR_FIELDS),
     "error_http": ("crawl_errors_httperror.csv", ERROR_FIELDS),
-    "error_connection": ("crawl_errors_connectionerror.csv", ERROR_FIELDS),
-    "error_chunked": ("crawl_errors_chunkedencodingerror.csv", ERROR_FIELDS),
+    # error_connection / error_chunked streams retired — no UI surface
+    # was consuming them. Existing CSVs on disk are left alone.
     "console_logs": ("crawl_console_log.csv", CONSOLE_FIELDS),
     "discovered_edges": ("crawl_discovered.csv", DISCOVERED_FIELDS),
 }

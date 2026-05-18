@@ -39,8 +39,6 @@ _TARGETS = (
     "crawl_errors.csv",
     "crawl_404_errors.csv",
     "crawl_errors_httperror.csv",
-    "crawl_errors_connectionerror.csv",
-    "crawl_errors_chunkedencodingerror.csv",
     "crawl_console_log.csv",
     "crawl_discovered.csv",
     "branch_404.csv",
