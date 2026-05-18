@@ -1,6 +1,6 @@
 import { Route, Switch } from 'wouter';
 import Sidebar from './components/Sidebar';
-import StatusBar from './components/StatusBar';
+// StatusBar removed per request — file kept at components/StatusBar.tsx.
 import ChatPage from './pages/ChatPage';
 import GscPage from './pages/GscPage';
 import SemrushPage from './pages/SemrushPage';
@@ -44,7 +44,6 @@ export default function App() {
             </Route>
           </Switch>
         </main>
-        <StatusBar />
       </div>
     </div>
   );
