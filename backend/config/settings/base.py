@@ -246,6 +246,11 @@ SERP_API = {
     "country": os.environ.get("SERP_API_COUNTRY", "in"),
     "language": os.environ.get("SERP_API_LANGUAGE", "en"),
     "max_queries": int(os.environ.get("SERP_API_MAX_QUERIES", "20")),
+    # Number of organic results to request per (query, engine). One
+    # SerpAPI call is billed the same whether we ask for 10 or 100 —
+    # only the response payload grows. Defaults to 25 so each query
+    # surfaces a broader competitor set in the report.
+    "results_per_query": int(os.environ.get("SERP_API_RESULTS_PER_QUERY", "25")),
     "request_timeout_sec": int(
         os.environ.get("SERP_API_REQUEST_TIMEOUT_SEC", "30")
     ),
