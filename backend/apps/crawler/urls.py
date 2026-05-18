@@ -35,6 +35,14 @@ urlpatterns = [
     path("gsc/coverage/inspect", views.gsc_inspect_unknowns_view,
          name="gsc-coverage-inspect"),
 
+    # Browser-side console capture (Playwright headless Chromium)
+    path("console/capture", views.console_capture_start_view,
+         name="console-capture-start"),
+    path("console/capture/status", views.console_capture_status_view,
+         name="console-capture-status"),
+    path("console/capture/stop", views.console_capture_stop_view,
+         name="console-capture-stop"),
+
     # Site tree
     path("tree", views.tree_view, name="tree"),
 

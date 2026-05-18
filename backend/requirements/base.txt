@@ -42,3 +42,10 @@ jsonschema>=4.20
 google-api-python-client>=2.100
 google-auth>=2.20
 google-auth-oauthlib>=1.0
+
+# Headless Chromium for real browser-console capture. Used by
+# apps.crawler.engine.browser_console — captures live JS errors,
+# uncaught exceptions, and failed network requests that the static
+# `requests`-based crawler cannot see. Chromium binary is installed
+# via `playwright install chromium` in the Dockerfile.
+playwright>=1.40

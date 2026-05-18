@@ -235,6 +235,68 @@ def gsc_coverage_build_view(request):
 
 
 @api_view(["POST"])
+def console_capture_start_view(request):
+    """Kick off a Playwright console-capture run in a background thread.
+
+    Returns immediately with `{ok, message}`; clients poll
+    /console/capture/status for progress. Refuses to start if a run is
+    already in progress.
+    """
+    import threading
+    from .engine import browser_console
+    if browser_console.CAPTURE_STATE.is_running:
+        return Response(
+            {"ok": False, "message": "A capture is already running."},
+            status=409,
+        )
+    try:
+        limit = int(request.query_params.get("limit", "200"))
+    except (TypeError, ValueError):
+        limit = 200
+    subdomain = request.query_params.get("subdomain", "www")
+    only_status = request.query_params.get("status", "200")
+    levels_raw = request.query_params.get("levels", "error,warning")
+    levels = (("error", "warning", "info", "log", "debug")
+              if levels_raw == "all"
+              else tuple(x.strip() for x in levels_raw.split(",") if x.strip()))
+    urls = browser_console.select_target_urls(
+        limit=limit, subdomain=subdomain, only_status=only_status,
+    )
+    if not urls:
+        return Response(
+            {"ok": False,
+             "message": "No URLs match the filter — run the crawler first."},
+            status=400,
+        )
+
+    def _run():
+        browser_console.capture(urls, levels=levels)
+
+    t = threading.Thread(target=_run, daemon=True, name="console-capture")
+    t.start()
+    return Response({
+        "ok": True,
+        "message": f"Capture started for {len(urls)} URL(s).",
+        "target_count": len(urls),
+    })
+
+
+@api_view(["GET"])
+def console_capture_status_view(_request):
+    from .engine import browser_console
+    return Response(browser_console.CAPTURE_STATE.as_dict())
+
+
+@api_view(["POST"])
+def console_capture_stop_view(_request):
+    from .engine import browser_console
+    if not browser_console.CAPTURE_STATE.is_running:
+        return Response({"ok": False, "message": "No active capture."}, status=409)
+    browser_console.request_stop()
+    return Response({"ok": True, "message": "Stop signal sent."})
+
+
+@api_view(["POST"])
 def gsc_inspect_unknowns_view(request):
     """Upgrade `unknown` rows to definitive verdicts via URL Inspection API.
 
