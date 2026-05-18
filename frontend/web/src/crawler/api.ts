@@ -153,6 +153,29 @@ export interface GscRefreshResponse {
   loaded_urls: number;
 }
 
+export interface GscCoverageBuildResponse {
+  ok: boolean;
+  error?: string;
+  coverage?: {
+    output: string;
+    indexed: number;
+    not_indexed: number;
+    excluded: number;
+    unknown: number;
+    indexed_urls_seen: number;
+    sitemap_urls_seen: number;
+    crawler_urls_seen: number;
+    indexed_status_backfill?: {
+      coverage_urls: number;
+      files: Record<string, { status: string; updated: number }>;
+    };
+  };
+  backfill?: {
+    sitemap_urls: number;
+    files: Record<string, { status: string; updated: number }>;
+  };
+}
+
 export interface TreeNodeData {
   url: string;
   title: string;
@@ -233,4 +256,13 @@ export const crawlerApi = {
   xlsxUrl: () => `${BASE}/reports/xlsx`,
   refreshGscCoverage: () =>
     request<GscRefreshResponse>('/gsc/coverage/refresh', { method: 'POST' }),
+  buildGscCoverage: (opts: { backfill?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.backfill) qs.set('backfill', '1');
+    const tail = qs.toString();
+    return request<GscCoverageBuildResponse>(
+      `/gsc/coverage/build${tail ? `?${tail}` : ''}`,
+      { method: 'POST' },
+    );
+  },
 };

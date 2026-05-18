@@ -214,6 +214,26 @@ def gsc_coverage_refresh_view(_request):
     return Response({"ok": True, "loaded_urls": len(cov)})
 
 
+@api_view(["POST"])
+def gsc_coverage_build_view(request):
+    """Derive a fresh coverage CSV from already-pulled GSC performance data
+    plus a live sitemap fetch. Returns counts so the UI can show a toast.
+    """
+    from .storage import gsc_coverage_builder
+    sitemap = request.query_params.get("sitemap") or gsc_coverage_builder.DEFAULT_SITEMAP
+    backfill = request.query_params.get("backfill") in {"1", "true", "yes"}
+    try:
+        coverage = gsc_coverage_builder.build_coverage(sitemap_seed=sitemap)
+        result = {"ok": True, "coverage": coverage}
+        if backfill:
+            result["backfill"] = gsc_coverage_builder.backfill_from_sitemap(
+                sitemap_seed=sitemap,
+            )
+        return Response(result)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"ok": False, "error": str(exc)}, status=500)
+
+
 class _StringBuffer:
     """Minimal write-then-flush buffer for csv.writer in a generator."""
 

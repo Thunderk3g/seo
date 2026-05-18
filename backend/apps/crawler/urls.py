@@ -26,6 +26,10 @@ urlpatterns = [
     # GSC coverage cache control (POST to flush after dropping a new CSV)
     path("gsc/coverage/refresh", views.gsc_coverage_refresh_view,
          name="gsc-coverage-refresh"),
+    # GSC coverage builder — derive coverage CSV from existing performance
+    # data + a fresh sitemap.xml fetch (no URL Inspection quota burn).
+    path("gsc/coverage/build", views.gsc_coverage_build_view,
+         name="gsc-coverage-build"),
 
     # Site tree
     path("tree", views.tree_view, name="tree"),
