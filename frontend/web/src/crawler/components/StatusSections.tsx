@@ -105,6 +105,9 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
       </Section>
 
       {/* ---- Errors by type ---- */}
+      {/* Connection / Chunked / Console-heuristic cards removed per request.   */}
+      {/* Real browser console logs need headless browser (Playwright);         */}
+      {/* until that lands we don't surface heuristic-only console signals.     */}
       <Section title="Errors by type" hint="One card per error-class CSV — drill in to see every failing URL.">
         <StatusCard
           icon="link_off"
@@ -122,32 +125,6 @@ export default function StatusSections({ breakdown, subdomain }: Props) {
           count={breakdown.by_error_type.errors_http}
           to={detailLink('errors_http')}
           csv={crawlerApi.downloadUrl('errors_http')}
-        />
-        <StatusCard
-          icon="wifi_off"
-          tone="warn"
-          title="Connection errors"
-          desc="TCP / DNS / refused connection"
-          count={breakdown.by_error_type.errors_connection}
-          to={detailLink('errors_connection')}
-          csv={crawlerApi.downloadUrl('errors_connection')}
-        />
-        <StatusCard
-          icon="broken_image"
-          tone="warn"
-          title="Chunked encoding errors"
-          count={breakdown.by_error_type.errors_chunked}
-          to={detailLink('errors_chunked')}
-          csv={crawlerApi.downloadUrl('errors_chunked')}
-        />
-        <StatusCard
-          icon="terminal"
-          tone="muted"
-          title="Console log entries"
-          desc="Heuristic JS console errors found in page source"
-          count={breakdown.by_error_type.console}
-          to={detailLink('console', subFilter)}
-          csv={crawlerApi.downloadUrl('console', subFilter)}
         />
       </Section>
     </div>
