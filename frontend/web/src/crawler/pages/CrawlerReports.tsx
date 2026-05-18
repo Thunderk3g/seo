@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearch } from 'wouter';
-import ConsoleCaptureBanner from '../components/ConsoleCaptureBanner';
 import GscCoverageUploader from '../components/GscCoverageUploader';
 import Icon from '../components/Icon';
 import StatusSections from '../components/StatusSections';
+// ConsoleCaptureBanner removed — Playwright capture now runs automatically
+// at the end of every regular crawl (see engine.run_crawl). File kept at
+// components/ConsoleCaptureBanner.tsx if a manual trigger is ever wanted.
 // SubdomainTabs removed per request (Main site / Branch / InvCorner counts row).
-// Subdomain filter still works via ?subdomain=www style URLs for deep linking.
 import { crawlerApi, type SummaryBreakdown, type TablesResponse } from '../api';
 
 type SubKey = 'all' | 'www' | 'branch' | 'investmentcorner';
@@ -83,7 +84,6 @@ export default function CrawlerReports() {
       )}
 
       <GscCoverageUploader />
-      <ConsoleCaptureBanner />
 
       {breakdown ? (
         <StatusSections breakdown={breakdown} subdomain={subdomain} />
