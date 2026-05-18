@@ -40,7 +40,8 @@ const CRAWLER_NAV: NavItem[] = [
   { id: 'crawler-tree', label: 'Site Tree', icon: 'visualizations', path: '/crawler/tree' },
   { id: 'crawler-logs', label: 'Live Logs', icon: 'zap', path: '/crawler/logs' },
   { id: 'crawler-reports', label: 'Reports', icon: 'pages', path: '/crawler/reports' },
-  { id: 'crawler-settings', label: 'Crawler Settings', icon: 'settings', path: '/crawler/settings' },
+  // 'Crawler Settings' removed per request — page file kept at
+  // crawler/pages/CrawlerSettings.tsx if it ever needs to come back.
 ];
 
 function isActive(path: string, current: string): boolean {

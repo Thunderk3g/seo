@@ -1,6 +1,5 @@
 import { Route, Switch } from 'wouter';
 import Sidebar from './components/Sidebar';
-import Topbar from './components/Topbar';
 import StatusBar from './components/StatusBar';
 import ChatPage from './pages/ChatPage';
 import GscPage from './pages/GscPage';
@@ -13,14 +12,12 @@ import SiteTreePage from './crawler/pages/SiteTreePage';
 import CrawlerLogs from './crawler/pages/CrawlerLogs';
 import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
-import CrawlerSettings from './crawler/pages/CrawlerSettings';
 
 export default function App() {
   return (
     <div className="app-shell">
       <Sidebar />
       <div className="app-main">
-        <Topbar />
         <main className="content-scroll">
           <Switch>
             {/* ── Bajaj SEO Assistant (primary surface) ──────── */}
@@ -33,12 +30,14 @@ export default function App() {
             <Route path="/competitors" component={CompetitorsPage} />
 
             {/* ── Crawler Engine (v2) ─────────────────────────── */}
+            {/* /crawler/settings removed per request — to restore, re-add  */}
+            {/* the import + Route. The page file lives at                  */}
+            {/* crawler/pages/CrawlerSettings.tsx.                            */}
             <Route path="/crawler" component={CrawlerDashboard} />
             <Route path="/crawler/tree" component={SiteTreePage} />
             <Route path="/crawler/logs" component={CrawlerLogs} />
             <Route path="/crawler/reports" component={CrawlerReports} />
             <Route path="/crawler/reports/:key" component={CrawlerReportDetail} />
-            <Route path="/crawler/settings" component={CrawlerSettings} />
 
             <Route>
               <div style={{ padding: 24 }}>Not found</div>
