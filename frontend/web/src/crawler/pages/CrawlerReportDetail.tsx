@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useParams } from 'wouter';
+import { Link, useLocation, useParams, useSearch } from 'wouter';
 import DataTable from '../components/DataTable';
 import EmptyState from '../components/EmptyState';
 import Icon from '../components/Icon';
@@ -16,9 +16,13 @@ export default function CrawlerReportDetail() {
   const key = params.key;
   const [data, setData] = useState<TableData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [location, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
+  // wouter v3 splits pathname and search — `useLocation` returns the
+  // pathname only. To detect filter changes (which only mutate the
+  // query string) we must subscribe to `useSearch` separately.
+  const search = useSearch();
 
-  const filters = useMemo(() => readFilters(location), [location]);
+  const filters = useMemo(() => readFilters(search), [search]);
 
   function clearFilter(name: keyof ReportFilters) {
     const next: ReportFilters = { ...filters };
@@ -37,7 +41,7 @@ export default function CrawlerReportDetail() {
     return () => {
       alive = false;
     };
-  }, [key, location]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chips = chipsFromFilters(filters);
 
@@ -105,10 +109,13 @@ export default function CrawlerReportDetail() {
 }
 
 // ── Filter <-> URL helpers ──────────────────────────────────────────────
-function readFilters(loc: string): ReportFilters {
-  const qIdx = loc.indexOf('?');
-  if (qIdx < 0) return {};
-  const sp = new URLSearchParams(loc.slice(qIdx + 1));
+// `search` is wouter v3's useSearch() output — the query string WITHOUT
+// the leading `?`. May still contain it if read from URL; strip defensively.
+function readFilters(search: string): ReportFilters {
+  if (!search) return {};
+  const q = search.startsWith('?') ? search.slice(1) : search;
+  if (!q) return {};
+  const sp = new URLSearchParams(q);
   const out: ReportFilters = {};
   const sub = sp.get('subdomain') ?? sp.get('sub');
   const cat = sp.get('category') ?? sp.get('cat');

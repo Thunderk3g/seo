@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Badge from './Badge';
 import Icon from './Icon';
 import { statusBadge } from '../format';
@@ -16,6 +16,14 @@ export default function DataTable({
 }) {
   const [q, setQ] = useState('');
   const [page, setPage] = useState(0);
+
+  // When the parent swaps in a different rows array (e.g. user navigated
+  // from "Indexed" to "Excluded" filter), reset local pagination + search
+  // so we don't render "page 5 of a 3-page list" or leak the old query.
+  useEffect(() => {
+    setPage(0);
+    setQ('');
+  }, [rows]);
 
   const filtered = useMemo(() => {
     if (!q) return rows;
