@@ -1,3 +1,26 @@
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.dev"
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
+
+# Pyrefly / Pyright / Pylance can't infer this from the layout: Django
+# is invoked from backend/ (manage.py adds it to sys.path), so apps.*
+# and config.* live one directory deeper than pyproject.toml.
+[tool.pyrefly]
+search-path = ["backend"]
+project-includes = ["backend/**/*.py"]
+project-excludes = [
+    "**/__pycache__",
+    "**/.venv",
+    "**/node_modules",
+    "**/migrations",
+]
+
+[tool.pyright]
+include = ["backend"]
+extraPaths = ["backend"]
+exclude = [
+    "**/__pycache__",
+    "**/.venv",
+    "**/node_modules",
+    "**/migrations",
+]

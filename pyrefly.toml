@@ -1,0 +1,19 @@
+# Pyrefly type-checker configuration.
+#
+# Django's manage.py adds backend/ to sys.path at startup, so all
+# apps.* and config.* imports actually live one level deeper than this
+# pyrefly.toml. Without these hints Pyrefly defaults to the repo root
+# as the import root and fails to resolve apps.seo_ai.adapters.cwv_psi
+# (and every other apps.* / config.* module).
+
+project-includes = ["backend/**/*.py"]
+project-excludes = [
+    "**/__pycache__/**",
+    "**/.venv/**",
+    "**/node_modules/**",
+    "**/migrations/**",
+    "**/frontend/**",
+]
+
+# Tell Pyrefly that apps.* and config.* are rooted at backend/.
+search-path = ["backend"]
