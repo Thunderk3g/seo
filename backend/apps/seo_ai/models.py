@@ -280,7 +280,7 @@ class GapLLMResult(models.Model):
 
 
 class GapSerpResult(models.Model):
-    """One (query × engine) SERP probe — top organic + featured + AI Overview."""
+    """One (query × engine × device) SERP probe — top organic + featured + AI Overview."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     run = models.ForeignKey(
@@ -290,7 +290,12 @@ class GapSerpResult(models.Model):
         GapPipelineQuery, on_delete=models.CASCADE, related_name="serp_results"
     )
     engine = models.CharField(max_length=32)
-    # organic: [{position, title, url, domain, snippet}, ...] up to 10
+    # SerpAPI device split — "desktop" / "mobile" / "tablet". Each device
+    # is a separate billed SerpAPI call, so each (query, engine, device)
+    # is a distinct row. Defaults to "desktop" for back-compat with rows
+    # written before the device split was introduced.
+    device = models.CharField(max_length=16, default="desktop")
+    # organic: [{position, title, url, domain, snippet}, ...] up to 25
     organic = models.JSONField(default=list, blank=True)
     featured_snippet = models.JSONField(default=dict, blank=True, null=True)
     ai_overview = models.JSONField(default=dict, blank=True, null=True)
@@ -302,9 +307,10 @@ class GapSerpResult(models.Model):
     error = models.TextField(blank=True, default="")
 
     class Meta:
-        ordering = ("run", "engine", "query_id")
+        ordering = ("run", "engine", "device", "query_id")
         indexes = [
             models.Index(fields=["run", "engine"]),
+            models.Index(fields=["run", "engine", "device"]),
             models.Index(fields=["query"]),
         ]
 

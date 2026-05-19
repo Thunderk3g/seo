@@ -73,39 +73,44 @@ def execute(
         }
 
     engines = tuple(cfg.get("engines") or ("google",))
+    devices = tuple(cfg.get("devices") or ("desktop",))
     focus = _bare(domain)
     stats = _StageStats(engine_count=len(engines))
 
+    # Persist full organic list (up to results_per_query) so the UI can
+    # surface every captured competitor, not just the first 10.
+    cap = int(cfg.get("results_per_query") or 25)
+
     for engine in engines:
-        for q_row in queries:
-            result = adapter.search(q_row.query, engine=engine)
-            stats.call_count += 1
-            # Skip persistence when the engine errored AND the row would
-            # carry zero useful data — keeps the table clean.
-            organic_payload = [
-                {
-                    "position": r.position,
-                    "title": r.title,
-                    "url": r.url,
-                    "domain": r.domain,
-                    "snippet": r.snippet,
-                }
-                for r in result.organic[:10]
-            ]
-            GapSerpResult.objects.create(
-                run=run,
-                query=q_row,
-                engine=engine,
-                organic=organic_payload,
-                featured_snippet=result.featured_snippet or None,
-                ai_overview=result.ai_overview or None,
-                people_also_ask=list(result.people_also_ask or [])[:10],
-                related_searches=list(result.related_searches or [])[:10],
-                our_position=_our_position(result.organic, focus),
-                cached=bool(result.cached),
-                latency_ms=int(result.latency_ms or 0),
-                error=(result.error or "")[:1000],
-            )
+        for device in devices:
+            for q_row in queries:
+                result = adapter.search(q_row.query, engine=engine, device=device)
+                stats.call_count += 1
+                organic_payload = [
+                    {
+                        "position": r.position,
+                        "title": r.title,
+                        "url": r.url,
+                        "domain": r.domain,
+                        "snippet": r.snippet,
+                    }
+                    for r in result.organic[:cap]
+                ]
+                GapSerpResult.objects.create(
+                    run=run,
+                    query=q_row,
+                    engine=engine,
+                    device=device,
+                    organic=organic_payload,
+                    featured_snippet=result.featured_snippet or None,
+                    ai_overview=result.ai_overview or None,
+                    people_also_ask=list(result.people_also_ask or [])[:10],
+                    related_searches=list(result.related_searches or [])[:10],
+                    our_position=_our_position(result.organic, focus),
+                    cached=bool(result.cached),
+                    latency_ms=int(result.latency_ms or 0),
+                    error=(result.error or "")[:1000],
+                )
 
     run.serp_engine_count = stats.engine_count
     run.serp_call_count = stats.call_count
@@ -116,4 +121,5 @@ def execute(
         "engine_count": stats.engine_count,
         "call_count": stats.call_count,
         "engines": list(engines),
+        "devices": list(devices),
     }

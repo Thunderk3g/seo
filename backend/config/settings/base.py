@@ -243,6 +243,25 @@ SERP_API = {
         ).split(",")
         if e.strip()
     ),
+    # Device split — Google honours `device=desktop|mobile|tablet`. Each
+    # device is a SEPARATE billed SerpAPI call, so the run cost scales
+    # linearly with len(devices). Default to both desktop + mobile so
+    # the dashboard can show how rankings differ across surfaces.
+    "devices": tuple(
+        d.strip().lower()
+        for d in os.environ.get(
+            "SERP_API_DEVICES", "desktop,mobile"
+        ).split(",")
+        if d.strip()
+    ),
+    # The "primary" device whose rows feed competitor aggregation and
+    # the visibility comparison. Multi-device probes are persisted but
+    # only this device counts toward leaderboard/dedupe to avoid
+    # double-counting the same competitor across devices.
+    "primary_device": (
+        os.environ.get("SERP_API_PRIMARY_DEVICE", "desktop").strip().lower()
+        or "desktop"
+    ),
     "country": os.environ.get("SERP_API_COUNTRY", "in"),
     "language": os.environ.get("SERP_API_LANGUAGE", "en"),
     "max_queries": int(os.environ.get("SERP_API_MAX_QUERIES", "20")),

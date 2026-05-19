@@ -1,6 +1,6 @@
-// Panel 3: per-engine SERP rows. Tabs by engine. For each query shows
-// our rank (if any), featured snippet owner, AI Overview presence,
-// and the top-3 organic results so users can see who's beating us.
+// Panel 3: per-engine SERP rows. Tabs by engine, with a device toggle
+// (desktop / mobile) when the run captured both — Google's rankings
+// drift between surfaces and users want to see both sides.
 
 import { useMemo, useState } from 'react';
 import type { GapQuery, GapSerpResultRow } from '../../../api/seoTypes';
@@ -30,28 +30,61 @@ export default function SerpResultsPanel({
     return m;
   }, [queries]);
 
+  const activeEngine = active && byEngine.has(active) ? active : engines[0];
+  const engineRows = activeEngine ? byEngine.get(activeEngine) || [] : [];
+
+  // Devices available for the active engine (mobile-only or desktop-only
+  // runs collapse the toggle). Sort so desktop renders first when both
+  // are present — matches the operator's mental model.
+  const engineDevices = useMemo(() => {
+    const set = new Set<string>();
+    engineRows.forEach((r) => set.add((r.device || 'desktop').toLowerCase()));
+    return Array.from(set).sort((a, b) => {
+      if (a === b) return 0;
+      if (a === 'desktop') return -1;
+      if (b === 'desktop') return 1;
+      return a.localeCompare(b);
+    });
+  }, [engineRows]);
+
+  const [activeDevice, setActiveDevice] = useState<string | null>(null);
+  const resolvedDevice =
+    activeDevice && engineDevices.includes(activeDevice)
+      ? activeDevice
+      : engineDevices[0] ?? null;
+
   const summary = engines.map((eng) => {
     const rows = byEngine.get(eng) || [];
-    const ok = rows.filter((r) => !r.error).length;
-    const inTop10 = rows.filter((r) => r.our_position !== null).length;
-    const inTop3 = rows.filter(
+    // Summary numbers use the resolved device (or all rows if the
+    // engine has no rows on the resolved device, e.g. mobile-skipped
+    // by Bing on a desktop+mobile run).
+    const deviceRows = resolvedDevice
+      ? rows.filter((r) => (r.device || 'desktop').toLowerCase() === resolvedDevice)
+      : rows;
+    const scoped = deviceRows.length > 0 ? deviceRows : rows;
+    const ok = scoped.filter((r) => !r.error).length;
+    const inTop10 = scoped.filter((r) => r.our_position !== null).length;
+    const inTop3 = scoped.filter(
       (r) => r.our_position !== null && (r.our_position as number) <= 3,
     ).length;
-    const featuredOurs = rows.filter(
+    const featuredOurs = scoped.filter(
       (r) => (r.featured_snippet?.domain || '').length > 0,
     ).length;
-    return { engine: eng, total: rows.length, ok, inTop10, inTop3, featuredOurs };
+    return { engine: eng, total: scoped.length, ok, inTop10, inTop3, featuredOurs };
   });
 
-  const activeEngine = active && byEngine.has(active) ? active : engines[0];
-  const activeRows = activeEngine ? byEngine.get(activeEngine) || [] : [];
+  const activeRows = resolvedDevice
+    ? engineRows.filter(
+        (r) => (r.device || 'desktop').toLowerCase() === resolvedDevice,
+      )
+    : engineRows;
 
   return (
     <div className="seo-card">
       <div className="seo-card-head">
         <h2>What the web SERP returned</h2>
         <span className="seo-card-sub">
-          {results.length} engine × query cells via SerpAPI
+          {results.length} engine × device × query cells via SerpAPI
         </span>
       </div>
 
@@ -93,6 +126,35 @@ export default function SerpResultsPanel({
               </button>
             ))}
           </div>
+
+          {engineDevices.length > 1 && (
+            <div
+              className="gap-pipe-tabs"
+              style={{ marginTop: 8, gap: 6 }}
+              role="tablist"
+              aria-label="Device"
+            >
+              {engineDevices.map((d) => {
+                const count = engineRows.filter(
+                  (r) => (r.device || 'desktop').toLowerCase() === d,
+                ).length;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    className={`gap-pipe-tab${
+                      d === resolvedDevice ? ' gap-pipe-tab--active' : ''
+                    }`}
+                    onClick={() => setActiveDevice(d)}
+                    title={`Show ${d} SERP rows`}
+                  >
+                    {d}
+                    <span className="gap-pipe-tab-count">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <table className="seo-table">
             <thead>

@@ -46,6 +46,7 @@ class OrganicRow:
 class SerpResult:
     query: str
     engine: str
+    device: str = "desktop"
     organic: list[OrganicRow] = field(default_factory=list)
     featured_snippet: dict[str, Any] | None = None
     people_also_ask: list[str] = field(default_factory=list)
@@ -54,6 +55,9 @@ class SerpResult:
     error: str = ""
     cached: bool = False
     latency_ms: int = 0
+
+
+_SUPPORTED_DEVICES = ("desktop", "mobile", "tablet")
 
 
 _SERPAPI_ENGINE_MAP = {
@@ -108,27 +112,42 @@ class SerpAPIAdapter:
 
     # ── public ────────────────────────────────────────────────────────
 
-    def search(self, query: str, *, engine: str = "google") -> SerpResult:
+    def search(
+        self,
+        query: str,
+        *,
+        engine: str = "google",
+        device: str = "desktop",
+    ) -> SerpResult:
         engine_key = (engine or "google").lower()
+        device_key = (device or "desktop").lower()
         if engine_key not in _SERPAPI_ENGINE_MAP:
             return SerpResult(
                 query=query,
                 engine=engine_key,
+                device=device_key,
                 error=f"unsupported engine: {engine_key}",
             )
-        cached = self._cache_read(query, engine_key)
+        if device_key not in _SUPPORTED_DEVICES:
+            return SerpResult(
+                query=query,
+                engine=engine_key,
+                device=device_key,
+                error=f"unsupported device: {device_key}",
+            )
+        cached = self._cache_read(query, engine_key, device_key)
         if cached is not None:
             cached.cached = True
             return cached
         t0 = time.monotonic()
-        result = self._fetch(query, engine_key)
+        result = self._fetch(query, engine_key, device_key)
         result.latency_ms = int((time.monotonic() - t0) * 1000)
-        self._cache_write(query, engine_key, result)
+        self._cache_write(query, engine_key, device_key, result)
         return result
 
     # ── network ───────────────────────────────────────────────────────
 
-    def _fetch(self, query: str, engine: str) -> SerpResult:
+    def _fetch(self, query: str, engine: str, device: str) -> SerpResult:
         params: dict[str, Any] = {
             "engine": _SERPAPI_ENGINE_MAP[engine],
             "q": query,
@@ -139,6 +158,14 @@ class SerpAPIAdapter:
         # set them uniformly.
         params["gl"] = self._country
         params["hl"] = self._language
+        # Device split: Google honours `device=desktop|mobile|tablet`.
+        # Bing has no documented device knob on SerpAPI (responses are
+        # desktop-shaped); DuckDuckGo likewise. We still tag the result
+        # with the requested device so callers can filter consistently,
+        # but the upstream payload may be identical across devices for
+        # those two engines.
+        if engine == "google":
+            params["device"] = device
         # Ask each engine for the top N organic results. SerpAPI bills
         # one search per call regardless of `num`, so this is a free
         # widening of competitor coverage.
@@ -156,30 +183,37 @@ class SerpAPIAdapter:
                 verify=self._ssl_verify,
             )
         except requests.RequestException as exc:
-            logger.warning("serpapi network %s/%r: %s", engine, query[:80], exc)
+            logger.warning(
+                "serpapi network %s/%s/%r: %s", engine, device, query[:80], exc
+            )
             return SerpResult(
                 query=query,
                 engine=engine,
+                device=device,
                 error=f"network: {type(exc).__name__}: {exc}"[:300],
             )
         if resp.status_code != 200:
             return SerpResult(
                 query=query,
                 engine=engine,
+                device=device,
                 error=f"http {resp.status_code}: {resp.text[:300]}",
             )
         try:
             data = resp.json()
         except ValueError as exc:
             return SerpResult(
-                query=query, engine=engine, error=f"json decode: {exc}"
+                query=query,
+                engine=engine,
+                device=device,
+                error=f"json decode: {exc}",
             )
-        return self._normalise(query, engine, data)
+        return self._normalise(query, engine, device, data)
 
     # ── normalisation ─────────────────────────────────────────────────
 
     def _normalise(
-        self, query: str, engine: str, data: dict[str, Any]
+        self, query: str, engine: str, device: str, data: dict[str, Any]
     ) -> SerpResult:
         organic: list[OrganicRow] = []
         for i, row in enumerate(data.get("organic_results") or []):
@@ -244,6 +278,7 @@ class SerpAPIAdapter:
         return SerpResult(
             query=query,
             engine=engine,
+            device=device,
             organic=organic[:self._results_per_query],
             featured_snippet=featured,
             people_also_ask=paa[:10],
@@ -253,19 +288,21 @@ class SerpAPIAdapter:
 
     # ── cache ─────────────────────────────────────────────────────────
 
-    def _cache_path(self, query: str, engine: str) -> Path:
-        # Include ``results_per_query`` in the cache key so changing the
-        # knob (e.g. 10 → 25) doesn't keep serving stale entries with the
-        # old result count. Each result-count config gets its own cache
-        # namespace; older entries age out naturally per TTL.
+    def _cache_path(self, query: str, engine: str, device: str) -> Path:
+        # Include ``results_per_query`` and ``device`` in the cache key so
+        # changing either knob (e.g. 10 → 25 results, or desktop ↔ mobile)
+        # doesn't keep serving stale or cross-device entries. Older entries
+        # age out naturally per TTL.
         h = hashlib.sha1(
-            f"{engine}|{self._country}|{self._language}"
+            f"{engine}|{device}|{self._country}|{self._language}"
             f"|n={self._results_per_query}|{query}".encode("utf-8")
         ).hexdigest()
         return self._cache_dir / f"{h}.json"
 
-    def _cache_read(self, query: str, engine: str) -> SerpResult | None:
-        path = self._cache_path(query, engine)
+    def _cache_read(
+        self, query: str, engine: str, device: str
+    ) -> SerpResult | None:
+        path = self._cache_path(query, engine, device)
         if not path.exists():
             return None
         try:
@@ -282,6 +319,7 @@ class SerpAPIAdapter:
         result = SerpResult(
             query=data.get("query") or query,
             engine=data.get("engine") or engine,
+            device=data.get("device") or device,
             organic=rows,
             featured_snippet=data.get("featured_snippet"),
             people_also_ask=list(data.get("people_also_ask") or []),
@@ -293,9 +331,9 @@ class SerpAPIAdapter:
         return result
 
     def _cache_write(
-        self, query: str, engine: str, result: SerpResult
+        self, query: str, engine: str, device: str, result: SerpResult
     ) -> None:
-        path = self._cache_path(query, engine)
+        path = self._cache_path(query, engine, device)
         try:
             with path.open("w", encoding="utf-8") as f:
                 json.dump(asdict(result), f, default=str)

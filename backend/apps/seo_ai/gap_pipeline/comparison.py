@@ -310,7 +310,17 @@ def _llm_visibility_row(run: GapPipelineRun) -> _Row | None:
 
 
 def _serp_visibility_row(run: GapPipelineRun) -> _Row | None:
-    rows = GapSerpResult.objects.filter(run=run, error="")
+    # Scope to the primary device so the rate isn't distorted by
+    # duplicate rows from a desktop+mobile run.
+    from django.conf import settings
+
+    primary_device = (
+        (getattr(settings, "SERP_API", {}) or {}).get("primary_device")
+        or "desktop"
+    )
+    rows = GapSerpResult.objects.filter(
+        run=run, error="", device=primary_device
+    )
     total = rows.count()
     if total == 0:
         return None

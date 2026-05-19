@@ -22,9 +22,12 @@ SerpAPI is paid, but has a free tier.
 | Production | $150 | 15,000 | 250+ runs |
 | Big Data | $275 | 30,000 | massive |
 
-*Each pipeline run hits `SERP_API_MAX_QUERIES × len(SERP_API_ENGINES)`
-calls — default 20 × 3 = 60. Asking for more results-per-query (`num=25`)
-does NOT increase the call count; it just changes the response payload.
+*Each pipeline run hits
+`SERP_API_MAX_QUERIES × len(SERP_API_ENGINES) × len(SERP_API_DEVICES)`
+calls — default `20 × 3 × 2 = 120`. Asking for more results-per-query
+(`num=25`) does NOT increase the call count; it just changes the
+response payload. Dropping `mobile` from `SERP_API_DEVICES` halves the
+cost back to 60.
 
 Current account state:
 - Account: `tanishjagtap91@gmail.com`
@@ -49,11 +52,33 @@ call returns a normalised `SerpResult`:
 All three engines bill **one search per call**, equal cost. The
 breakdown of what you get differs:
 
-| Engine | `num` knob | Typical results per call | AI Overview |
-|---|---|---|---|
-| Google | `num=25` works | up to 25 | Sometimes — when query qualifies |
-| Bing | `count=25` works | up to 25 | No (Bing has its own Copilot, not exposed via SerpAPI) |
-| DuckDuckGo | not supported | fixed ~10–20 by DuckDuckGo | No |
+| Engine | `num` knob | Typical results per call | AI Overview | `device` honoured |
+|---|---|---|---|---|
+| Google | `num=25` works | up to 25 | Sometimes — when query qualifies | Yes (`desktop` / `mobile` / `tablet`) |
+| Bing | `count=25` works | up to 25 | No (Bing has its own Copilot, not exposed via SerpAPI) | No — same payload regardless |
+| DuckDuckGo | not supported | fixed ~10–20 by DuckDuckGo | No | No — same payload regardless |
+
+## Mobile vs desktop split
+
+Rankings drift between desktop and mobile SERPs — especially on
+Google — so the adapter probes each device as its own call and tags
+every `SerpResult` with the device. **One SerpAPI call = one billed
+search per device**, so enabling `mobile` on top of `desktop`
+**doubles** the per-run quota cost.
+
+The pipeline persists one `GapSerpResult` row per (query × engine ×
+device). The frontend's SERP results panel adds a device toggle when
+both are present, so you can flip between the two views side by side.
+
+For Bing / DuckDuckGo the upstream response is the same across
+devices (no device split exposed via SerpAPI). Rows are still tagged
+with the requested device so the UI's per-device filter behaves
+consistently.
+
+Aggregation safety: the competitor leaderboard and the SERP-visibility
+comparison are scoped to `SERP_API_PRIMARY_DEVICE` (default `desktop`)
+to avoid double-counting the same competitor across both devices. The
+other-device rows are still persisted and visible in the UI.
 
 ## Code map
 
@@ -78,6 +103,8 @@ breakdown of what you get differs:
 | `SERP_API_PROVIDER` | `serpapi` | Reserved for future DataForSEO / Zenserp swaps; only `serpapi` implemented today |
 | `SERPAPI_API_KEY` | (required) | Static API key |
 | `SERP_API_ENGINES` | `google,bing,duckduckgo` | Comma-separated. Each one multiplies your call count |
+| `SERP_API_DEVICES` | `desktop,mobile` | Comma-separated devices to probe per (query × engine). Each device is a SEPARATE billed call — `desktop,mobile` doubles quota vs `desktop` alone |
+| `SERP_API_PRIMARY_DEVICE` | `desktop` | Which device feeds competitor aggregation + the visibility comparison. The other devices are persisted but don't contribute to leaderboards |
 | `SERP_API_COUNTRY` | `in` | `gl=` param — India SERPs |
 | `SERP_API_LANGUAGE` | `en` | `hl=` param |
 | `SERP_API_MAX_QUERIES` | `20` | Cap on queries per pipeline run. Combined with `engines`, controls calls/run |
@@ -89,9 +116,10 @@ breakdown of what you get differs:
 ## Caching
 
 Disk cache at `backend/data/_serp_cache/`. Cache key is
-`sha1(engine|country|language|n=<results_per_query>|query)`, so
-changing `SERP_API_RESULTS_PER_QUERY` automatically invalidates old
-entries (same-week re-runs on the same N are free).
+`sha1(engine|device|country|language|n=<results_per_query>|query)`,
+so changing `SERP_API_RESULTS_PER_QUERY` **or** flipping a device
+automatically invalidates old entries (same-week re-runs on the same
+N + device are free).
 
 Clearing the cache:
 ```bash
@@ -104,15 +132,22 @@ Warning — next pipeline run will burn 60+ fresh API calls.
 If staying on the 250-call/month plan, throttle one of these axes:
 
 ```ini
-# Option A: just Google, full query set (= 20 calls/run, 12 runs/month)
+# Option A: just Google desktop, full query set (= 20 calls/run, 12 runs/month)
 SERP_API_ENGINES=google
+SERP_API_DEVICES=desktop
 SERP_API_MAX_QUERIES=20
 
-# Option B: all 3 engines, fewer queries (= 30 calls/run, 8 runs/month)
+# Option B: all 3 engines desktop only, fewer queries (= 30 calls/run, 8 runs/month)
 SERP_API_ENGINES=google,bing,duckduckgo
+SERP_API_DEVICES=desktop
 SERP_API_MAX_QUERIES=10
 
-# Option C: kill switch
+# Option C: Google desktop + mobile, smaller query set (= 20 calls/run, 12 runs/month)
+SERP_API_ENGINES=google
+SERP_API_DEVICES=desktop,mobile
+SERP_API_MAX_QUERIES=10
+
+# Option D: kill switch
 SERP_API_ENABLED=false
 ```
 
