@@ -280,6 +280,70 @@ SERP_API = {
 }
 
 # ─────────────────────────────────────────────────────────────
+# PageSpeed Insights (Core Web Vitals enrichment for competitor pages)
+# ─────────────────────────────────────────────────────────────
+# Calls Google's PSI API to capture LCP/CLS/INP/FCP/TBT/TTFB for each
+# competitor page — both lab (Lighthouse) and field (CrUX) metrics.
+# Authenticated via a Google Cloud service account so the daily quota
+# (25k calls) bills against our project. Silently disabled when the
+# service-account file is missing or PSI_ENABLED is "false".
+#
+# The SA needs no special IAM role beyond the default; PSI accepts any
+# bearer token from a project that has the PageSpeed Insights API
+# enabled (scopes used: openid + userinfo.email).
+def _resolve_repo_path(raw: str, default: Path) -> str:
+    """Resolve a path env var across host (BASE_DIR=backend/) and Docker
+    (BASE_DIR=/app, where backend/data is mounted to /app/data via the
+    compose volume).
+
+    Strategy:
+      * Absolute paths pass through.
+      * Relative paths starting with ``backend/`` get that prefix
+        stripped, then resolve against BASE_DIR — so the same
+        ``.env`` value works on host (becomes ``backend/data/...``)
+        and inside the container (becomes ``/app/data/...``).
+      * Other relative paths also resolve against BASE_DIR.
+    """
+    if not raw:
+        return str(default)
+    p = Path(raw.strip())
+    if p.is_absolute():
+        return str(p)
+    parts = p.parts
+    if parts and parts[0] == "backend":
+        p = Path(*parts[1:]) if len(parts) > 1 else Path()
+    return str(BASE_DIR / p)
+
+
+PSI = {
+    "enabled": os.environ.get("PSI_ENABLED", "true").lower()
+    in ("1", "true", "yes", "on"),
+    "service_account_json": _resolve_repo_path(
+        os.environ.get("PSI_SERVICE_ACCOUNT_JSON", ""),
+        BASE_DIR / "data" / "secrets" / "psi-sa.json",
+    ),
+    # Strategies to capture per URL. Each strategy = 1 PSI call. Default
+    # to both so the audit can flag mobile-only regressions.
+    "strategies": tuple(
+        s.strip().lower()
+        for s in os.environ.get("PSI_STRATEGIES", "mobile,desktop").split(",")
+        if s.strip()
+    ),
+    # PSI mobile calls finish in 1-3s but desktop can take 30-40s. Set
+    # generous timeout — these calls are slow, not flaky.
+    "request_timeout_sec": int(os.environ.get("PSI_REQUEST_TIMEOUT_SEC", "120")),
+    # Field/CrUX data shifts slowly (28-day rolling window) so 7-day
+    # cache is safe. Lab data also reasonably stable for content audit.
+    "cache_ttl_seconds": int(
+        os.environ.get("PSI_CACHE_TTL", str(7 * 24 * 3600))
+    ),
+    # Cap per refresh — PSI quota is 25k/day; this prevents a runaway
+    # crawl from burning the whole budget. Set to 0 for unlimited.
+    "max_urls_per_run": int(os.environ.get("PSI_MAX_URLS_PER_RUN", "100")),
+    "ssl_verify": os.environ.get("PSI_SSL_VERIFY", "").strip(),
+}
+
+# ─────────────────────────────────────────────────────────────
 # Logging Configuration
 # ─────────────────────────────────────────────────────────────
 LOGGING = {

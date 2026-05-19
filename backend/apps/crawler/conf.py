@@ -138,6 +138,19 @@ class CrawlerSettings:
         default_factory=lambda: _env_int("CONSOLE_CAPTURE_LIMIT", 200)
     )
 
+    # ── Phase-3 PSI / Core Web Vitals capture ────────────────────────
+    # After the console phase, hit Google's PSI API on a subset of www
+    # HTTP-200 pages to capture LCP / CLS / INP / FCP / TBT / TTFB
+    # (lab + CrUX field). Slow: ~1-3s/URL on mobile, 30-40s on desktop.
+    # With limit=100 + both strategies expect ~10-40 min after the
+    # console phase. Skip with CRAWLER_CAPTURE_PSI_AFTER_CRAWL=false.
+    capture_psi_after_crawl: bool = field(
+        default_factory=lambda: _env_bool("CAPTURE_PSI_AFTER_CRAWL", True)
+    )
+    psi_capture_limit: int = field(
+        default_factory=lambda: _env_int("PSI_CAPTURE_LIMIT", 100)
+    )
+
     # ── Data dirs ────────────────────────────────────────────
     data_dir: str = field(default_factory=lambda: _env_str("DATA_DIR", ""))
     reports_dir: str = field(default_factory=lambda: _env_str("REPORTS_DIR", ""))

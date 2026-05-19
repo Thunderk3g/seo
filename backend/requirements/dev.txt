@@ -1,3 +1,12 @@
 -r base.txt
 pytest
 pytest-django
+
+# Type stubs (IDE-only, no runtime impact). django-stubs adds the
+# .pyi files for django.conf / django.db / django.http etc. so
+# Pyrefly / Pyright / Pylance stop emitting "Cannot find type stubs"
+# on every Django import. types-requests covers requests.RequestException
+# and the rest of the requests surface.
+django-stubs
+types-requests
+types-beautifulsoup4

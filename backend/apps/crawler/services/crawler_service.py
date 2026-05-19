@@ -4,11 +4,48 @@ from __future__ import annotations
 import threading
 
 from .. import log_bus
+from ..conf import settings as crawler_settings
 from ..engine.engine import run_crawl
 from ..logger import get_logger
 from ..state import STATE
 
 log = get_logger(__name__)
+
+
+# Files wiped on every Start click so clicking Start always means "crawl
+# from scratch". Caches (semrush, psi, competitor HTML) are deliberately
+# NOT in this list — they're keyed by URL and survive across runs to
+# avoid re-billing third-party APIs for unchanged data.
+_RUN_OUTPUTS = [
+    "crawl_state.json",
+    "crawl_results.csv",
+    "crawl_errors.csv",
+    "crawl_404_errors.csv",
+    "crawl_errors_httperror.csv",
+    "crawl_console_log.csv",
+    "crawl_discovered.csv",
+]
+
+
+def _wipe_for_fresh_crawl() -> int:
+    """Delete the previous run's outputs so the next crawl writes fresh.
+
+    The append-only streaming CSV design means a click on Start would
+    otherwise no-op (resume sees everything as already-visited). Wiping
+    state + outputs guarantees each Start click produces a full crawl
+    with overwritten CSV rows.
+    """
+    d = crawler_settings.data_path
+    removed = 0
+    for fname in _RUN_OUTPUTS:
+        p = d / fname
+        if p.exists():
+            try:
+                p.unlink()
+                removed += 1
+            except OSError as exc:
+                log.warning("wipe: cannot delete %s: %s", p, exc)
+    return removed
 
 
 def start() -> tuple[bool, str]:
@@ -28,6 +65,12 @@ def start() -> tuple[bool, str]:
             STATE.is_running = False
         else:
             return False, "A crawl is already running."
+    # Fresh-crawl semantics: every click on Start wipes the previous
+    # run's state + CSVs so the new run discovers and writes from zero
+    # instead of resuming an already-complete state (which would be a
+    # silent no-op on the visible CSV).
+    removed = _wipe_for_fresh_crawl()
+    log.info("start: wiped %d previous-run output file(s)", removed)
     STATE.reset()
     log_bus.reset()
     t = threading.Thread(target=run_crawl, daemon=True, name="crawl-engine")

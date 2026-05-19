@@ -97,6 +97,15 @@ class CompetitorPage:
     meta_robots: str = ""              # content of <meta name="robots">
     body_text: str = ""                # Phase 2A — for content-keyword-fit scoring
 
+    # ── PSI / Core Web Vitals (populated by enrich_with_cwv) ────────
+    # Captured separately because PSI calls cost 1-40s each and would
+    # serialise the page-fetch loop. None = not yet measured. Mobile +
+    # desktop are stored side-by-side; field metrics are CrUX p75
+    # real-user numbers (28-day window) and only present for URLs with
+    # enough Chrome traffic.
+    cwv_mobile: dict[str, Any] = field(default_factory=dict)
+    cwv_desktop: dict[str, Any] = field(default_factory=dict)
+
 
 class CompetitorCrawler:
     """Synchronous fetcher. Caller passes a list of URLs; we group by
@@ -150,6 +159,85 @@ class CompetitorCrawler:
         # Preserve input order in the result list; sequential fetching
         # is fine at this scale (10 competitors × 50 URLs = 500 max).
         return [self.fetch_one(u) for u in urls]
+
+    def enrich_with_cwv(
+        self,
+        pages: list[CompetitorPage],
+        *,
+        strategies: tuple[str, ...] | None = None,
+        max_urls: int | None = None,
+    ) -> list[CompetitorPage]:
+        """Attach Core Web Vitals (PSI) to each successfully-fetched
+        page. Mutates and returns the same list.
+
+        Kept as a SEPARATE pass from HTML fetching because PSI is slow
+        (mobile 1-3s, desktop 30-40s per call) — running it inline
+        would multiply crawl time 10-100x. Call this after the HTML
+        sweep when you actually need CWV in the audit, on a capped
+        subset of pages (top traffic, matched-pair candidates, etc.).
+
+        Silently degrades if PSI is disabled or the SA file is
+        missing — pages keep their empty ``cwv_mobile`` / ``cwv_desktop``
+        dicts and downstream consumers treat that as "CWV unavailable".
+        """
+        from .cwv_psi import AdapterDisabledError, PSIAdapter
+
+        try:
+            psi = PSIAdapter()
+        except AdapterDisabledError as exc:
+            logger.info("psi enrichment skipped: %s", exc)
+            return pages
+
+        cfg = getattr(settings, "PSI", {}) or {}
+        if strategies is None:
+            strategies = tuple(cfg.get("strategies") or ("mobile", "desktop"))
+        if max_urls is None:
+            # 0 means unlimited; treat None and missing key the same.
+            limit = int(cfg.get("max_urls_per_run", 0))
+            max_urls = limit if limit > 0 else len(pages)
+
+        # Only enrich pages we actually fetched OK — running PSI on a
+        # 404 burns quota for no signal.
+        candidates = [p for p in pages if p.status_code == 200][:max_urls]
+
+        for page in candidates:
+            for strategy in strategies:
+                record = psi.fetch(page.url, strategy=strategy)
+                bucket = "cwv_mobile" if strategy == "mobile" else "cwv_desktop"
+                if record.error:
+                    setattr(
+                        page,
+                        bucket,
+                        {"error": record.error, "fetched_at": record.fetched_at},
+                    )
+                    continue
+                setattr(
+                    page,
+                    bucket,
+                    {
+                        "performance_score": record.performance_score,
+                        "lab_lcp_ms": record.lab_lcp_ms,
+                        "lab_cls": record.lab_cls,
+                        "lab_fcp_ms": record.lab_fcp_ms,
+                        "lab_tbt_ms": record.lab_tbt_ms,
+                        "lab_si_ms": record.lab_si_ms,
+                        "lab_ttfb_ms": record.lab_ttfb_ms,
+                        "field_lcp_ms": record.field_lcp_ms,
+                        "field_lcp_category": record.field_lcp_category,
+                        "field_cls": record.field_cls,
+                        "field_cls_category": record.field_cls_category,
+                        "field_inp_ms": record.field_inp_ms,
+                        "field_inp_category": record.field_inp_category,
+                        "field_fcp_ms": record.field_fcp_ms,
+                        "field_fcp_category": record.field_fcp_category,
+                        "field_ttfb_ms": record.field_ttfb_ms,
+                        "field_ttfb_category": record.field_ttfb_category,
+                        "has_field_data": record.has_field_data,
+                        "cached": record.cached,
+                        "fetched_at": record.fetched_at,
+                    },
+                )
+        return pages
 
     def fetch_one(self, url: str) -> CompetitorPage:
         cached = self._cache_read(url)
