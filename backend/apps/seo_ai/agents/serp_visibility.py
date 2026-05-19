@@ -63,6 +63,10 @@ class SERPVisibilityAgent(Agent):
             return []
 
         engines: tuple[str, ...] = tuple(cfg.get("engines") or ("google",))
+        devices: tuple[str, ...] = tuple(cfg.get("devices") or ("desktop",))
+        primary_device = (
+            (cfg.get("primary_device") or "desktop").lower()
+        )
         max_q = max(1, int(cfg.get("max_queries", 20)))
         queries = load_queries()[:max_q]
         if not queries:
@@ -70,14 +74,19 @@ class SERPVisibilityAgent(Agent):
 
         results: list[SerpResult] = []
         for engine in engines:
-            for q in queries:
-                results.append(adapter.search(q, engine=engine))
+            for device in devices:
+                for q in queries:
+                    results.append(
+                        adapter.search(q, engine=engine, device=device)
+                    )
 
         ok = [r for r in results if not r.error]
         self.log_system_event(
             "serp_visibility.probes_complete",
             {
                 "engines": list(engines),
+                "devices": list(devices),
+                "primary_device": primary_device,
                 "queries": len(queries),
                 "total": len(results),
                 "ok": len(ok),
@@ -85,7 +94,13 @@ class SERPVisibilityAgent(Agent):
                 "cached": sum(1 for r in results if r.cached),
             },
         )
-        return self._build_findings(focus=_bare(domain), results=ok, engines=engines)
+        # Findings are built only off the primary device so the rate
+        # math (we_in_top10 / queries) stays comparable to single-device
+        # baselines. Mobile rows are still persisted upstream for the UI.
+        primary_ok = [r for r in ok if r.device == primary_device] or ok
+        return self._build_findings(
+            focus=_bare(domain), results=primary_ok, engines=engines
+        )
 
     def valid_evidence_keys(self) -> set[str]:
         return {"serp_visibility:detection_only"}

@@ -475,6 +475,7 @@ def _serialize_serp_result(r: GapSerpResult) -> dict:
         "id": str(r.id),
         "query_id": str(r.query_id),
         "engine": r.engine,
+        "device": r.device,
         "organic": r.organic,
         "featured_snippet": r.featured_snippet,
         "ai_overview": r.ai_overview,

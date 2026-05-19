@@ -556,6 +556,7 @@ export interface GapSerpResultRow {
   id: string;
   query_id: string;
   engine: string;
+  device: string;
   organic: GapSerpOrganicRow[];
   featured_snippet?: {
     title?: string;

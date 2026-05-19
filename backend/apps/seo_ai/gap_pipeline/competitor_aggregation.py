@@ -24,6 +24,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from django.conf import settings
+
 from ..models import (
     GapCompetitor,
     GapLLMResult,
@@ -119,7 +121,16 @@ def execute(*, run: GapPipelineRun, domain: str, top_n: int = 10) -> dict[str, A
             queries_for[n_host].add(str(r.query_id))
 
     # ── SERP pass ────────────────────────────────────────────────────
-    for r in GapSerpResult.objects.filter(run=run).only(
+    # Filter to the primary device so multi-device runs (desktop+mobile)
+    # don't double-count the same competitor for the same query. The
+    # other-device rows remain queryable for the UI.
+    primary_device = (
+        (getattr(settings, "SERP_API", {}) or {}).get("primary_device")
+        or "desktop"
+    )
+    for r in GapSerpResult.objects.filter(
+        run=run, device=primary_device
+    ).only(
         "organic", "featured_snippet", "ai_overview", "query_id"
     ).iterator():
         for row in (r.organic or [])[:10]:
