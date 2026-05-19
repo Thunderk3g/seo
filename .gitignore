@@ -15,6 +15,7 @@ htmlcov/
 .venv/
 venv/
 env/
+*test.ipynb
 
 # ── Django ────────────────────────────────────────────
 backend/db.sqlite3

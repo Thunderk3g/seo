@@ -153,28 +153,22 @@ class SerpAPIAdapter:
             "q": query,
             "api_key": self._key,
         }
-        # Google + Bing accept ``gl`` and ``hl``; DuckDuckGo doesn't —
-        # but SerpAPI ignores unknown params rather than 400-ing, so we
-        # set them uniformly.
-        params["gl"] = self._country
-        params["hl"] = self._language
-        # Device split: Google honours `device=desktop|mobile|tablet`.
-        # Bing has no documented device knob on SerpAPI (responses are
-        # desktop-shaped); DuckDuckGo likewise. We still tag the result
-        # with the requested device so callers can filter consistently,
-        # but the upstream payload may be identical across devices for
-        # those two engines.
+        # Each engine has its own geo-targeting params. gl/hl is
+        # Google-only; Bing ignores it (defaults to US market) and
+        # DuckDuckGo uses kl. Without engine-specific params Bing
+        # returns US results regardless of self._country.
+        country_upper = self._country.upper()
         if engine == "google":
+            params["gl"] = self._country
+            params["hl"] = self._language
             params["device"] = device
-        # Ask each engine for the top N organic results. SerpAPI bills
-        # one search per call regardless of `num`, so this is a free
-        # widening of competitor coverage.
-        if engine == "google":
             params["num"] = self._results_per_query
         elif engine == "bing":
+            params["cc"] = country_upper
+            params["mkt"] = f"{self._language}-{country_upper}"
             params["count"] = self._results_per_query
-        # DuckDuckGo returns a fixed-size page on SerpAPI; no knob to
-        # ask for more results per call.
+        elif engine == "duckduckgo":
+            params["kl"] = f"{self._country}-{self._language}"
         try:
             resp = requests.get(
                 "https://serpapi.com/search.json",
@@ -293,8 +287,10 @@ class SerpAPIAdapter:
         # changing either knob (e.g. 10 → 25 results, or desktop ↔ mobile)
         # doesn't keep serving stale or cross-device entries. Older entries
         # age out naturally per TTL.
+        # v2: per-engine geo params (cc/mkt for Bing, kl for DDG) —
+        # invalidates v1 cache entries that hit US-defaulted Bing.
         h = hashlib.sha1(
-            f"{engine}|{device}|{self._country}|{self._language}"
+            f"v2|{engine}|{device}|{self._country}|{self._language}"
             f"|n={self._results_per_query}|{query}".encode("utf-8")
         ).hexdigest()
         return self._cache_dir / f"{h}.json"
