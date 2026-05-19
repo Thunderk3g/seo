@@ -76,6 +76,10 @@ export default function DeepCrawlPanel({
               <th className="num">Avg words</th>
               <th className="num">Schema %</th>
               <th className="num">Avg response</th>
+              <th className="num">PageSpeed</th>
+              <th className="num">LCP</th>
+              <th className="num">CLS</th>
+              <th className="num">INP</th>
               <th className="num">AI citability</th>
               <th>Page types</th>
               <th>Signals</th>
@@ -105,6 +109,23 @@ export default function DeepCrawlPanel({
                 <td className="num">{fmt(c.profile?.avg_word_count)}</td>
                 <td className="num">{fmt(c.profile?.schema_pct, '%')}</td>
                 <td className="num">{fmt(c.profile?.avg_response_ms, ' ms')}</td>
+                <td className="num" title="Mobile Lighthouse perf score (0-100). PSI-derived.">
+                  {fmt(c.profile?.avg_pagespeed_score)}
+                </td>
+                <td className="num" title="Median mobile Largest Contentful Paint (lower = better). CrUX p75 when available, else lab.">
+                  {fmt(c.profile?.median_lcp_ms, ' ms')}
+                </td>
+                <td
+                  className="num"
+                  title="Median mobile Cumulative Layout Shift (lower = better)."
+                >
+                  {c.profile?.median_cls !== undefined && c.profile?.median_cls !== null
+                    ? c.profile.median_cls.toFixed(3)
+                    : '—'}
+                </td>
+                <td className="num" title="Median mobile Interaction to Next Paint (lower = better). Real-user only — blank when no CrUX data.">
+                  {fmt(c.profile?.median_inp_ms, ' ms')}
+                </td>
                 <td className="num">
                   {fmt(c.profile?.ai_citability_score)}
                 </td>
