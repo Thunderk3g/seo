@@ -226,6 +226,63 @@ def _page_type_row(us: dict, comps: list[dict]) -> _Row | None:
     )
 
 
+def _cwv_row(us: dict, comps: list[dict]) -> _Row | None:
+    """Flag when rival pages are materially faster than ours on
+    Core Web Vitals — mobile LCP is the headline metric Google uses for
+    ranking. Lower numbers are better, so we fire when our_lcp is
+    meaningfully *higher* than the rival median. Requires both sides
+    to have at least one CWV-scored page; silently no-ops otherwise."""
+    our_lcp = float(us.get("median_lcp_ms") or 0)
+    their_lcps = [
+        float(p.get("median_lcp_ms") or 0)
+        for p in comps
+        if p and (p.get("median_lcp_ms") or 0) > 0
+    ]
+    if not their_lcps or our_lcp == 0:
+        return None
+    their_med = _median(their_lcps)
+    if our_lcp <= their_med:
+        return None  # We're faster — no gap to flag.
+    delta = our_lcp - their_med
+
+    # Google's CWV thresholds: ≤2500 "good", 2501-4000 "needs improvement",
+    # >4000 "poor". A 1-second slip into the next bucket is meaningful.
+    severity = (
+        "critical"
+        if our_lcp > 4000 or delta >= 1500
+        else "warning" if delta >= 600 else "notice"
+    )
+
+    our_score = float(us.get("avg_pagespeed_score") or 0)
+    their_scores = [
+        float(p.get("avg_pagespeed_score") or 0)
+        for p in comps
+        if p and (p.get("avg_pagespeed_score") or 0) > 0
+    ]
+    their_score_med = _median(their_scores) if their_scores else 0
+
+    return _Row(
+        dimension="core_web_vitals",
+        severity=severity,
+        headline=(
+            f"Median mobile LCP is {int(delta)} ms slower than the rival "
+            f"median ({int(our_lcp)} ms vs {int(their_med)} ms)"
+        ),
+        our_value={
+            "median_lcp_ms": int(our_lcp),
+            "avg_pagespeed_score": round(our_score, 1),
+        },
+        competitor_median={
+            "median_lcp_ms": int(their_med),
+            "avg_pagespeed_score": round(their_score_med, 1),
+        },
+        delta={"abs_ms": int(delta)},
+        evidence={
+            "rival_lcps_ms": [int(v) for v in sorted(their_lcps)[:10]],
+        },
+    )
+
+
 def _machine_readable_row(us: dict, comps: list[dict]) -> _Row | None:
     rivals_with_llms = sum(1 for p in comps if (p or {}).get("has_llms_txt"))
     rivals_with_pricing_md = sum(1 for p in comps if (p or {}).get("has_pricing_md"))
@@ -350,6 +407,7 @@ _PROFILE_GAP_BUILDERS = [
     _schema_coverage_row,
     _h1_coverage_row,
     _response_time_row,
+    _cwv_row,
     _page_type_row,
     _machine_readable_row,
     _ai_citability_row,

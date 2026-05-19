@@ -604,12 +604,24 @@ export interface GapCrawlProfile {
   has_llms_txt?: boolean;
   has_pricing_md?: boolean;
   ai_citability_score?: number;
+  // PSI Core Web Vitals — mobile strategy, real-user p75 from CrUX
+  // when available, else Lighthouse lab. Populated only for the top
+  // _CWV_PAGES_PER_COMPETITOR pages per domain.
+  cwv_pages_count?: number;
+  avg_pagespeed_score?: number;
+  median_lcp_ms?: number;
+  median_cls?: number;
+  median_inp_ms?: number;
   sample_pages?: {
     url: string;
     title: string;
     word_count: number;
     has_schema: boolean;
     page_type: string;
+    pagespeed_score?: number | null;
+    lcp_ms?: number | null;
+    cls?: number | null;
+    inp_ms?: number | null;
   }[];
 }
 

@@ -35,7 +35,18 @@ frontend both read it:
       "has_llms_txt": bool,
       "has_pricing_md": bool,
       "ai_citability_score": float (0-100),
-      "sample_pages": [{"url", "title", "word_count", "has_schema"}, ...]
+      # CWV — mobile strategy, real-user p75 from CrUX when available,
+      # else Lighthouse lab. cwv_pages_count tells you how many of the
+      # sampled pages actually got PSI-scored (capped per competitor).
+      "cwv_pages_count": int,
+      "avg_pagespeed_score": float (0-100),
+      "median_lcp_ms": int,
+      "median_cls": float,
+      "median_inp_ms": int,        # 0 if no CrUX field data
+      "sample_pages": [
+        {"url", "title", "word_count", "has_schema", "page_type",
+         "pagespeed_score", "lcp_ms", "cls", "inp_ms"}, ...
+      ]
     }
 """
 from __future__ import annotations
@@ -58,6 +69,11 @@ logger = logging.getLogger("seo.ai.gap_pipeline.deep_crawl")
 
 
 _DEFAULT_PAGES_PER_DOMAIN = 25
+# Top N pages per competitor that get PSI CWV enrichment. Smaller than
+# the sample size so the slow PSI calls (mobile 1-3s, desktop 30-40s)
+# don't dominate the gap-pipeline runtime, and quota stays well under
+# the 25k/day PSI budget.
+_CWV_PAGES_PER_COMPETITOR = 10
 
 
 # Page-type heuristics. URL-token first (cheap + reliable), then HTML
@@ -191,6 +207,33 @@ def _build_profile(
         else 0.0
     )
 
+    # CWV aggregates — pull mobile metrics off each page's cwv_mobile dict.
+    # Only pages we actually enriched (top _CWV_PAGES_PER_COMPETITOR) have
+    # non-empty CWV; the rest return None for each field, which we filter
+    # out before computing medians.
+    cwv_pages = [p for p in ok_pages if (p.cwv_mobile or {}).get("performance_score") is not None]
+    perf_scores = [
+        float(p.cwv_mobile["performance_score"]) * 100
+        for p in cwv_pages
+        if isinstance(p.cwv_mobile.get("performance_score"), (int, float))
+    ]
+    lcps = [
+        int(p.cwv_mobile.get("field_lcp_ms") or p.cwv_mobile.get("lab_lcp_ms"))
+        for p in cwv_pages
+        if (p.cwv_mobile.get("field_lcp_ms") or p.cwv_mobile.get("lab_lcp_ms"))
+    ]
+    clss = [
+        float(p.cwv_mobile.get("field_cls") if p.cwv_mobile.get("field_cls") is not None
+              else p.cwv_mobile.get("lab_cls"))
+        for p in cwv_pages
+        if (p.cwv_mobile.get("field_cls") is not None or p.cwv_mobile.get("lab_cls") is not None)
+    ]
+    inps = [
+        int(p.cwv_mobile["field_inp_ms"])
+        for p in cwv_pages
+        if isinstance(p.cwv_mobile.get("field_inp_ms"), (int, float))
+    ]
+
     sample_pages = [
         {
             "url": p.url,
@@ -198,6 +241,22 @@ def _build_profile(
             "word_count": p.word_count,
             "has_schema": p.has_schema_org,
             "page_type": _classify_page(p.url, p),
+            # Per-page CWV alongside the structural metrics so the
+            # frontend can show "this page: LCP 2.4s, score 65" without
+            # an extra DB hit.
+            "pagespeed_score": (
+                int(round((p.cwv_mobile or {}).get("performance_score", 0) * 100))
+                if isinstance((p.cwv_mobile or {}).get("performance_score"), (int, float))
+                else None
+            ),
+            "lcp_ms": (p.cwv_mobile or {}).get("field_lcp_ms")
+                      or (p.cwv_mobile or {}).get("lab_lcp_ms"),
+            "cls": (
+                (p.cwv_mobile or {}).get("field_cls")
+                if (p.cwv_mobile or {}).get("field_cls") is not None
+                else (p.cwv_mobile or {}).get("lab_cls")
+            ),
+            "inp_ms": (p.cwv_mobile or {}).get("field_inp_ms"),
         }
         for p in ok_pages[:10]
     ]
@@ -217,6 +276,12 @@ def _build_profile(
         "has_llms_txt": commercial_signals.get("llms_txt", False),
         "has_pricing_md": commercial_signals.get("pricing_md", False),
         "ai_citability_score": _safe_mean(citability_scores),
+        # CWV — mobile strategy, real-user CrUX p75 when available, else lab.
+        "cwv_pages_count": len(cwv_pages),
+        "avg_pagespeed_score": _safe_mean(perf_scores),
+        "median_lcp_ms": _safe_median(lcps),
+        "median_cls": round(statistics.median(clss), 3) if clss else 0.0,
+        "median_inp_ms": _safe_median(inps),
         "sample_pages": sample_pages,
     }
 
@@ -257,6 +322,17 @@ def _crawl_domain(
         sample_urls = [f"https://{bare}/"]
 
     pages = crawler.fetch_pages(sample_urls)
+
+    # Phase 2C: enrich the top OK pages with PSI Core Web Vitals so the
+    # competitor profile carries comparable speed numbers. Capped at 10
+    # to bound PSI quota usage — 10 competitors × 10 pages × 2 strategies
+    # = 200 calls per gap run, well under the 25k/day budget. The
+    # enrichment is silently skipped when PSI is disabled (missing SA
+    # file, PSI_ENABLED=false) so the rest of the profile still builds.
+    try:
+        crawler.enrich_with_cwv(pages, max_urls=_CWV_PAGES_PER_COMPETITOR)
+    except Exception as exc:  # noqa: BLE001 - never block profile build
+        logger.info("competitor cwv enrichment failed for %s: %s", bare, exc)
 
     commercial_signals = {
         "pricing": _head_probe(f"https://{bare}/pricing", timeout=timeout),
