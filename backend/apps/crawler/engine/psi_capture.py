@@ -1,0 +1,331 @@
+"""Core Web Vitals capture via PageSpeed Insights.
+
+Companion to ``browser_console.py``: where that module captures live
+JS errors via Playwright, this one captures LCP / CLS / INP / FCP /
+TBT / TTFB via Google's PSI API. Returns both lab (Lighthouse) and
+field (CrUX p75 real-user) numbers.
+
+We do NOT write a sidecar CSV — instead, PSI results are merged back
+into ``crawl_results.csv`` as extra columns on the existing rows.
+This keeps the operator looking at one file: each URL row in the main
+results table gains ``pagespeed_score``, ``lcp_ms``, ``cls``, and
+``inp_ms`` populated for the PSI subset (mobile strategy, top N
+HTTP-200 www pages, capped by ``PSI_MAX_URLS_PER_RUN``).
+
+Field metrics are preferred when CrUX has data for the URL (real-user
+p75 across 28 days); lab metrics are the fallback for low-traffic
+pages with no field data.
+
+PSI is slow — mobile 1-3 s/call, desktop 30-40 s/call. With mobile-only
+and 100 URLs the worst case is ~5 min. The free quota is 25 k/day so
+even a 100-URL run is < 1 % of budget.
+
+Disabled silently when PSI_ENABLED=false, the service-account JSON is
+missing, or ``crawl_results.csv`` has no eligible rows.
+
+Run via:
+
+    python manage.py capture_psi [--limit N] [--strategies mobile,desktop]
+
+or automatically at the end of every crawl via the engine hook.
+"""
+from __future__ import annotations
+
+import csv
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Iterable
+
+from ..conf import settings as crawler_settings
+from ..logger import get_logger
+from ..storage import csv_writer
+
+log = get_logger(__name__)
+
+
+@dataclass
+class PSICaptureState:
+    is_running: bool = False
+    should_stop: bool = False
+    total: int = 0
+    processed: int = 0
+    failed: int = 0
+    rows_written: int = 0
+    started_at: float | None = None
+    finished_at: float | None = None
+    last_url: str = ""
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def as_dict(self) -> dict:
+        with self.lock:
+            return {
+                "is_running": self.is_running,
+                "should_stop": self.should_stop,
+                "total": self.total,
+                "processed": self.processed,
+                "failed": self.failed,
+                "rows_written": self.rows_written,
+                "last_url": self.last_url,
+                "started_at": self.started_at,
+                "finished_at": self.finished_at,
+            }
+
+    def reset(self) -> None:
+        with self.lock:
+            self.is_running = False
+            self.should_stop = False
+            self.total = 0
+            self.processed = 0
+            self.failed = 0
+            self.rows_written = 0
+            self.started_at = None
+            self.finished_at = None
+            self.last_url = ""
+
+
+CAPTURE_STATE = PSICaptureState()
+
+
+# ── URL selection ──────────────────────────────────────────────────────────
+
+
+def select_target_urls(
+    *,
+    limit: int = 100,
+    subdomain: str = "www",
+    only_status: str = "200",
+) -> list[str]:
+    """Read crawl_results.csv and pick which URLs to score.
+
+    Same shape as ``browser_console.select_target_urls``. Defaults to
+    the top ``limit`` www HTTP-200 URLs. PDFs / images / non-HTML rows
+    are skipped — PSI only makes sense on rendered HTML.
+    """
+    path = crawler_settings.data_path / "crawl_results.csv"
+    if not path.exists():
+        return []
+    out: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if subdomain and row.get("subdomain") != subdomain:
+                    continue
+                if only_status and (row.get("status_code") or "") != only_status:
+                    continue
+                url = (row.get("url") or "").strip()
+                if not url:
+                    continue
+                ctype = (row.get("content_type") or "").lower()
+                if ctype and "html" not in ctype and "xml" not in ctype:
+                    continue
+                out.append(url)
+                if limit and len(out) >= limit:
+                    break
+    except OSError as exc:
+        log.warning("psi_capture: cannot read %s: %s", path, exc)
+    return out
+
+
+# ── Capture loop ───────────────────────────────────────────────────────────
+
+
+def capture(
+    urls: Iterable[str],
+    *,
+    strategies: tuple[str, ...] | None = None,
+) -> dict:
+    """Run PSI sequentially over ``urls``. Captured metrics are merged
+    into ``crawl_results.csv`` as extra columns at the end of the run.
+
+    Returns a summary dict matching ``browser_console.capture``'s shape.
+    """
+    try:
+        from apps.seo_ai.adapters.cwv_psi import (
+            AdapterDisabledError,
+            PSIAdapter,
+        )
+    except ImportError as exc:
+        return {"ok": False, "error": f"cwv_psi import: {exc}"}
+
+    try:
+        psi = PSIAdapter()
+    except AdapterDisabledError as exc:
+        log.info("psi_capture: skipped (%s)", exc)
+        return {"ok": False, "error": str(exc)}
+
+    if strategies is None:
+        from django.conf import settings as dj_settings
+        strategies = tuple(
+            (getattr(dj_settings, "PSI", {}) or {}).get("strategies")
+            or ("mobile", "desktop")
+        )
+
+    # We surface mobile metrics on the main results row (mobile is what
+    # Google cares about for ranking). Desktop is still captured and
+    # cached on disk for the audit pipeline, just not merged into
+    # crawl_results.csv — no room for an extra 4 columns per strategy
+    # without doubling the schema.
+    primary = "mobile" if "mobile" in strategies else strategies[0]
+
+    url_list = list(urls)
+    CAPTURE_STATE.reset()
+    with CAPTURE_STATE.lock:
+        CAPTURE_STATE.is_running = True
+        CAPTURE_STATE.total = len(url_list) * len(strategies)
+        CAPTURE_STATE.started_at = time.time()
+
+    # url -> {pagespeed_score, lcp_ms, cls, inp_ms}. Only the primary
+    # strategy's numbers go here; non-primary calls still hit the API
+    # (so their disk cache populates for the audit pipeline) but their
+    # values aren't merged into the row.
+    psi_data: dict[str, dict] = {}
+    failed = 0
+
+    try:
+        for i, url in enumerate(url_list):
+            if CAPTURE_STATE.should_stop:
+                log.info("psi_capture: stop requested at %s/%s", i, len(url_list))
+                break
+            for strategy in strategies:
+                try:
+                    record = psi.fetch(url, strategy=strategy)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("psi_capture: %s/%s crashed: %s", strategy, url, exc)
+                    failed += 1
+                    record = None
+                if record is None or record.error:
+                    if record and record.error:
+                        failed += 1
+                    if strategy == primary:
+                        psi_data[url] = {
+                            "pagespeed_score": "",
+                            "lcp_ms": "",
+                            "cls": "",
+                            "inp_ms": "",
+                        }
+                elif strategy == primary:
+                    psi_data[url] = _row_from_record(record)
+                with CAPTURE_STATE.lock:
+                    CAPTURE_STATE.processed += 1
+                    CAPTURE_STATE.failed = failed
+                    CAPTURE_STATE.last_url = url
+    finally:
+        with CAPTURE_STATE.lock:
+            CAPTURE_STATE.is_running = False
+            CAPTURE_STATE.finished_at = time.time()
+
+    rows_merged = 0
+    if psi_data:
+        try:
+            rows_merged = _merge_into_results_csv(psi_data)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("psi_capture: results-csv merge failed: %s", exc)
+            return {
+                "ok": False,
+                "error": f"merge failed: {exc}",
+                "urls_inspected": len(url_list),
+                "failed": failed,
+                "rows_written": 0,
+            }
+
+    with CAPTURE_STATE.lock:
+        CAPTURE_STATE.rows_written = rows_merged
+
+    return {
+        "ok": True,
+        "urls_inspected": len(url_list),
+        "failed": failed,
+        "rows_written": rows_merged,
+        "strategies": list(strategies),
+        "primary_strategy": primary,
+    }
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _row_from_record(record) -> dict:
+    """Pick the four numbers we surface on the main results row.
+
+    Field (CrUX p75) is preferred when present — it reflects what real
+    Chrome users see. Lab is the fallback for low-traffic URLs.
+    ``pagespeed_score`` is rescaled from PSI's 0-1 float to a 0-100
+    integer because that's how Lighthouse historically presents it and
+    it reads cleaner in a spreadsheet.
+    """
+    score = record.performance_score
+    if isinstance(score, (int, float)):
+        score = round(score * 100)
+    else:
+        score = ""
+
+    lcp = record.field_lcp_ms if record.has_field_data else record.lab_lcp_ms
+    cls = record.field_cls if record.has_field_data and record.field_cls is not None else record.lab_cls
+    # INP is field-only — Lighthouse lab doesn't simulate user input.
+    inp = record.field_inp_ms
+
+    return {
+        "pagespeed_score": score if score != "" else "",
+        "lcp_ms": lcp if lcp is not None else "",
+        "cls": round(cls, 3) if isinstance(cls, (int, float)) else "",
+        "inp_ms": inp if inp is not None else "",
+    }
+
+
+def _merge_into_results_csv(psi_data: dict[str, dict]) -> int:
+    """Rewrite crawl_results.csv with PSI values filled in on rows whose
+    URL is in ``psi_data``. Other rows are preserved verbatim. Done as
+    a read-then-write-temp-then-rename so a crash mid-rewrite can't
+    corrupt the file.
+
+    IMPORTANT: callers must ensure no writer is appending to
+    crawl_results.csv during this call. The engine's Phase 3 hook runs
+    after the crawl loop is complete, so this is safe; standalone runs
+    via ``capture_psi`` are also safe because the streams are closed.
+    """
+    path = crawler_settings.data_path / "crawl_results.csv"
+    if not path.exists():
+        log.info("psi_capture: %s missing — nothing to merge", path)
+        return 0
+
+    # Flush + close any open writer so the temp-rename is safe on
+    # Windows (where you can't replace an open file).
+    try:
+        csv_writer.flush_streams()
+        csv_writer.close_streams()
+    except Exception:  # noqa: BLE001 - safe to ignore
+        pass
+
+    psi_cols = ("pagespeed_score", "lcp_ms", "cls", "inp_ms")
+    tmp = path.with_suffix(path.suffix + ".psi.tmp")
+    merged = 0
+    with open(path, "r", encoding="utf-8", newline="") as fin:
+        reader = csv.DictReader(fin)
+        header = list(reader.fieldnames or [])
+        # If the file pre-dates the new columns, add them now.
+        for col in psi_cols:
+            if col not in header:
+                header.append(col)
+        with open(tmp, "w", encoding="utf-8", newline="") as fout:
+            writer = csv.DictWriter(fout, fieldnames=header, extrasaction="ignore")
+            writer.writeheader()
+            for row in reader:
+                url = (row.get("url") or "").strip()
+                values = psi_data.get(url)
+                if values:
+                    for col in psi_cols:
+                        row[col] = values.get(col, row.get(col, ""))
+                    merged += 1
+                else:
+                    for col in psi_cols:
+                        row.setdefault(col, "")
+                writer.writerow(row)
+    tmp.replace(path)
+    return merged
+
+
+def request_stop() -> None:
+    with CAPTURE_STATE.lock:
+        CAPTURE_STATE.should_stop = True

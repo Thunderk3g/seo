@@ -469,6 +469,56 @@ def _run_crawl_body() -> None:
                 "timestamp": datetime.now().isoformat(),
             })
 
+    # ── Phase 3: PSI / Core Web Vitals capture ──────────────────────────
+    # Hit Google's PSI API on the same www HTTP-200 subset and append
+    # one row per (url, strategy) to crawl_psi.csv. Slow (mobile ~2s,
+    # desktop ~30s) so capped at psi_capture_limit. Silently skipped if
+    # PSI_ENABLED=false or the service-account file is missing.
+    if getattr(settings, "capture_psi_after_crawl", True) and not STATE.should_stop:
+        try:
+            from . import psi_capture
+            psi_targets = psi_capture.select_target_urls(
+                limit=getattr(settings, "psi_capture_limit", 100),
+                subdomain="www",
+                only_status="200",
+            )
+            if psi_targets:
+                log_bus.post({
+                    "type": "info",
+                    "message": (
+                        f"Phase 3 — capturing Core Web Vitals for "
+                        f"{len(psi_targets)} URL(s) via PageSpeed Insights..."
+                    ),
+                    "timestamp": datetime.now().isoformat(),
+                })
+                psi_result = psi_capture.capture(psi_targets)
+                if not psi_result.get("ok"):
+                    log_bus.post({
+                        "type": "warning",
+                        "message": (
+                            "PSI capture skipped: "
+                            f"{psi_result.get('error', 'unknown reason')}"
+                        ),
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                else:
+                    log_bus.post({
+                        "type": "info",
+                        "message": (
+                            f"Phase 3 done — merged {psi_result.get('rows_written', 0)} "
+                            f"PSI rows into crawl_results.csv "
+                            f"(failed={psi_result.get('failed', 0)})"
+                        ),
+                        "timestamp": datetime.now().isoformat(),
+                    })
+        except Exception as exc:  # noqa: BLE001
+            log.warning("phase 3 psi capture failed: %s", exc)
+            log_bus.post({
+                "type": "warning",
+                "message": f"PSI capture skipped: {exc}",
+                "timestamp": datetime.now().isoformat(),
+            })
+
     # Normal completion. The outer try/finally in run_crawl() also handles
     # the close_streams / finished_at fallbacks, so it's safe if any of
     # this raises.

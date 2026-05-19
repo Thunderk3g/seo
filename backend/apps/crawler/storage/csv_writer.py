@@ -43,6 +43,12 @@ RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
     *_ENRICH_FIELDS,
+    # PSI / Core Web Vitals (mobile strategy by default). Populated by
+    # the end-of-crawl PSI phase via _merge_into_results_csv. Empty for
+    # rows that weren't in the PSI subset (skipped, non-200, capped by
+    # PSI_MAX_URLS_PER_RUN). lcp/inp are p75 field values when CrUX has
+    # data; lab values are used as a fallback.
+    "pagespeed_score", "lcp_ms", "cls", "inp_ms",
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
