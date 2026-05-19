@@ -95,6 +95,29 @@ class CrawlerSettings:
         default_factory=lambda: _env_bool("RESPECT_ROBOTS", True)
     )
 
+    # ── TLS / response-size guards ───────────────────────────
+    # ssl_verify accepts: "" / "true" → True (default certifi+truststore)
+    #                     "false"     → disable (only for corp MITM proxies)
+    #                     "/path/to/ca.pem" → custom CA bundle
+    # Mirrors SEMRUSH_SSL_VERIFY / COMPETITOR_SSL_VERIFY semantics.
+    ssl_verify: str = field(
+        default_factory=lambda: _env_str("SSL_VERIFY", "true")
+    )
+    # Hard ceiling on HTML body bytes per page. Default 5 MB — a real
+    # marketing page is <1 MB; anything over this is almost certainly
+    # a misconfigured server, a CSS-as-HTML asset, or a crawler trap.
+    # Pages exceeding the cap are recorded as status=OK but with a
+    # body_truncated error_type so they're visible in reports.
+    max_body_bytes: int = field(
+        default_factory=lambda: _env_int("MAX_BODY_BYTES", 5 * 1024 * 1024)
+    )
+    # In-memory state caps. Crawler streams to CSV anyway; the in-process
+    # lists were originally for "recent activity" UI. Past this many
+    # entries we drop the oldest. 0 = unbounded (legacy behaviour).
+    results_buffer_cap: int = field(
+        default_factory=lambda: _env_int("RESULTS_BUFFER_CAP", 2000)
+    )
+
     # ── Full-site crawl: completeness & resilience ───────────
     max_depth: int = field(default_factory=lambda: _env_int("MAX_DEPTH", 0))
     max_pages: int = field(default_factory=lambda: _env_int("MAX_PAGES", 0))

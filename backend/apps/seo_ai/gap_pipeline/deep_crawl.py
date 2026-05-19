@@ -308,17 +308,25 @@ def _crawl_domain(
     bare = re.sub(r"^www\d?\.", "", bare).split("/")[0].lower()
 
     sitemap_summary = sitemap_adapter.discover(bare)
-    # sitemap_summary.total_url_count is the *count* — to actually get
-    # URLs we re-read the cache file and pull the first N <loc> values
-    # from the visited sub-sitemaps. SitemapXMLAdapter doesn't expose
-    # URLs directly (it was built only for counting), so we re-issue a
-    # narrow request: pull the first page of the first sub-sitemap.
-    sample_urls = _sample_urls_from_sitemap(
-        sitemap_summary, bare, limit=pages_per_domain
+    # Tier 1: pull the FULL URL list (capped at _MAX_URLS_RETURNED on
+    # the adapter side, default 30k). Cheap relative to deep-crawling —
+    # 1-2 XML parses per rival, no body downloads. The full list is
+    # used for sample selection now and will feed page-pair matching
+    # for the audit agent later.
+    all_urls = sitemap_adapter.discover_urls(bare)
+    sitemap_summary.total_url_count = max(
+        sitemap_summary.total_url_count, len(all_urls)
     )
-    if not sample_urls:
-        # No sitemap → fall back to homepage only so we still capture
-        # something (and the comparison can say "they have no sitemap").
+
+    if all_urls:
+        # Deep-crawl the top-N for now. With the full list available,
+        # we could later swap in smarter sampling (page-type quota,
+        # SEMrush top_pages overlap, etc.) without changing this call.
+        sample_urls = all_urls[:pages_per_domain]
+    else:
+        # No sitemap (or all sub-sitemaps failed) — fall back to
+        # homepage only so we still capture something and downstream
+        # comparison can flag "they have no sitemap".
         sample_urls = [f"https://{bare}/"]
 
     pages = crawler.fetch_pages(sample_urls)
@@ -348,63 +356,6 @@ def _crawl_domain(
         profile=profile,
         error=sitemap_summary.error or "",
     )
-
-
-def _sample_urls_from_sitemap(
-    summary, domain: str, *, limit: int
-) -> list[str]:
-    """Pull up to ``limit`` <loc> URLs from the first sub-sitemap.
-
-    SitemapXMLAdapter was built only to *count* URLs (it doesn't keep
-    them in memory or expose them on the summary). For sampling we
-    fetch the first visited sub-sitemap directly and extract the first
-    N <loc> values. If parsing fails or no sitemap was discovered, we
-    return an empty list and the caller falls back to homepage-only.
-    """
-    import xml.etree.ElementTree as ET
-
-    sitemap_urls = list(summary.sitemap_urls or [])
-    if not sitemap_urls:
-        return []
-    user_agent = settings.COMPETITOR.get("user_agent", "")
-    out: list[str] = []
-    for sm_url in sitemap_urls[:3]:  # try first 3 sub-sitemaps if needed
-        try:
-            resp = requests.get(
-                sm_url,
-                timeout=15,
-                verify=False,
-                headers={
-                    "User-Agent": user_agent,
-                    "Accept": "application/xml, text/xml, */*",
-                },
-            )
-            if resp.status_code != 200:
-                continue
-            body = resp.content
-            # Tolerant parse — sitemap_xml.py also handles gz, but for
-            # sampling we only attempt the plain XML path. Loss case:
-            # gzipped sitemaps with no plain fallback (rare for the
-            # vendors we'd crawl in insurance/finance) yield no sample.
-            try:
-                root = ET.fromstring(body)
-            except ET.ParseError:
-                continue
-            ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-            for url_el in root.iter(f"{ns}url"):
-                loc = url_el.find(f"{ns}loc")
-                if loc is not None and loc.text:
-                    out.append(loc.text.strip())
-                    if len(out) >= limit:
-                        return out
-            if out:
-                return out
-        except requests.RequestException as exc:
-            logger.info(
-                "deep_crawl: sitemap fetch %s failed: %s", sm_url, exc
-            )
-            continue
-    return out
 
 
 def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:

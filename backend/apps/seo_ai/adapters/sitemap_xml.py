@@ -50,8 +50,15 @@ from .competitor_crawler import _resolve_competitor_ssl_verify
 logger = logging.getLogger("seo.ai.adapters.sitemap_xml")
 
 _SITEMAP_NS = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-_MAX_SUBSITEMAPS = 20
+# Bumped from 20 → 50 so big rivals (HDFC Life has ~30 sub-sitemaps,
+# Tata AIA has 25+) get full coverage. Hard cap remains so a malicious
+# sitemap-index loop can't blow up memory.
+_MAX_SUBSITEMAPS = 50
 _MAX_DEPTH = 3
+# Hard ceiling on how many URLs discover_urls() will return per domain.
+# Real rival sitemaps top out around 15k-20k. 30k gives headroom while
+# capping worst-case memory at ~6 MB of strings per call.
+_MAX_URLS_RETURNED = 30_000
 
 
 @dataclass
@@ -143,6 +150,62 @@ class SitemapXMLAdapter:
         self._cache_write(bare, summary)
         return summary
 
+    def discover_urls(
+        self, domain: str, *, limit: int | None = None
+    ) -> list[str]:
+        """Return the full URL list declared by ``domain``'s sitemap(s).
+
+        Walks every sub-sitemap up to ``_MAX_SUBSITEMAPS`` (50) and
+        collects every ``<loc>`` URL. Returns up to ``limit`` URLs
+        (default: ``_MAX_URLS_RETURNED`` = 30k). Order: sub-sitemaps
+        processed left-to-right as they appear in the index, URLs
+        within each sub-sitemap in document order.
+
+        On failure (network error, malformed XML, no sitemap at all)
+        returns an empty list — never raises. Calling code can fall
+        back to homepage-only crawling if needed.
+
+        NOT cached on its own — re-reads from the disk-cached summary
+        of sub-sitemap URLs but always re-fetches the actual <loc>
+        values. If you need cached URLs across runs, persist them in
+        the caller's data store.
+        """
+        bare = _normalise_domain(domain)
+        max_urls = limit or _MAX_URLS_RETURNED
+
+        # Reuse the same discovery flow to populate the sub-sitemap
+        # list, then read URLs out of each one. We don't piggyback on
+        # discover()'s SitemapSummary because that one only counts.
+        sitemap_candidates = self._candidates_from_robots(bare)
+        if not sitemap_candidates:
+            sitemap_candidates = [
+                f"https://{bare}/sitemap.xml",
+                f"https://{bare}/sitemap_index.xml",
+            ]
+
+        urls: list[str] = []
+        seen_sitemaps: set[str] = set()
+        # First, build the full list of leaf sitemaps (the ones with
+        # <url> entries, not <sitemap> entries). This handles nested
+        # sitemap-index documents.
+        leaf_sitemaps: list[str] = []
+        self._collect_leaf_sitemaps(
+            sitemap_candidates, leaf_sitemaps, seen_sitemaps, depth=0
+        )
+
+        # Now pull <loc> from each leaf sitemap until we hit the cap.
+        for sm_url in leaf_sitemaps:
+            if len(urls) >= max_urls:
+                break
+            for loc in self._iter_locs(sm_url):
+                if not loc:
+                    continue
+                urls.append(loc.strip())
+                if len(urls) >= max_urls:
+                    break
+
+        return urls
+
     # ── internals ────────────────────────────────────────────────────
 
     def _candidates_from_robots(self, host: str) -> list[str]:
@@ -214,6 +277,66 @@ class SitemapXMLAdapter:
         # Unknown root tag — try a defensive count of any <url>-like leaves.
         logger.info("sitemap unknown root tag %s on %s", tag, sitemap_url)
         return False
+
+    def _collect_leaf_sitemaps(
+        self,
+        candidates: list[str],
+        out: list[str],
+        seen: set[str],
+        *,
+        depth: int,
+    ) -> None:
+        """Walk sitemap-index docs recursively, accumulating leaf
+        (urlset-bearing) sitemap URLs into ``out``. Bounds via the same
+        _MAX_SUBSITEMAPS / _MAX_DEPTH guards as _walk."""
+        if depth > _MAX_DEPTH:
+            return
+        for sm_url in candidates:
+            if sm_url in seen or len(out) >= _MAX_SUBSITEMAPS:
+                return
+            seen.add(sm_url)
+            body = self._fetch_xml(sm_url)
+            if body is None:
+                continue
+            try:
+                root = ET.fromstring(body)
+            except ET.ParseError:
+                continue
+            tag = _strip_ns(root.tag)
+            if tag == "sitemapindex":
+                nested = []
+                for child in root:
+                    if _strip_ns(child.tag) != "sitemap":
+                        continue
+                    loc = child.findtext(f"{_SITEMAP_NS}loc") or child.findtext("loc")
+                    if loc:
+                        nested.append(loc.strip())
+                self._collect_leaf_sitemaps(nested, out, seen, depth=depth + 1)
+            elif tag == "urlset":
+                # Leaf — record so discover_urls() can pull <loc> entries.
+                out.append(sm_url)
+
+    def _iter_locs(self, sitemap_url: str):
+        """Yield <loc> URLs from a single leaf sitemap. Returns nothing
+        on fetch / parse failure."""
+        body = self._fetch_xml(sitemap_url)
+        if body is None:
+            return
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            return
+        if _strip_ns(root.tag) != "urlset":
+            return
+        for url_el in root.iter(f"{_SITEMAP_NS}url"):
+            loc = url_el.findtext(f"{_SITEMAP_NS}loc")
+            if loc:
+                yield loc
+        # Defensive: some sitemaps lack the namespace declaration.
+        for url_el in root.iter("url"):
+            loc = url_el.findtext("loc")
+            if loc:
+                yield loc
 
     def _fetch_xml(self, url: str) -> bytes | None:
         try:

@@ -1,6 +1,7 @@
 """Orchestrates crawl lifecycle from the API layer."""
 from __future__ import annotations
 
+import os
 import threading
 
 from .. import log_bus
@@ -73,10 +74,31 @@ def start() -> tuple[bool, str]:
     log.info("start: wiped %d previous-run output file(s)", removed)
     STATE.reset()
     log_bus.reset()
+
+    # Prefer Celery so the crawl survives WSGI worker recycles in prod.
+    # Fall back to a daemon thread when:
+    #  - The broker is unreachable (dev without Redis), or
+    #  - CRAWLER_USE_CELERY=false is set explicitly (debugging / local
+    #    runs where you want stack traces in the request shell).
+    use_celery = os.environ.get("CRAWLER_USE_CELERY", "true").lower() in (
+        "1", "true", "yes", "on",
+    )
+    if use_celery:
+        try:
+            from ..tasks import run_crawl_task
+            run_crawl_task.delay()
+            log.info("Crawl queued on Celery")
+            return True, "Crawl queued on Celery."
+        except Exception as exc:  # noqa: BLE001 — broker may be down in dev
+            log.warning(
+                "celery enqueue failed (%s) — falling back to in-process thread",
+                exc,
+            )
+
     t = threading.Thread(target=run_crawl, daemon=True, name="crawl-engine")
     t.start()
-    log.info("Crawl thread started")
-    return True, "Crawl started."
+    log.info("Crawl thread started (in-process fallback)")
+    return True, "Crawl started (in-process)."
 
 
 def _thread_alive(name: str) -> bool:

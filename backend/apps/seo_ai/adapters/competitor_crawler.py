@@ -31,8 +31,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -134,6 +138,12 @@ class CompetitorCrawler:
             if cache_ttl_seconds is not None
             else cfg["cache_ttl_seconds"]
         )
+        self.error_cache_ttl_seconds = int(
+            cfg.get("error_cache_ttl_seconds", 3600)
+        )
+        self.max_body_bytes = int(cfg.get("max_body_bytes", 5 * 1024 * 1024))
+        self.retry_attempts = max(1, int(cfg.get("retry_attempts", 3)))
+        self.fetch_concurrency = max(1, int(cfg.get("fetch_concurrency", 10)))
         self.cache_dir = (
             cache_dir
             if cache_dir
@@ -150,15 +160,61 @@ class CompetitorCrawler:
                 pass
 
         self._sessions: dict[str, requests.Session] = {}
+        self._session_lock = threading.Lock()
         self._last_fetch: dict[str, float] = {}
+        self._throttle_lock = threading.Lock()
         self._robots: dict[str, RobotFileParser | None] = {}
+        self._robots_lock = threading.Lock()
 
     # ── public API ───────────────────────────────────────────────────
 
     def fetch_pages(self, urls: list[str]) -> list[CompetitorPage]:
-        # Preserve input order in the result list; sequential fetching
-        # is fine at this scale (10 competitors × 50 URLs = 500 max).
-        return [self.fetch_one(u) for u in urls]
+        """Fetch many URLs in parallel across hosts, sequentially within
+        each host (so per-host rate limit holds). Result list preserves
+        input order regardless of completion order.
+
+        Concurrency = ``fetch_concurrency`` (default 10) capped at the
+        number of unique hosts in the batch. A 1-rival 50-URL batch
+        runs purely sequentially under the host's rate limit; a
+        10-rival 50-each batch runs all 10 hosts in parallel.
+        """
+        if not urls:
+            return []
+
+        # Group URLs by host so each worker thread owns one host's
+        # rate-limited stream of requests. Preserves input order.
+        host_groups: dict[str, list[tuple[int, str]]] = {}
+        for idx, url in enumerate(urls):
+            host = _host(url) or ""
+            host_groups.setdefault(host, []).append((idx, url))
+
+        results: list[CompetitorPage | None] = [None] * len(urls)
+        max_workers = min(self.fetch_concurrency, len(host_groups)) or 1
+
+        def _run_host(group: list[tuple[int, str]]) -> None:
+            for idx, url in group:
+                results[idx] = self.fetch_one(url)
+
+        if max_workers == 1:
+            for group in host_groups.values():
+                _run_host(group)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_run_host, g) for g in host_groups.values()]
+                for f in as_completed(futures):
+                    # Re-raise any unexpected exception so it surfaces
+                    # in logs — but fetch_one already swallows network
+                    # errors into CompetitorPage(error=...) so this
+                    # mostly catches programming bugs.
+                    f.result()
+
+        # No worker should leave a None slot, but defensively replace
+        # any remaining gaps with an error page so caller code never
+        # hits None.
+        return [
+            r if r is not None else CompetitorPage(url=urls[i], error="not fetched")
+            for i, r in enumerate(results)
+        ]
 
     def enrich_with_cwv(
         self,
@@ -250,10 +306,53 @@ class CompetitorCrawler:
 
         if not self._robots_ok(host, url):
             page = CompetitorPage(url=url, error="blocked by robots.txt")
-            self._cache_write(url, page, html="")
+            self._cache_write(url, page, html="", is_error=True)
             return page
 
-        self._throttle(host)
+        last_error = ""
+        page: CompetitorPage | None = None
+        for attempt in range(self.retry_attempts):
+            self._throttle(host)
+            page, retryable = self._fetch_once(url)
+            if not retryable or page.status_code == 200:
+                break
+            last_error = page.error
+            # Exponential backoff with jitter, capped at 30s, before
+            # the next attempt. Don't sleep after the last attempt.
+            if attempt < self.retry_attempts - 1:
+                delay = min(30.0, 1.5 * (2 ** attempt))
+                delay += random.uniform(0, delay * 0.25)
+                logger.info(
+                    "competitor retry %d/%d for %s after %.1fs (%s)",
+                    attempt + 1, self.retry_attempts, url, delay,
+                    last_error or page.status_code,
+                )
+                time.sleep(delay)
+
+        assert page is not None  # loop runs at least once
+
+        # Cache write: success → 7-day TTL via cache_ttl_seconds.
+        # Error → short TTL (error_cache_ttl_seconds, default 1h) so a
+        # transient 503 doesn't lock the URL out for a week.
+        is_error = page.status_code != 200 or bool(page.error)
+        html_body = ""
+        if page.status_code == 200 and not page.error:
+            html_body = getattr(page, "_raw_html", "") or ""
+            # Strip the transient attribute before caching so it
+            # doesn't leak into the cached meta.
+            if hasattr(page, "_raw_html"):
+                try:
+                    delattr(page, "_raw_html")
+                except AttributeError:
+                    pass
+        self._cache_write(url, page, html=html_body, is_error=is_error)
+        return page
+
+    def _fetch_once(self, url: str) -> tuple[CompetitorPage, bool]:
+        """Single HTTP attempt with stream + body-size + content-type
+        guards. Returns (page, retryable). ``retryable=True`` signals
+        the caller may try again after backoff."""
+        host = _host(url) or ""
         session = self._session_for(host)
         t0 = time.monotonic()
         try:
@@ -262,50 +361,172 @@ class CompetitorCrawler:
                 timeout=self.timeout_sec,
                 verify=self._verify,
                 allow_redirects=True,
+                stream=True,
             )
+        except requests.exceptions.Timeout as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return CompetitorPage(
+                url=url,
+                error=f"timeout: {exc}"[:200],
+                response_time_ms=elapsed_ms,
+            ), True
+        except requests.exceptions.ConnectionError as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return CompetitorPage(
+                url=url,
+                error=f"connection: {exc}"[:200],
+                response_time_ms=elapsed_ms,
+            ), True
         except requests.RequestException as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.warning("competitor fetch %s failed: %s", url, exc)
-            page = CompetitorPage(
+            return CompetitorPage(
                 url=url,
                 error=str(exc)[:200],
-                response_time_ms=int((time.monotonic() - t0) * 1000),
-            )
-            self._cache_write(url, page, html="")
-            return page
+                response_time_ms=elapsed_ms,
+            ), False  # not retryable — bad URL / SSL / redirects
+
+        # We have headers — decide whether to read body at all.
         elapsed_ms = int((time.monotonic() - t0) * 1000)
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        status = resp.status_code
+
+        # Non-200: don't read body, retry on transient 5xx / 429.
+        if status != 200:
+            retryable = status in {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524}
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return CompetitorPage(
+                url=url,
+                final_url=str(resp.url),
+                status_code=status,
+                response_time_ms=elapsed_ms,
+                last_modified=resp.headers.get("Last-Modified", ""),
+                error=f"http {status}",
+            ), retryable
+
+        # 200 with non-HTML body — don't parse, just record metadata.
+        if "html" not in ctype and "xml" not in ctype:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return CompetitorPage(
+                url=url,
+                final_url=str(resp.url),
+                status_code=200,
+                response_time_ms=elapsed_ms,
+                last_modified=resp.headers.get("Last-Modified", ""),
+                error=f"non-html content-type: {ctype}"[:200],
+            ), False
+
+        # Body-size guard via Content-Length, then streamed read.
+        content_length = resp.headers.get("Content-Length")
+        if content_length and content_length.isdigit() and int(content_length) > self.max_body_bytes:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return CompetitorPage(
+                url=url,
+                final_url=str(resp.url),
+                status_code=200,
+                response_time_ms=elapsed_ms,
+                last_modified=resp.headers.get("Last-Modified", ""),
+                error=f"body too large: Content-Length={content_length}",
+            ), False
+
+        try:
+            chunks: list[bytes] = []
+            received = 0
+            truncated = False
+            for chunk in resp.iter_content(chunk_size=64 * 1024, decode_unicode=False):
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > self.max_body_bytes:
+                    truncated = True
+                    break
+                chunks.append(chunk)
+            body_bytes = b"".join(chunks)
+        finally:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if truncated:
+            return CompetitorPage(
+                url=url,
+                final_url=str(resp.url),
+                status_code=200,
+                response_time_ms=elapsed_ms,
+                last_modified=resp.headers.get("Last-Modified", ""),
+                error=f"body exceeded {self.max_body_bytes} bytes",
+            ), False
+
+        encoding = resp.encoding or resp.apparent_encoding or "utf-8"
+        try:
+            body_text = body_bytes.decode(encoding, errors="replace")
+        except (LookupError, TypeError):
+            body_text = body_bytes.decode("utf-8", errors="replace")
 
         page = _parse_html(
-            url=url, final_url=resp.url, status=resp.status_code, body=resp.text
+            url=url, final_url=str(resp.url), status=200, body=body_text
         )
         page.response_time_ms = elapsed_ms
         page.last_modified = resp.headers.get("Last-Modified", "")
-        self._cache_write(url, page, html=resp.text if resp.status_code == 200 else "")
-        return page
+        # Stash raw HTML for the caller to persist (we don't keep it
+        # on the dataclass long-term — _cache_write strips it).
+        try:
+            page._raw_html = body_text  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+        return page, False
 
     # ── internals ────────────────────────────────────────────────────
 
     def _session_for(self, host: str) -> requests.Session:
         s = self._sessions.get(host)
         if s is None:
-            s = requests.Session()
-            s.headers.update({"User-Agent": self.user_agent, "Accept": "text/html,*/*"})
-            self._sessions[host] = s
+            with self._session_lock:
+                # Double-check inside lock so two threads racing to
+                # create the same host's session don't both succeed.
+                s = self._sessions.get(host)
+                if s is None:
+                    s = requests.Session()
+                    s.headers.update({"User-Agent": self.user_agent, "Accept": "text/html,*/*"})
+                    self._sessions[host] = s
         return s
 
     def _throttle(self, host: str) -> None:
-        now = time.monotonic()
-        last = self._last_fetch.get(host, 0.0)
-        delta = now - last
-        if delta < self.rate_limit_sec:
-            time.sleep(self.rate_limit_sec - delta)
-        self._last_fetch[host] = time.monotonic()
+        # Per-host rate limit. Multiple threads may hit the same host
+        # concurrently if a caller hand-built a non-grouped batch — the
+        # lock serialises them and enforces the throttle correctly.
+        with self._throttle_lock:
+            now = time.monotonic()
+            last = self._last_fetch.get(host, 0.0)
+            delta = now - last
+            wait = self.rate_limit_sec - delta if delta < self.rate_limit_sec else 0.0
+            self._last_fetch[host] = now + wait
+        if wait > 0:
+            time.sleep(wait)
 
     def _robots_ok(self, host: str, url: str) -> bool:
-        rp = self._robots.get(host)
-        if rp is None and host not in self._robots:
-            rp = RobotFileParser()
+        # Fast path: already-known result (rp object or None for
+        # allow-all). Then slow path under lock so concurrent threads
+        # for the same host don't all re-fetch robots.txt.
+        if host in self._robots:
+            rp = self._robots[host]
+            return True if rp is None else rp.can_fetch(self.user_agent, url)
+        with self._robots_lock:
+            if host in self._robots:
+                rp = self._robots[host]
+                return True if rp is None else rp.can_fetch(self.user_agent, url)
+            rp: RobotFileParser | None = RobotFileParser()
             try:
-                # Load via requests so we honour our SSL + timeout + UA.
                 robots_url = f"https://{host}/robots.txt"
                 session = self._session_for(host)
                 self._throttle(host)
@@ -325,9 +546,7 @@ class CompetitorCrawler:
                 logger.warning("robots.txt fetch %s failed: %s", host, exc)
                 rp = None
             self._robots[host] = rp
-        if rp is None:
-            return True
-        return rp.can_fetch(self.user_agent, url)
+        return True if rp is None else rp.can_fetch(self.user_agent, url)
 
     # ── disk cache ───────────────────────────────────────────────────
 
@@ -340,11 +559,16 @@ class CompetitorCrawler:
         if not meta_path.exists():
             return None
         try:
-            if (time.time() - meta_path.stat().st_mtime) > self.cache_ttl_seconds:
-                return None
+            mtime = meta_path.stat().st_mtime
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
         except (OSError, json.JSONDecodeError):
+            return None
+        # Short TTL for cached error responses so a transient 5xx
+        # doesn't lock out a competitor for the full 7-day window.
+        is_error_entry = bool(meta.get("error")) or int(meta.get("status_code") or 0) != 200
+        ttl = self.error_cache_ttl_seconds if is_error_entry else self.cache_ttl_seconds
+        if (time.time() - mtime) > ttl:
             return None
         # Re-parse the cached HTML to get fresh extraction output.
         # Cheaper than caching the parsed CompetitorPage and lets us
@@ -380,12 +604,18 @@ class CompetitorCrawler:
         page.last_modified = meta.get("last_modified", "")
         return page
 
-    def _cache_write(self, url: str, page: CompetitorPage, *, html: str) -> None:
+    def _cache_write(
+        self, url: str, page: CompetitorPage, *, html: str, is_error: bool = False
+    ) -> None:
+        """Persist the cache entry atomically: write to .tmp, fsync,
+        rename. Prevents a crash mid-write from leaving a corrupted
+        cache file on disk. ``is_error`` flags the entry as
+        short-TTL so the next read respects error_cache_ttl_seconds
+        rather than the 7-day default."""
         html_path, meta_path = self._cache_path(url)
         try:
             if html:
-                with html_path.open("w", encoding="utf-8") as f:
-                    f.write(html)
+                _atomic_write_text(html_path, html)
             meta = {
                 "url": url,
                 "final_url": page.final_url,
@@ -394,14 +624,33 @@ class CompetitorCrawler:
                 "error": page.error,
                 "response_time_ms": page.response_time_ms,
                 "last_modified": page.last_modified,
+                "is_error": is_error,
             }
-            with meta_path.open("w", encoding="utf-8") as f:
-                json.dump(meta, f)
+            _atomic_write_text(meta_path, json.dumps(meta))
         except OSError as exc:
             logger.warning("competitor cache write failed for %s: %s", url, exc)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` via a temp file + atomic rename.
+    A crash mid-write leaves either the old file intact or the new one
+    fully written — never a half-written file. The Windows rename
+    semantics overwrite the destination if it exists (Path.replace
+    handles this on both POSIX and Windows)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except (OSError, AttributeError):
+            # fsync not supported on this fs / fileno not real
+            # (e.g., wrapped streams) — best effort only.
+            pass
+    tmp.replace(path)
 
 
 _WHITESPACE_RE = re.compile(r"\s+")

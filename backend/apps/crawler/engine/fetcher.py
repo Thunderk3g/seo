@@ -30,6 +30,29 @@ _RETRYABLE_EXC = (
 )
 
 
+def _resolve_ssl_verify(raw: str) -> bool | str:
+    """Same shape as the SEMRUSH / COMPETITOR ssl_verify resolvers:
+    "" / unset / "true"  → True  (default certifi+truststore)
+    "false"              → False (disable — corp MITM only)
+    "/path/to/ca.pem"    → custom CA bundle path
+    """
+    import os.path
+
+    value = (raw or "").strip()
+    if not value or value.lower() in ("true", "1", "yes", "on"):
+        return True
+    if value.lower() in ("false", "0", "no", "off"):
+        return False
+    if os.path.exists(value):
+        return value
+    log.warning(
+        "CRAWLER_SSL_VERIFY=%r does not exist on disk — falling back to "
+        "default (certifi) verification.",
+        value,
+    )
+    return True
+
+
 def new_session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
@@ -38,14 +61,15 @@ def new_session() -> requests.Session:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate",
     })
-    s.verify = False
+    s.verify = _resolve_ssl_verify(getattr(settings, "ssl_verify", "true"))
     pool = max(settings.max_workers, 10) + 4
     adapter = HTTPAdapter(pool_connections=pool, pool_maxsize=pool, max_retries=0)
     s.mount("http://", adapter)
     s.mount("https://", adapter)
-    requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
-        requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
-    )
+    if s.verify is False:
+        requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
+            requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
+        )
     return s
 
 
@@ -135,8 +159,47 @@ def _fetch_once(
                 # content_type column ("application/pdf" etc).
                 resp.close()
                 return result, [], False, None
-            # HTML/XML: now do the full read.
-            parsed = parse_page(resp.text, str(resp.url))
+            # HTML/XML: bounded body read. Content-Length hint short-circuits
+            # absurdly large responses before we even read; otherwise we
+            # stream up to settings.max_body_bytes and bail if exceeded.
+            max_bytes = int(getattr(settings, "max_body_bytes", 5 * 1024 * 1024))
+            content_length = resp.headers.get("Content-Length")
+            if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+                result["status"] = "OK (body too large — skipped)"
+                result["error_type"] = "BodyTooLarge"
+                result["error_message"] = (
+                    f"Content-Length={content_length} exceeds {max_bytes}"
+                )
+                resp.close()
+                return result, [], False, None
+            try:
+                chunks: list[bytes] = []
+                received = 0
+                for chunk in resp.iter_content(chunk_size=64 * 1024, decode_unicode=False):
+                    if not chunk:
+                        continue
+                    received += len(chunk)
+                    if received > max_bytes:
+                        result["status"] = "OK (body too large — truncated)"
+                        result["error_type"] = "BodyTooLarge"
+                        result["error_message"] = (
+                            f"Streamed body exceeded {max_bytes} bytes"
+                        )
+                        resp.close()
+                        return result, [], False, None
+                    chunks.append(chunk)
+                body_bytes = b"".join(chunks)
+            finally:
+                resp.close()
+            # Decode using the encoding requests detected from headers/BOM,
+            # falling back to utf-8 with replacement so we never crash on
+            # bad bytes.
+            encoding = resp.encoding or resp.apparent_encoding or "utf-8"
+            try:
+                body_text = body_bytes.decode(encoding, errors="replace")
+            except (LookupError, TypeError):
+                body_text = body_bytes.decode("utf-8", errors="replace")
+            parsed = parse_page(body_text, str(resp.url))
             result["title"] = parsed["title"]
             result["word_count"] = parsed["word_count"]
             result["console_errors"] = parsed["console_errors"]
