@@ -141,7 +141,13 @@ class CompetitorCrawler:
         self.error_cache_ttl_seconds = int(
             cfg.get("error_cache_ttl_seconds", 3600)
         )
-        self.max_body_bytes = int(cfg.get("max_body_bytes", 5 * 1024 * 1024))
+        # ``0`` (or any negative value) disables the cap — the streamed
+        # read keeps going until the server closes the connection. The
+        # 100 MB default is a soft safety net for pathological responses
+        # (untrusted competitor host serving a multi-GB page); operators
+        # who want full content from every rival should set
+        # ``COMPETITOR_MAX_BODY_BYTES=0`` in .env.
+        self.max_body_bytes = int(cfg.get("max_body_bytes", 100 * 1024 * 1024))
         self.retry_attempts = max(1, int(cfg.get("retry_attempts", 3)))
         self.fetch_concurrency = max(1, int(cfg.get("fetch_concurrency", 10)))
         self.cache_dir = (
@@ -451,8 +457,18 @@ class CompetitorCrawler:
             ), False
 
         # Body-size guard via Content-Length, then streamed read.
+        # ``max_body_bytes <= 0`` disables the cap entirely — the read
+        # keeps going until the server closes the connection. Operators
+        # who want the *entire* body for content comparison (per the
+        # AEM-vs-competitor matcher) should set COMPETITOR_MAX_BODY_BYTES=0.
+        unlimited = self.max_body_bytes <= 0
         content_length = resp.headers.get("Content-Length")
-        if content_length and content_length.isdigit() and int(content_length) > self.max_body_bytes:
+        if (
+            not unlimited
+            and content_length
+            and content_length.isdigit()
+            and int(content_length) > self.max_body_bytes
+        ):
             try:
                 resp.close()
             except Exception:  # noqa: BLE001
@@ -474,7 +490,7 @@ class CompetitorCrawler:
                 if not chunk:
                     continue
                 received += len(chunk)
-                if received > self.max_body_bytes:
+                if not unlimited and received > self.max_body_bytes:
                     truncated = True
                     break
                 chunks.append(chunk)
@@ -787,10 +803,13 @@ def _parse_html(*, url: str, final_url: str, status: int, body: str) -> Competit
     text = soup.get_text(" ", strip=True)
     text = _WHITESPACE_RE.sub(" ", text).strip()
     page.word_count = len(text.split()) if text else 0
-    # Keep a slice of the body text for content-keyword-fit scoring.
-    # 30 KB is enough to catch the head keyword's presence in real
-    # article bodies without bloating the in-memory dossier.
-    page.body_text = text[:30_000]
+    # Keep the body text for content-keyword-fit scoring AND for the
+    # AEM-vs-competitor content comparison view. Cap is env-driven via
+    # COMPETITOR_BODY_TEXT_MAX_CHARS; default 0 = unlimited, so every
+    # word from navbar through footer reaches the profile JSON. Set a
+    # positive value to clamp if JSONB rows grow unwieldy.
+    body_cap = int(settings.COMPETITOR.get("body_text_max_chars", 0) or 0)
+    page.body_text = text if body_cap <= 0 else text[:body_cap]
 
     return page
 

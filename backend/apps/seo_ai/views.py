@@ -682,6 +682,272 @@ def gap_pipeline_latest(request: Request):
     return Response(payload)
 
 
+# ── content comparison (AEM ↔ competitor crawler) ────────────────────────
+#
+# Two endpoints pair our authored content (from the AEM JSON export) with
+# the topically-closest page each competitor has, so the operator can read
+# both bodies side-by-side. Pure-string matcher (page_pairing.py), no LLM
+# call anywhere — billing not required.
+#
+#   GET /api/v1/seo-ai/content-comparison/our-pages/?q=&limit=
+#       Lightweight list of AEM pages for the dropdown picker.
+#   GET /api/v1/seo-ai/content-comparison/?our_url=<aem_public_url>
+#       Full payload: our AEM page + ranked competitor match per rival.
+
+
+def _aem_index_by_url() -> dict:
+    """Build a {public_url: AEMPage} index. Lazy + per-request.
+
+    The AEM JSON exports rarely top a few thousand pages and the read is
+    plenty fast (~50 ms), so we don't bother caching — keeps the view
+    stateless and always reflects the latest sitemap drop on disk.
+    """
+    adapter = SitemapAEMAdapter()
+    return {p.public_url: p for p in adapter.iter_pages()}
+
+
+def _serialize_our_page(page) -> dict:
+    """Trim AEMPage to the JSON-safe shape the frontend renders."""
+    last_mod = page.last_modified.isoformat() if page.last_modified else None
+    return {
+        "url": page.public_url,
+        "aem_path": page.aem_path,
+        "title": page.title,
+        "meta_description": page.description,
+        "template_name": page.template_name,
+        "last_modified": last_mod,
+        "component_count": page.component_count,
+        "component_types": page.component_types,
+        "word_count": page.word_count,
+        "content": page.content,
+    }
+
+
+def _serialize_their_page(cand: dict) -> dict:
+    """Pass through the sample_pages entry from GapDeepCrawl.profile.
+
+    The deep_crawl _build_profile already shapes this dict; we just
+    re-emit it under a stable key set so the frontend type stays clean.
+    """
+    return {
+        "url": cand.get("url"),
+        "title": cand.get("title"),
+        "meta_description": cand.get("meta_description") or "",
+        "h1_texts": cand.get("h1_texts") or [],
+        "h2_texts": cand.get("h2_texts") or [],
+        "schema_types": cand.get("schema_types") or [],
+        "word_count": cand.get("word_count") or 0,
+        "page_type": cand.get("page_type") or "",
+        "response_time_ms": cand.get("response_time_ms") or 0,
+        "internal_link_count": cand.get("internal_link_count") or 0,
+        "external_link_count": cand.get("external_link_count") or 0,
+        "last_modified": cand.get("last_modified") or "",
+        "body_text": cand.get("body_text") or "",
+        "pagespeed_score": cand.get("pagespeed_score"),
+        "lcp_ms": cand.get("lcp_ms"),
+        "cls": cand.get("cls"),
+        "inp_ms": cand.get("inp_ms"),
+    }
+
+
+def _compute_deltas(our_page, their: dict) -> dict:
+    """Numerical us-vs-them deltas surfaced at the top of the UI."""
+    their_words = int(their.get("word_count") or 0)
+    their_schema = list(their.get("schema_types") or [])
+    their_score = their.get("pagespeed_score")
+    their_lcp = their.get("lcp_ms")
+
+    word_diff = their_words - (our_page.word_count or 0)
+
+    # Our CWV lives in the crawler's CSV, not on the AEM record; we'd need
+    # to cross-join to populate "our pagespeed". For v1 of this view we
+    # surface only the deltas we can compute from data on hand.
+    return {
+        "word_count_diff": word_diff,
+        "schema_we_lack": their_schema,           # AEM page-model has no
+                                                  # schema concept; everything
+                                                  # they ship is technically a
+                                                  # gap on our side.
+        "their_pagespeed": their_score,
+        "their_lcp_ms": their_lcp,
+    }
+
+
+@api_view(["GET"])
+def content_comparison_our_pages(request: Request):
+    """Return a slim list of AEM pages for the dropdown picker.
+
+    Query params:
+      ``q`` — case-insensitive substring filter on URL or title.
+      ``limit`` — cap on rows returned (default 500, max 2000).
+
+    The body content is NOT included in this response — keep it cheap
+    so the dropdown loads fast even on slow connections. The full body
+    is fetched only when the user selects a page (the other endpoint).
+    """
+    q = (request.query_params.get("q") or "").strip().lower()
+    try:
+        limit = min(max(int(request.query_params.get("limit") or 500), 1), 2000)
+    except ValueError:
+        limit = 500
+
+    try:
+        pages = list(SitemapAEMAdapter().iter_pages())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("content_comparison_our_pages: AEM read failed: %s", exc)
+        return Response(
+            {"available": False, "error": f"AEM read failed: {exc}", "pages": []},
+        )
+
+    out = []
+    for p in pages:
+        if q and q not in (p.public_url or "").lower() and q not in (p.title or "").lower():
+            continue
+        out.append({
+            "url": p.public_url,
+            "title": p.title,
+            "template_name": p.template_name,
+            "word_count": p.word_count,
+            "last_modified": p.last_modified.isoformat() if p.last_modified else None,
+        })
+        if len(out) >= limit:
+            break
+
+    return Response({
+        "available": True,
+        "total": len(pages),
+        "returned": len(out),
+        "pages": out,
+    })
+
+
+@api_view(["GET"])
+def content_comparison(request: Request):
+    """Pair one of our AEM pages with every competitor's best match.
+
+    Query params:
+      ``our_url`` — required. The AEM public_url to compare from.
+      ``domain`` — optional. Defaults to bajajlifeinsurance.com; used to
+                  locate the latest GapPipelineRun whose deep crawls
+                  hold the competitor candidates.
+
+    Response shape::
+
+        {
+          "our_page":   {url, title, meta_description, content, ...},
+          "matches":    [{competitor_domain, match_score, reason,
+                          their_page: {...}, deltas: {...}}, ...],
+          "_meta":      {run_id, matched_at,
+                          competitors_with_match, competitors_without_match}
+        }
+    """
+    our_url = (request.query_params.get("our_url") or "").strip()
+    if not our_url:
+        return Response(
+            {"error": "missing required query param: our_url"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Load the AEM index, find our page.
+    try:
+        aem_index = _aem_index_by_url()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("content_comparison: AEM read failed: %s", exc)
+        return Response(
+            {"error": f"AEM read failed: {exc}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    our_page = aem_index.get(our_url)
+    if our_page is None:
+        return Response(
+            {"error": f"AEM has no page with public_url={our_url}"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Pull the latest gap-pipeline run's deep crawls.
+    domain = (request.query_params.get("domain") or "bajajlifeinsurance.com").strip()
+    run = (
+        GapPipelineRun.objects.filter(domain=domain)
+        .order_by("-started_at")
+        .first()
+    )
+    if run is None:
+        return Response({
+            "our_page": _serialize_our_page(our_page),
+            "matches": [],
+            "_meta": {
+                "run_id": None,
+                "competitors_with_match": 0,
+                "competitors_without_match": 0,
+                "note": "no gap-pipeline run found — start one from the Competitors page",
+            },
+        })
+
+    crawls = list(
+        GapDeepCrawl.objects.filter(run=run, is_us=False).order_by("domain")
+    )
+
+    # Lazy import keeps the matcher off the import path until used.
+    from .gap_pipeline.page_pairing import match_aem_to_candidates
+
+    matches: list[dict] = []
+    with_match = 0
+    without_match = 0
+    for c in crawls:
+        candidates = ((c.profile or {}).get("sample_pages")) or []
+        ranked = match_aem_to_candidates(
+            our_url=our_page.public_url,
+            our_title=our_page.title,
+            candidates=candidates,
+        )
+        if not ranked:
+            without_match += 1
+            matches.append({
+                "competitor_domain": c.domain,
+                "match_score": 0.0,
+                "match_reason": "no sample pages on this competitor",
+                "their_page": None,
+                "deltas": None,
+            })
+            continue
+        top = ranked[0]
+        with_match += 1
+        matches.append({
+            "competitor_domain": c.domain,
+            "match_score": top.score,
+            "slug_jaccard": top.slug_jaccard,
+            "title_cosine": top.title_cosine,
+            "match_reason": top.reason,
+            "their_page": _serialize_their_page(top.candidate),
+            "deltas": _compute_deltas(our_page, top.candidate),
+            # Surface the next 2 alternatives so the user can swap if
+            # the top match looks off.
+            "alternatives": [
+                {
+                    "score": alt.score,
+                    "reason": alt.reason,
+                    "url": (alt.candidate or {}).get("url"),
+                    "title": (alt.candidate or {}).get("title"),
+                }
+                for alt in ranked[1:3]
+            ],
+        })
+
+    matches.sort(key=lambda m: m.get("match_score") or 0.0, reverse=True)
+
+    return Response({
+        "our_page": _serialize_our_page(our_page),
+        "matches": matches,
+        "_meta": {
+            "run_id": str(run.id),
+            "matched_at": run.started_at.isoformat() if run.started_at else None,
+            "competitors_with_match": with_match,
+            "competitors_without_match": without_match,
+        },
+    })
+
+
 # ── chat (SSE) ───────────────────────────────────────────────────────────
 
 
