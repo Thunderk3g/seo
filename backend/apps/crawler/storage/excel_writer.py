@@ -260,6 +260,26 @@ def build_report(output_path: Path | None = None) -> Path:
     _build_summary(summary_ws, totals)
     _build_category_pivot(summary_ws, breakdown)
 
+    # ── Phase 1 audit engine: Health Score + Issues catalogue ──────────
+    # Both prepended in front of the Summary tab so the operator opens
+    # straight onto the KPI view. The audit runs ONCE here and is passed
+    # to both writers; no double-scan.
+    try:
+        from ..audits import run_all
+        from ..services.health_score import compute as compute_health_score
+
+        audit = run_all()
+        hs = compute_health_score(audit)
+        issues_ws = wb.create_sheet(title="Issues Catalogue", index=0)
+        _write_issues_catalog_sheet(issues_ws, audit)
+        health_ws = wb.create_sheet(title="Health Score", index=0)
+        _write_health_score_sheet(health_ws, hs)
+    except Exception:  # noqa: BLE001 — never let audit failure break the legacy report
+        # Audit engine import failure or runtime error must not prevent
+        # the rest of the workbook from generating. Logged silently — the
+        # operator still gets the Summary + raw sheets they always had.
+        pass
+
     # Per-subdomain overview sheets — readable at-a-glance KPIs per surface.
     for sub in ("www", "branch", "investmentcorner"):
         sub_rows = _filter_rows_by(res_hdr, res_rows, "subdomain", sub)
@@ -533,3 +553,234 @@ def _compute_totals(res_hdr: list[str], res_rows: list[list[str]]) -> dict:
         "console_entries": count("crawl_console_log.csv"),
         "discovered_edges": count("crawl_discovered.csv"),
     }
+
+
+# ── Phase 1: Health Score + Issues Catalogue sheets ────────────────────
+#
+# Both sheets are prepended to the workbook in build_report so they appear
+# before the existing Summary tab. Reuses the Bajaj brand palette + cell
+# styling helpers defined at the top of this module — no new styling
+# constants required.
+
+_TIER_FILL = {
+    "Excellent": PatternFill("solid", fgColor=OK_GREEN),
+    "Good":      PatternFill("solid", fgColor=BRAND_NAVY),
+    "Fair":      PatternFill("solid", fgColor=BRAND_GOLD),
+    "Weak":      PatternFill("solid", fgColor=ERR_RED),
+}
+
+
+def _write_health_score_sheet(ws: Worksheet, hs) -> None:
+    """Top-of-workbook KPI sheet.
+
+    Mirrors the Health Score widget rendered in the dashboard:
+      * Big score (0-100) + tier badge.
+      * Severity counts (errors / warnings / notices) + distinct-type counts.
+      * Top-5 most-affecting error issues.
+      * Category coverage tile grid.
+      * Formula footnote.
+
+    ``hs`` is a ``services.health_score.HealthScore`` instance. The import
+    path lives inside ``build_report`` so audit-engine failure can't
+    prevent the legacy report from generating.
+    """
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 28
+    ws.column_dimensions["F"].width = 14
+
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "Health Score"
+    ws["A1"].font = _TITLE_FONT
+    ws["A1"].alignment = _LEFT
+
+    ws.merge_cells("A2:F2")
+    finished = hs.finished_at[:19] if hs.finished_at else ""
+    ws["A2"] = (
+        f"Computed {finished}  -  "
+        f"{hs.urls_without_error:,} of {hs.total_urls:,} URLs without errors"
+    )
+    ws["A2"].font = _SUB_FONT
+    ws["A2"].alignment = _LEFT
+
+    ws.merge_cells("A4:B6")
+    score_cell = ws["A4"]
+    score_cell.value = hs.score
+    score_cell.font = Font(name="Calibri", size=60, bold=True, color=BRAND_NAVY)
+    score_cell.alignment = _CENTER
+
+    ws.merge_cells("A7:B7")
+    tier_cell = ws["A7"]
+    tier_cell.value = hs.tier.upper()
+    tier_cell.font = Font(name="Calibri", size=12, bold=True, color=WHITE)
+    tier_cell.alignment = _CENTER
+    tier_cell.fill = _TIER_FILL.get(hs.tier, _HEADER_FILL)
+
+    sev_labels = (
+        ("D4", "ERRORS", hs.severity_counts.get("error", 0),
+         hs.issue_type_counts.get("error", 0), ERR_RED),
+        ("D6", "WARNINGS", hs.severity_counts.get("warning", 0),
+         hs.issue_type_counts.get("warning", 0), "F59E0B"),
+        ("D8", "NOTICES", hs.severity_counts.get("notice", 0),
+         hs.issue_type_counts.get("notice", 0), BRAND_NAVY),
+    )
+    for cell, label, count, types, color in sev_labels:
+        ws[cell] = label
+        ws[cell].font = Font(name="Calibri", size=9, bold=True, color=TEXT_MUTED)
+        right_cell = cell.replace("D", "E")
+        plural = "s" if types != 1 else ""
+        ws[right_cell] = f"{count:,}   ({types} type{plural})"
+        ws[right_cell].font = Font(name="Calibri", size=14, bold=True, color=color)
+
+    row = 11
+    ws.cell(row=row, column=1, value="TOP ERRORS BY AFFECTED URLs").font = (
+        Font(name="Calibri", size=10, bold=True, color=TEXT_MUTED)
+    )
+    row += 1
+    for i, h in enumerate(("Issue", "Severity", "Category", "Affected URLs"), start=1):
+        c = ws.cell(row=row, column=i, value=h)
+        c.font = _HEADER_FONT
+        c.fill = _HEADER_FILL
+        c.alignment = _CENTER
+        c.border = _BORDER
+    row += 1
+    for issue in hs.top_errors:
+        ws.cell(row=row, column=1, value=issue["title"]).font = Font(
+            name="Calibri", size=11, color=TEXT_DARK,
+        )
+        sev = ws.cell(row=row, column=2, value=issue["severity"].title())
+        sev.fill = _ERR_FILL
+        sev.alignment = _CENTER
+        ws.cell(row=row, column=3, value=issue["category"]).alignment = _CENTER
+        cnt = ws.cell(row=row, column=4, value=issue["count"])
+        cnt.alignment = _CENTER
+        cnt.font = Font(name="Calibri", size=11, bold=True, color=ERR_RED)
+        row += 1
+
+    row += 1
+    ws.cell(row=row, column=1, value="ISSUE TYPES PER CATEGORY").font = (
+        Font(name="Calibri", size=10, bold=True, color=TEXT_MUTED)
+    )
+    row += 1
+    cats = sorted(hs.category_counts.items(), key=lambda kv: -kv[1])
+    for i, (cat, n) in enumerate(cats):
+        col = (i % 3) * 2 + 1
+        r = row + (i // 3)
+        label = ws.cell(row=r, column=col, value=cat.upper())
+        label.font = Font(name="Calibri", size=9, bold=True, color=TEXT_MUTED)
+        plural = "s" if n != 1 else ""
+        val = ws.cell(row=r, column=col + 1, value=f"{n} type{plural}")
+        val.font = Font(name="Calibri", size=12, bold=True, color=BRAND_NAVY)
+
+    final = row + (len(cats) // 3) + 3
+    ws.merge_cells(start_row=final, start_column=1, end_row=final, end_column=6)
+    foot = ws.cell(row=final, column=1, value=f"Formula:  {hs.formula}")
+    foot.font = Font(name="Calibri", size=9, italic=True, color=TEXT_MUTED)
+
+
+def _write_issues_catalog_sheet(ws: Worksheet, audit) -> None:
+    """Issue triage inbox in spreadsheet form.
+
+    One row per distinct issue type that fired. Columns:
+    Slug / Severity / Category / Issue / Affected URLs / Why / How to fix.
+
+    Errors sort to the top; within severity, by URL count descending.
+    Severity column conditionally-filled (red/orange/blue) so the eye
+    can land on errors immediately.
+
+    ``audit`` is an ``audits.runner.AuditResult``.
+    """
+    ws.sheet_view.showGridLines = False
+
+    headers = ("Slug", "Severity", "Category", "Issue", "Affected URLs",
+               "Why it matters", "How to fix")
+    widths = (24, 12, 18, 38, 16, 60, 60)
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.merge_cells("A1:G1")
+    ws["A1"] = "Issues Catalogue"
+    ws["A1"].font = _TITLE_FONT
+    ws["A1"].alignment = _LEFT
+
+    ws.merge_cells("A2:G2")
+    finished = audit.finished_at[:19] if audit.finished_at else ""
+    ws["A2"] = (
+        f"Computed {finished}  -  "
+        f"{audit.total_urls:,} URLs scanned  -  "
+        f"{audit.urls_with_any_error:,} URLs with at least one error"
+    )
+    ws["A2"].font = _SUB_FONT
+    ws["A2"].alignment = _LEFT
+
+    severity_order = {"error": 0, "warning": 1, "notice": 2}
+    occs = sorted(
+        [o for o in audit.occurrences if o.count > 0],
+        key=lambda o: (severity_order[o.issue.severity], -o.count),
+    )
+
+    header_row = 4
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=i, value=h)
+        c.font = _HEADER_FONT
+        c.fill = _HEADER_FILL
+        c.alignment = _CENTER
+        c.border = _BORDER
+
+    sev_fill_map = {
+        "error": _ERR_FILL,
+        "warning": _WARN_FILL,
+        "notice": PatternFill("solid", fgColor="E6EEF9"),
+    }
+    sev_text_color = {
+        "error": ERR_RED,
+        "warning": "F59E0B",
+        "notice": BRAND_NAVY,
+    }
+
+    row = header_row + 1
+    for occ in occs:
+        issue = occ.issue
+        zebra = _ZEBRA_FILL if (row - header_row) % 2 == 0 else None
+        cells = [
+            (1, issue.slug,
+             Font(name="Consolas", size=10, color=TEXT_DARK)),
+            (2, issue.severity.title(),
+             Font(name="Calibri", size=10, bold=True,
+                  color=sev_text_color[issue.severity])),
+            (3, issue.category,
+             Font(name="Calibri", size=10, color=TEXT_MUTED)),
+            (4, issue.title,
+             Font(name="Calibri", size=11, bold=True, color=TEXT_DARK)),
+            (5, occ.count,
+             Font(name="Calibri", size=11, bold=True, color=BRAND_NAVY)),
+            (6, issue.why,
+             Font(name="Calibri", size=10, color=TEXT_DARK)),
+            (7, issue.how_to_fix,
+             Font(name="Calibri", size=10, color=TEXT_DARK)),
+        ]
+        for col, val, font in cells:
+            c = ws.cell(row=row, column=col, value=val)
+            c.font = font
+            c.alignment = Alignment(
+                horizontal="center" if col in (2, 3, 5) else "left",
+                vertical="top",
+                wrap_text=col in (4, 6, 7),
+            )
+            c.border = _BORDER
+            if col == 2:
+                c.fill = sev_fill_map[issue.severity]
+            elif zebra is not None:
+                c.fill = zebra
+        ws.row_dimensions[row].height = 64
+        row += 1
+
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=5)
+    ws.auto_filter.ref = (
+        f"A{header_row}:G{row - 1}"
+        if row > header_row + 1
+        else f"A{header_row}:G{header_row}"
+    )

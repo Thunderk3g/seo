@@ -12,6 +12,7 @@ import SiteTreePage from './crawler/pages/SiteTreePage';
 import CrawlerLogs from './crawler/pages/CrawlerLogs';
 import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
+import IssuesPage from './crawler/pages/IssuesPage';
 
 export default function App() {
   return (
@@ -38,6 +39,9 @@ export default function App() {
             <Route path="/crawler/logs" component={CrawlerLogs} />
             <Route path="/crawler/reports" component={CrawlerReports} />
             <Route path="/crawler/reports/:key" component={CrawlerReportDetail} />
+            {/* Phase 1 — audit engine: typed issues inbox + Health Score. */}
+            <Route path="/crawler/issues" component={IssuesPage} />
+            <Route path="/crawler/issues/:slug" component={IssuesPage} />
 
             <Route>
               <div style={{ padding: 24 }}>Not found</div>

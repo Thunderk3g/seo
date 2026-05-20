@@ -352,4 +352,86 @@ export const crawlerApi = {
       disabled?: boolean;
       disabled_reason?: string;
     }>('/psi/progress'),
+
+  // Audit engine — Health Score KPI (Phase 1).
+  // Computes the Ahrefs-formula Health Score over the current
+  // crawl_results.csv: (URLs without any error-severity issue / total
+  // URLs) × 100. Returns score, tier (Excellent/Good/Fair/Weak),
+  // severity counts, per-category type counts, and the top-5 errors.
+  healthScore: () =>
+    request<{
+      score: number;
+      tier: 'Excellent' | 'Good' | 'Fair' | 'Weak';
+      total_urls: number;
+      urls_without_error: number;
+      urls_with_any_error: number;
+      severity_counts: { error: number; warning: number; notice: number };
+      issue_type_counts: { error: number; warning: number; notice: number };
+      category_counts: Record<string, number>;
+      top_errors: Array<{
+        slug: string;
+        title: string;
+        severity: string;
+        category: string;
+        why: string;
+        how_to_fix: string;
+        count: number;
+      }>;
+      formula: string;
+      started_at: string;
+      finished_at: string;
+    }>('/health-score'),
+
+  // Audit engine — Issues triage inbox (Phase 1).
+  // Lists every issue type detected, sorted errors first then by URL
+  // count. Filterable by severity and category via query params.
+  issues: (params?: { severity?: string; category?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.severity) qs.set('severity', params.severity);
+    if (params?.category) qs.set('category', params.category);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{
+      total_urls: number;
+      ok_urls: number;
+      severity_counts: { error: number; warning: number; notice: number };
+      issue_type_counts: { error: number; warning: number; notice: number };
+      issues: Array<{
+        slug: string;
+        title: string;
+        severity: 'error' | 'warning' | 'notice';
+        category: string;
+        why: string;
+        how_to_fix: string;
+        count: number;
+      }>;
+      started_at: string;
+      finished_at: string;
+    }>(`/issues${suffix}`);
+  },
+
+  // Per-issue drill-in. Returns metadata + the list of affected URLs
+  // (capped at 1000 server-side to keep payloads bounded). Used by
+  // IssueDetailPage and the chat agent when a user asks "show me the
+  // URLs hit by X".
+  issueDetail: (slug: string) =>
+    request<{
+      slug: string;
+      title: string;
+      severity: string;
+      category: string;
+      why: string;
+      how_to_fix: string;
+      count: number;
+      affected_urls: Array<{
+        url: string;
+        title: string;
+        status_code: string;
+        subdomain: string;
+        page_type: string;
+        word_count: string;
+        response_time_ms: string;
+        indexed_status: string;
+      }>;
+      started_at: string;
+    }>(`/issues/${encodeURIComponent(slug)}`),
 };

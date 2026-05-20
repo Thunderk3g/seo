@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ControlBar from '../components/ControlBar';
+import HealthScoreCard from '../components/HealthScoreCard';
 import LiveLogPanel from '../components/LiveLogPanel';
 import RecentPagesTable from '../components/RecentPagesTable';
 import StatCard from '../components/StatCard';
@@ -149,6 +150,10 @@ export default function CrawlerDashboard() {
           setRecent([]);
         }}
       />
+
+      {/* Phase 1 — Health Score KPI widget. Reads /health-score endpoint,
+          summarises overall site health, links into /crawler/issues. */}
+      <HealthScoreCard />
 
       <div className="stats-grid">
         <StatCard tone="primary" icon="download_done" label="Crawled" value={display.crawled} />

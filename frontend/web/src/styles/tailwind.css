@@ -1,0 +1,115 @@
+/* Tailwind entry — imported AFTER lattice.css in main.tsx.
+ *
+ * Two responsibilities:
+ *   1. Inject the three @tailwind directives so utility classes work.
+ *   2. Define the shadcn CSS variables (--background, --primary, etc.)
+ *      mapped to Bajaj brand colours so every shadcn primitive renders
+ *      Bajaj-branded without per-component overrides.
+ *
+ * Tailwind preflight is disabled in tailwind.config.cjs — no global
+ * resets here. Existing lattice.css selectors keep their cascade.
+ *
+ * ─── IMPORTANT ─────────────────────────────────────────────────────
+ * shadcn CSS variables are scoped to `.bajaj-ui` (NOT `:root`).
+ *
+ * lattice.css defines its own `:root { --accent: #0072ce; ... }` hex
+ * tokens consumed by every legacy page (`.seo-btn`, `.nav-item`, the
+ * crawler scroll thumb, etc.). If shadcn re-declared `--accent` at
+ * `:root` as an HSL channel ("207 100% 40%") it would silently
+ * overwrite lattice.css and break every legacy button — the value is
+ * invalid where lattice.css uses `background: var(--accent)` directly,
+ * leaving buttons with no visible fill until hover.
+ *
+ * Scoping shadcn vars under `.bajaj-ui` means:
+ *   - lattice.css `:root` tokens stay authoritative for legacy CSS
+ *   - shadcn primitives (`bg-primary`, `text-card-foreground` etc.)
+ *     only resolve inside an element with `className="bajaj-ui"`, which
+ *     every new shadcn surface already opts into
+ *   - No accidental collisions across the two systems forever
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* shadcn token bindings — HSL values mapped to Bajaj brand.
+ *
+ * Why HSL: shadcn primitives compose colors with opacity modifiers like
+ * bg-primary/50; Tailwind only supports that syntax when the colour is
+ * declared as separate HSL channels (no commas, no hsl() wrapper).
+ *
+ * Source colours (matched to lattice.css):
+ *   --text       #002c6e   →  hsl(213, 100%, 22%)
+ *   --accent     #0072ce   →  hsl(207, 100%, 40%)
+ *   --bg         #f4f7fb   →  hsl(213, 43%, 97%)
+ *   --surface    #ffffff   →  hsl(0,   0%,   100%)
+ *   --border     rgba(0,44,110,.08)  →  hsl(213, 100%, 22% / 0.08)
+ *   --error      #d32f2f   →  hsl(0,   65%, 51%)
+ *
+ * Scoped to `.bajaj-ui` so legacy lattice.css cascade is preserved.
+ */
+.bajaj-ui {
+  /* Render-time brand defaults for any shadcn primitive nested inside. */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               Helvetica, Arial, sans-serif;
+  color: hsl(var(--foreground));
+
+  /* shadcn token bindings */
+  --background: 213 43% 97%;
+  --foreground: 213 100% 22%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 213 100% 22%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 213 100% 22%;
+
+  --primary: 207 100% 40%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 213 50% 95%;
+  --secondary-foreground: 213 100% 22%;
+
+  --muted: 213 30% 94%;
+  --muted-foreground: 213 30% 35%;
+
+  /* WARNING — `--accent` collides with lattice.css's :root --accent
+     (#0072ce hex). Defining it here under `.bajaj-ui` only means
+     shadcn `bg-accent` works inside scoped subtrees AND lattice.css
+     `var(--accent)` keeps its hex value everywhere else. Never move
+     this back to :root. */
+  --accent: 207 100% 40%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 0 65% 51%;
+  --destructive-foreground: 0 0% 100%;
+
+  /* `--border` likewise collides with lattice.css. Same scoping rule. */
+  --border: 213 100% 22%;
+  --input: 213 30% 88%;
+  --ring: 207 100% 40%;
+}
+
+/* Optional dark theme — same scoping rule applies. The dashboard is
+ * light-only per Bajaj brand spec; this block is here so future opt-in
+ * dark mode works without re-introducing the :root collision. */
+.bajaj-ui.dark {
+  --background: 213 100% 8%;
+  --foreground: 0 0% 95%;
+  --card: 213 100% 12%;
+  --card-foreground: 0 0% 95%;
+  --popover: 213 100% 12%;
+  --popover-foreground: 0 0% 95%;
+  --primary: 207 100% 50%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 213 50% 18%;
+  --secondary-foreground: 0 0% 95%;
+  --muted: 213 30% 18%;
+  --muted-foreground: 213 30% 65%;
+  --accent: 207 100% 50%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 65% 51%;
+  --destructive-foreground: 0 0% 95%;
+  --border: 213 30% 22%;
+  --input: 213 30% 18%;
+  --ring: 207 100% 50%;
+}
