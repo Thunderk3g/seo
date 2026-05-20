@@ -49,3 +49,17 @@ google-auth-oauthlib>=1.0
 # `requests`-based crawler cannot see. Chromium binary is installed
 # via `playwright install chromium` in the Dockerfile.
 playwright>=1.40
+
+# ── Scrapy engine (Phase 3 of the tool-clone roadmap) ───────────
+# Activated via `python manage.py crawl_scrapy`. Runs alongside the
+# legacy BFS engine behind the CRAWLER_ENGINE feature flag; both
+# write to the same crawl_results.csv (legacy WAL) and to
+# CrawlerPageResult in Postgres (Phase 3c dual-write). Scrapy brings
+# AutoThrottle, RFPDupeFilter, RobotsTxtMiddleware, RetryMiddleware,
+# DepthMiddleware — 15 years of crawler hardening for the cost of a
+# `pip install`.
+scrapy>=2.11
+# JS rendering middleware. Triggered selectively in Phase 3e on pages
+# whose static fetch returns < 500 chars of body text (SPA shells like
+# iciciprulife homepage, which returned 19 words on static fetch).
+scrapy-playwright>=0.0.40

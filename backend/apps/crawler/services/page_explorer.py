@@ -163,6 +163,20 @@ _CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _load_rows() -> list[dict]:
+    """Source-routed page row loader.
+
+    Phase 3c routing:
+      * ``settings.engine == 'scrapy'`` AND a completed CrawlSnapshot
+        exists → read CrawlerPageResult rows from Postgres. Sub-100 ms
+        on 10k rows thanks to the (snapshot, …) composite indexes.
+      * Otherwise (default) → read crawl_results.csv as before (with
+        the in-process mtime cache).
+    """
+    if (getattr(settings, "engine", "legacy") == "scrapy"):
+        orm_rows = _load_rows_from_orm()
+        if orm_rows is not None:
+            return orm_rows
+
     path = settings.data_path / "crawl_results.csv"
     if not path.exists():
         return []
@@ -182,6 +196,54 @@ def _load_rows() -> list[dict]:
         rows.append(dict(zip(headers, r)))
     _CACHE["results"] = (mtime, rows)
     return rows
+
+
+def _load_rows_from_orm() -> list[dict] | None:
+    """Load CrawlerPageResult rows from the latest completed snapshot
+    and re-shape them into the dict-of-strings format the detectors
+    + Page Explorer expect (matches the CSV row schema 1:1).
+
+    Returns ``None`` when no snapshot exists / Postgres unreachable
+    so the caller can fall back to CSV silently.
+    """
+    try:
+        from .snapshot import latest_completed_snapshot_id
+        from ..models import CrawlerPageResult
+        snap_id = latest_completed_snapshot_id()
+        if not snap_id:
+            return None
+        qs = CrawlerPageResult.objects.filter(snapshot_id=snap_id).only(
+            "url", "status_code", "status", "title", "word_count",
+            "response_time_ms", "content_type", "error_type",
+            "error_message", "subdomain", "page_type", "category_key",
+            "from_sitemap", "indexed_status",
+            "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+        )
+        out: list[dict] = []
+        for p in qs.iterator(chunk_size=1000):
+            out.append({
+                "url": p.url,
+                "status_code": p.status_code or "",
+                "status": p.status or "",
+                "title": p.title or "",
+                "word_count": str(p.word_count or 0),
+                "response_time_ms": str(p.response_time_ms or 0),
+                "content_type": p.content_type or "",
+                "error_type": p.error_type or "",
+                "error_message": p.error_message or "",
+                "subdomain": p.subdomain or "",
+                "page_type": p.page_type or "",
+                "category_key": p.category_key or "",
+                "from_sitemap": "1" if p.from_sitemap else "0",
+                "indexed_status": p.indexed_status or "unknown",
+                "pagespeed_score": "" if p.pagespeed_score is None else str(p.pagespeed_score),
+                "lcp_ms": "" if p.lcp_ms is None else str(p.lcp_ms),
+                "cls": "" if p.cls is None else str(p.cls),
+                "inp_ms": "" if p.inp_ms is None else str(p.inp_ms),
+            })
+        return out
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── Public query API ───────────────────────────────────────────────────

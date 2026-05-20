@@ -315,13 +315,34 @@ def run_crawl() -> None:
     """
     STATE.is_running = True
     STATE.should_stop = False
+    # Phase 3 — start a CrawlSnapshot row so dual-written CrawlerPage-
+    # Result records know which run they belong to. Silently no-ops
+    # when Postgres is down; legacy CSV path keeps working.
+    snap_id: str | None = None
+    crash_msg: str = ""
+    try:
+        from ..services import snapshot as snapshot_svc
+        snap_id = snapshot_svc.start_snapshot(
+            engine="legacy",
+            seed_url=settings.seed_url,
+            allowed_domains=list(settings.allowed_domains),
+            config={
+                "max_workers": getattr(settings, "max_workers", None),
+                "max_depth": getattr(settings, "max_depth", None),
+                "max_pages": getattr(settings, "max_pages", None),
+                "psi_inline_enabled": getattr(settings, "psi_inline_enabled", None),
+            },
+        )
+    except Exception:  # noqa: BLE001 - never block crawl on Postgres
+        snap_id = None
     try:
         _run_crawl_body()
     except Exception as exc:  # noqa: BLE001
+        crash_msg = f"{type(exc).__name__}: {exc}"
         log.exception("crawl-engine thread crashed: %s", exc)
         log_bus.post({
             "type": "error",
-            "message": f"Crawl thread crashed: {type(exc).__name__}: {exc}",
+            "message": f"Crawl thread crashed: {crash_msg}",
             "timestamp": datetime.now().isoformat(),
         })
     finally:
@@ -336,6 +357,21 @@ def run_crawl() -> None:
             csv_writer.close_streams()
         except Exception:  # noqa: BLE001
             pass
+        # If _run_crawl_body crashed, mark snapshot failed. The normal
+        # completion path inside _run_crawl_body calls
+        # finish_snapshot(status='complete') itself.
+        if crash_msg:
+            try:
+                from ..services import snapshot as snapshot_svc
+                snapshot_svc.finish_snapshot(
+                    status="failed",
+                    pages_attempted=STATE.stats.crawled,
+                    pages_ok=STATE.stats.ok,
+                    pages_errored=STATE.stats.errors,
+                    notes=crash_msg,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         # Drain the inline PSI scheduler and do one atomic merge into
         # crawl_results.csv. Runs even on stop/error so whatever PSI
         # data we already collected lands in the CSV.
@@ -654,3 +690,23 @@ def _run_crawl_body() -> None:
         "Crawl done — %d pages, %d errors, %.1fs",
         STATE.stats.crawled, STATE.stats.errors, elapsed,
     )
+    # Phase 3 — finalise the snapshot with stats + Health Score. Silent
+    # no-op when Postgres is down or no snapshot was started.
+    try:
+        from ..services import snapshot as snapshot_svc
+        from ..services.health_score import compute as compute_health
+        hs = None
+        try:
+            hs = compute_health()
+        except Exception:  # noqa: BLE001
+            hs = None
+        snapshot_svc.finish_snapshot(
+            status="complete",
+            pages_attempted=STATE.stats.crawled,
+            pages_ok=STATE.stats.ok,
+            pages_errored=STATE.stats.errors,
+            health_score=hs.score if hs else None,
+            health_tier=hs.tier if hs else "",
+        )
+    except Exception:  # noqa: BLE001
+        pass

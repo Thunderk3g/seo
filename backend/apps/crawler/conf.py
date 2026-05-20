@@ -196,6 +196,25 @@ class CrawlerSettings:
         default_factory=lambda: _env_int("PSI_WORKERS", 4)
     )
 
+    # ── Engine selector (Phase 3) ────────────────────────────
+    # "legacy" = the original 656-line BFS engine in engine/engine.py
+    # "scrapy" = the Scrapy spider added in Phase 3d (when shipped)
+    # Independent of "where reads come from": when this is set to
+    # "scrapy" AND a CrawlSnapshot row exists, Page Explorer + Health
+    # Score read from the Postgres ORM. Otherwise they read CSV — so
+    # the default ("legacy") is fully backward-compatible.
+    engine: str = field(
+        default_factory=lambda: _env_str("ENGINE", "legacy")
+    )
+
+    # When true, every successful CSV result write is dual-written to
+    # the CrawlerPageResult ORM table (best-effort; silently skipped
+    # if Postgres is unavailable). Lets us populate the new table from
+    # the legacy engine without flipping the engine flag.
+    dual_write_postgres: bool = field(
+        default_factory=lambda: _env_bool("DUAL_WRITE_POSTGRES", True)
+    )
+
     # ── Data dirs ────────────────────────────────────────────
     data_dir: str = field(default_factory=lambda: _env_str("DATA_DIR", ""))
     reports_dir: str = field(default_factory=lambda: _env_str("REPORTS_DIR", ""))
