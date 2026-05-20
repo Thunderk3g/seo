@@ -182,6 +182,28 @@ COMPETITOR = {
     # to "false" because the Debian trust store doesn't include the
     # corporate MITM root that intercepts competitor HTTPS traffic.
     "ssl_verify": os.environ.get("COMPETITOR_SSL_VERIFY", "").strip(),
+    # Hard byte cap on the response body. Anything above is recorded
+    # with an error and not parsed. Default 5 MB — a real competitor
+    # page is <1 MB; pathological responses get filtered out cleanly.
+    "max_body_bytes": int(
+        os.environ.get("COMPETITOR_MAX_BODY_BYTES", str(5 * 1024 * 1024))
+    ),
+    # Number of fetch attempts before giving up on a URL. Each attempt
+    # is followed by exponential backoff with jitter (same shape as the
+    # in-house fetcher). Default 3 means one fetch + two retries.
+    "retry_attempts": int(os.environ.get("COMPETITOR_RETRY_ATTEMPTS", "3")),
+    # Error responses (4xx / 5xx / network) are cached with a SHORT
+    # TTL so a transient 503 doesn't lock out a competitor for the
+    # full 7-day cache window. Default 1 hour. 200 responses still
+    # use cache_ttl_seconds.
+    "error_cache_ttl_seconds": int(
+        os.environ.get("COMPETITOR_ERROR_CACHE_TTL_SECONDS", "3600")
+    ),
+    # Parallel fetching across hosts. Each unique host still respects
+    # its own rate_limit_sec; this caps how many hosts can be in flight
+    # simultaneously. With 10 competitors typically on 10 distinct CDNs,
+    # 10 is fine. Set to 1 for fully-sequential legacy behaviour.
+    "fetch_concurrency": int(os.environ.get("COMPETITOR_FETCH_CONCURRENCY", "10")),
 }
 
 # ─────────────────────────────────────────────────────────────
