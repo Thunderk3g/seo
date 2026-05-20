@@ -32,6 +32,13 @@ local_settings.py
 backend/data/
 backend/reports/
 
+# ── Internal strategy / audit docs (never push to GitHub) ─
+# All planning, audit, architecture, and decision docs live in docs/.
+# They contain commercially-sensitive analysis: competitor benchmarks,
+# pre-deploy security TODOs, leaked-key rotation notes, GSC numbers,
+# revenue-implication estimates. Keep local-only.
+docs/
+
 # ── Catch-all safety nets ─────────────────────────────
 # Generic JSON config (package.json, tsconfig.json, etc.) stays
 # tracked — only data-file extensions and credential filename
