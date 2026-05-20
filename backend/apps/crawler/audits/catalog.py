@@ -776,7 +776,9 @@ ALL_ISSUES: tuple[IssueDef, ...] = (
 # the bottom of the file to avoid circular-import risk; the new module
 # imports IssueDef + helper predicates from this one.
 from . import detectors_phase4 as _phase4  # noqa: E402
+# Phase 6 GEO suite additions — llms.txt + citation density.
+from . import detectors_geo as _geo  # noqa: E402
 
-ALL_ISSUES = ALL_ISSUES + _phase4.PHASE_4_ISSUES
+ALL_ISSUES = ALL_ISSUES + _phase4.PHASE_4_ISSUES + _geo.GEO_ISSUES
 
 ISSUES_BY_SLUG: dict[str, IssueDef] = {i.slug: i for i in ALL_ISSUES}

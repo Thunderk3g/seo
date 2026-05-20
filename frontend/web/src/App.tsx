@@ -17,6 +17,7 @@ import PageExplorerPage from './crawler/pages/PageExplorerPage';
 import HealthDashboard from './crawler/pages/HealthDashboard';
 import TrendsPage from './crawler/pages/TrendsPage';
 import CompareCrawlsPage from './crawler/pages/CompareCrawlsPage';
+import GeoDashboard from './crawler/pages/GeoDashboard';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 
@@ -63,6 +64,8 @@ export default function App() {
             {/* Phase 5 — Trends (Health Score over time) + Compare Crawls. */}
             <Route path="/trends" component={TrendsPage} />
             <Route path="/compare" component={CompareCrawlsPage} />
+            {/* Phase 6 — GEO suite (llms.txt + IndexNow + AI-bots + backlinks). */}
+            <Route path="/geo" component={GeoDashboard} />
 
             <Route>
               <div style={{ padding: 24 }}>Not found</div>

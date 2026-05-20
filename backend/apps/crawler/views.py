@@ -832,3 +832,89 @@ def issue_detail_view(_request, slug: str):
         "affected_urls": affected,
         "started_at": audit.started_at,
     })
+
+
+# ── Phase 6 — GEO suite (llms.txt + IndexNow + AI-bot logs + backlinks) ─────
+
+
+@api_view(["GET"])
+def llms_txt_audit_view(request):
+    """GET /api/v1/crawler/geo/llms-txt — audit llms.txt at site root.
+
+    Query: ?domain=bajajlifeinsurance.com (defaults to Bajaj).
+    """
+    from .services.llms_txt import audit as audit_llms
+
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    result = audit_llms(domain)
+    return Response(result.as_dict())
+
+
+@api_view(["GET"])
+def llms_txt_draft_view(request):
+    """GET /api/v1/crawler/geo/llms-txt/draft — generate a draft body
+    from the AEM sitemap + page-type data."""
+    from .services.llms_txt import generate as gen_llms
+
+    try:
+        cap = int(request.query_params.get("max_pages_per_section") or 30)
+    except (TypeError, ValueError):
+        cap = 30
+    draft = gen_llms(max_pages_per_section=max(1, min(cap, 200)))
+    return Response(draft.as_dict())
+
+
+@api_view(["POST"])
+def indexnow_ping_view(request):
+    """POST /api/v1/crawler/geo/indexnow/ping — submit URLs to the
+    IndexNow protocol (Bing + Yandex). Body: {"urls": [...]}.
+
+    Hardcoded allow-prefix prevents accidental staging pings.
+    """
+    from .adapters.indexnow import ping_urls
+
+    raw = request.data if hasattr(request, "data") else {}
+    urls = raw.get("urls") if isinstance(raw, dict) else None
+    if not urls or not isinstance(urls, list):
+        return Response({"ok": False, "error": "missing 'urls' list in body"}, status=400)
+    result = ping_urls(urls)
+    return Response(result)
+
+
+@api_view(["GET"])
+def ai_bot_hits_view(request):
+    """GET /api/v1/crawler/geo/ai-bots — recent verified AI-bot hits.
+
+    Reads from the AIBotLog model populated by bot_log_parser. Returns
+    an aggregate (per-bot counts) plus the most recent ``limit`` hits.
+    """
+    from .adapters.bot_log_parser import recent_hits, hits_by_bot
+
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    return Response({
+        "totals": hits_by_bot(),
+        "recent": recent_hits(max(1, min(limit, 500))),
+    })
+
+
+@api_view(["GET"])
+def backlinks_view(request):
+    """GET /api/v1/crawler/geo/backlinks — Common Crawl-derived backlinks
+    pointing at Bajaj URLs.
+
+    Phase 6 ships the model + adapter stub; the monthly WAT pull is
+    operator-side. Endpoint returns whatever rows are loaded.
+    """
+    from .adapters.commoncrawl_backlinks import recent_backlinks, summary
+
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    return Response({
+        "summary": summary(),
+        "backlinks": recent_backlinks(max(1, min(limit, 500))),
+    })

@@ -478,6 +478,74 @@ def get_thematic_report(slug: str = "") -> dict[str, Any]:
 
 
 @_safe
+def audit_llms_txt(domain: str = "bajajlifeinsurance.com") -> dict[str, Any]:
+    """Audit /llms.txt at the given site root (the llmstxt.org spec — AI
+    search's equivalent of robots.txt). Returns presence, byte size,
+    section + link counts, structural validation (H1 + blockquote +
+    sections) and companion llms-full.txt detection. Use when the
+    user asks "do we have an llms.txt?", "is our llms.txt valid?",
+    "GEO readiness?", or "how do AI search engines see us?"."""
+    from apps.crawler.services.llms_txt import audit as audit_fn
+    result = audit_fn(domain)
+    return {"ok": True, **result.as_dict()}
+
+
+@_safe
+def generate_llms_txt(max_pages_per_section: int = 30) -> dict[str, Any]:
+    """Generate a draft /llms.txt from the live AEM sitemap + crawler
+    page-type data. Groups pages by intent (Insurance products,
+    Calculators, Knowledge centre, etc.) and produces a Markdown body
+    the operator pastes into AEM. Use when the user asks "write our
+    llms.txt", "draft an llms.txt", or "generate llms.txt"."""
+    from apps.crawler.services.llms_txt import generate
+    draft = generate(max_pages_per_section=int(max_pages_per_section or 30))
+    return {"ok": True, **draft.as_dict()}
+
+
+@_safe
+def get_ai_bot_hits(limit: int = 50) -> dict[str, Any]:
+    """Recent verified AI-bot hits on Bajaj pages (GPTBot, ClaudeBot,
+    PerplexityBot, Google-Extended, Bytespider, etc.). Returns
+    per-bot aggregate totals (total / verified / spoofed) plus the
+    most recent ``limit`` hits. Use when the user asks "is GPTBot
+    crawling us?", "how often does ClaudeBot hit our site?", "AI
+    crawler activity?"."""
+    from apps.crawler.adapters.bot_log_parser import recent_hits, hits_by_bot
+    cap = max(1, min(int(limit or 50), 500))
+    return {
+        "ok": True,
+        "totals": hits_by_bot(),
+        "recent": recent_hits(cap),
+    }
+
+
+@_safe
+def get_backlinks(limit: int = 50, target_domain: str = "") -> dict[str, Any]:
+    """Common Crawl-derived inbound links pointing at Bajaj URLs.
+    Returns the most recent ``limit`` backlinks and a per-target
+    summary. Use when the user asks "who links to us?", "our
+    backlinks?", "inbound link profile?"."""
+    from apps.crawler.adapters.commoncrawl_backlinks import recent_backlinks, summary
+    cap = max(1, min(int(limit or 50), 500))
+    rows = recent_backlinks(cap)
+    if target_domain:
+        rows = [r for r in rows if r.get("target_domain") == target_domain]
+    return {"ok": True, "summary": summary(), "backlinks": rows}
+
+
+@_safe
+def ping_indexnow(urls: str = "") -> dict[str, Any]:
+    """Submit a batch of Bajaj URLs to IndexNow (Bing + Yandex +
+    partners). Pass a comma-separated string of URLs. URLs that don't
+    match the Bajaj allow-list are rejected. Dry-run mode if
+    INDEXNOW_KEY env var is unset. Use when the user asks to push a
+    fresh URL for AI/search re-indexing."""
+    from apps.crawler.adapters.indexnow import ping_urls
+    url_list = [u.strip() for u in (urls or "").split(",") if u.strip()]
+    return ping_urls(url_list)
+
+
+@_safe
 def get_pagerank_top(n: int = 20) -> dict[str, Any]:
     """Top URLs by internal PageRank ("Link Score") — Ahrefs Page Rating
     equivalent. Computed from crawl_discovered.csv link graph using
@@ -1122,6 +1190,112 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "audit_llms_txt",
+            "description": (
+                "Audit /llms.txt for a given domain (llmstxt.org spec). "
+                "Returns presence, byte size, section + link counts, "
+                "structural validation, and companion llms-full.txt "
+                "detection. Use when the user asks about GEO / AI-search "
+                "readiness."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Domain to audit. Defaults to bajajlifeinsurance.com.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_llms_txt",
+            "description": (
+                "Draft a Bajaj-branded llms.txt from the live AEM sitemap "
+                "+ crawler page-type data. Groups pages by intent. Returns "
+                "a Markdown body the operator pastes into AEM."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_pages_per_section": {
+                        "type": "integer",
+                        "description": "Cap pages per section (default 30).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_ai_bot_hits",
+            "description": (
+                "Recent verified AI-bot hits (GPTBot, ClaudeBot, "
+                "PerplexityBot, etc.) with per-bot totals + the most "
+                "recent hits. Spoofed UAs are flagged verified=false."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many recent rows (default 50, max 500).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_backlinks",
+            "description": (
+                "Common Crawl-derived backlinks to Bajaj URLs. Returns "
+                "per-target summary + the most recent rows."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many rows (default 50, max 500).",
+                    },
+                    "target_domain": {
+                        "type": "string",
+                        "description": "Filter by target domain (e.g. www.bajajlifeinsurance.com).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ping_indexnow",
+            "description": (
+                "Submit URLs to IndexNow (Bing + Yandex + partners). "
+                "Pass comma-separated URLs. Allow-list filters out "
+                "anything outside Bajaj domains. Dry-run if "
+                "INDEXNOW_KEY is unset."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "urls": {
+                        "type": "string",
+                        "description": "Comma-separated list of fully-qualified Bajaj URLs.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "emit_card",
             "description": (
                 "Render a structured card inline with the assistant's "
@@ -1175,5 +1349,10 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_trends": get_trends,
     "compare_crawls": compare_crawls,
     "get_thematic_report": get_thematic_report,
+    "audit_llms_txt": audit_llms_txt,
+    "generate_llms_txt": generate_llms_txt,
+    "ping_indexnow": ping_indexnow,
+    "get_ai_bot_hits": get_ai_bot_hits,
+    "get_backlinks": get_backlinks,
     "emit_card": emit_card,
 }

@@ -622,4 +622,93 @@ export const crawlerApi = {
       }>;
     }>(`/near-duplicates${suffix}`);
   },
+
+  // Phase 6 — GEO suite (llms.txt + IndexNow + AI-bot logs + backlinks).
+  llmsTxtAudit: (domain?: string) => {
+    const qs = domain ? `?domain=${encodeURIComponent(domain)}` : '';
+    return request<{
+      domain: string;
+      url: string;
+      found: boolean;
+      status_code: number;
+      byte_size: number;
+      section_count: number;
+      link_count: number;
+      has_h1: boolean;
+      has_blockquote_summary: boolean;
+      has_full_txt: boolean;
+      full_txt_byte_size: number;
+      issues: string[];
+      raw_excerpt: string;
+    }>(`/geo/llms-txt${qs}`);
+  },
+  llmsTxtDraft: (maxPagesPerSection?: number) => {
+    const qs = maxPagesPerSection
+      ? `?max_pages_per_section=${maxPagesPerSection}`
+      : '';
+    return request<{
+      domain: string;
+      body: string;
+      page_count: number;
+      section_count: number;
+      char_count: number;
+    }>(`/geo/llms-txt/draft${qs}`);
+  },
+  indexNowPing: (urls: string[]) =>
+    request<{
+      ok: boolean;
+      submitted?: number;
+      would_submit?: number;
+      would_submit_sample?: string[];
+      dry_run?: boolean;
+      note?: string;
+      status_code?: number;
+      response_body?: string;
+      rejected?: string[];
+      rejected_count?: number;
+      error?: string;
+    }>('/geo/indexnow/ping', {
+      method: 'POST',
+      body: JSON.stringify({ urls }),
+    }),
+  aiBotHits: (limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<{
+      totals: Record<string, { total: number; verified: number; spoofed: number }>;
+      recent: Array<{
+        id: string;
+        seen_at: string | null;
+        bot: string;
+        remote_ip: string | null;
+        verified: boolean;
+        url: string;
+        status_code: number;
+        bytes_sent: number;
+        user_agent: string;
+      }>;
+    }>(`/geo/ai-bots${qs}`);
+  },
+  backlinks: (limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<{
+      summary: {
+        total: number;
+        per_target_domain: Array<{ target_domain: string; count: number }>;
+        top_referring_domains: Array<{ source_domain: string; count: number }>;
+      };
+      backlinks: Array<{
+        id: string;
+        source_url: string;
+        source_domain: string;
+        target_url: string;
+        target_domain: string;
+        anchor_text: string;
+        rel: string;
+        nofollow: boolean;
+        discovered_in: string;
+        first_seen: string | null;
+        last_seen: string | null;
+      }>;
+    }>(`/geo/backlinks${qs}`);
+  },
 };

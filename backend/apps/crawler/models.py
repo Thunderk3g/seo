@@ -310,3 +310,100 @@ class MetricSnapshot(models.Model):
 
     def __str__(self) -> str:
         return f"{self.recorded_date} {self.engine} score={self.health_score}"
+
+
+# ── Phase 6 — GEO suite tables ──────────────────────────────────────────────
+
+
+class AIBotLog(models.Model):
+    """A single verified AI-bot hit parsed from CDN access logs.
+
+    ``verified`` is the security-critical field: a request claiming
+    to be GPTBot from a non-OpenAI IP gets ``verified=False`` and is
+    treated as user-agent spoofing. The bot_log_parser does rDNS
+    + forward-confirmed DNS against the published IP ranges from each
+    bot's owner before persisting.
+    """
+
+    BOT_CHOICES = (
+        ("gptbot", "GPTBot (OpenAI)"),
+        ("chatgpt-user", "ChatGPT-User (browsing)"),
+        ("oai-searchbot", "OAI-SearchBot"),
+        ("claudebot", "ClaudeBot (Anthropic)"),
+        ("claude-user", "Claude-User (browsing)"),
+        ("perplexitybot", "PerplexityBot"),
+        ("perplexity-user", "Perplexity-User"),
+        ("google-extended", "Google-Extended (Gemini)"),
+        ("bytespider", "Bytespider (ByteDance/Doubao)"),
+        ("ccbot", "CCBot (Common Crawl)"),
+        ("meta-externalagent", "Meta-ExternalAgent"),
+        ("other", "Other AI bot"),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    seen_at = models.DateTimeField(db_index=True)
+    bot = models.CharField(max_length=32, choices=BOT_CHOICES, db_index=True)
+    user_agent = models.TextField(blank=True, default="")
+    remote_ip = models.GenericIPAddressField(null=True, blank=True)
+    verified = models.BooleanField(default=False, db_index=True)
+    url = models.URLField(max_length=2000, db_index=True)
+    status_code = models.PositiveSmallIntegerField(default=0)
+    bytes_sent = models.PositiveIntegerField(default=0)
+    referer = models.TextField(blank=True, default="")
+    raw = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-seen_at",)
+        indexes = [
+            models.Index(fields=["-seen_at", "bot"]),
+            models.Index(fields=["url", "-seen_at"]),
+            models.Index(fields=["bot", "verified"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.bot} {self.url} @ {self.seen_at:%Y-%m-%d %H:%M}"
+
+
+class Backlink(models.Model):
+    """Inbound link discovered via Common Crawl WAT or operator import.
+
+    Stores only (source_url -> target_url, anchor) plus the discovery
+    pass + first/last seen dates. Per the Common Crawl adapter we
+    stream-filter the WAT and keep only edges whose ``target_domain``
+    is Bajaj or a tracked competitor, so the table never exceeds
+    a few hundred thousand rows even after several months.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_url = models.URLField(max_length=2000, db_index=True)
+    source_domain = models.CharField(max_length=255, db_index=True)
+    target_url = models.URLField(max_length=2000, db_index=True)
+    target_domain = models.CharField(max_length=255, db_index=True)
+    anchor_text = models.TextField(blank=True, default="")
+    rel = models.CharField(max_length=64, blank=True, default="")
+    nofollow = models.BooleanField(default=False)
+    discovered_in = models.CharField(
+        max_length=64,
+        help_text="Common Crawl release ID (e.g. CC-MAIN-2026-09) or 'manual'.",
+        default="manual",
+        db_index=True,
+    )
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-last_seen",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_url", "target_url"],
+                name="uniq_backlink_source_target",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["target_domain", "-last_seen"]),
+            models.Index(fields=["source_domain", "target_domain"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source_domain} -> {self.target_url}"
