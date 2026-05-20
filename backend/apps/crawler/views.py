@@ -296,6 +296,30 @@ def console_capture_stop_view(_request):
     return Response({"ok": True, "message": "Stop signal sent."})
 
 
+@api_view(["GET"])
+def psi_status_view(_request):
+    """Return the last-persisted PSI run outcome. Powers the
+    "PSI capture skipped because <reason>" banner on the Reports page.
+
+    Shape (when a run has happened):
+        {
+          "ok": bool,
+          "started_at": ISO8601,
+          "finished_at": ISO8601,
+          "urls_inspected": int,
+          "rows_written": int,
+          "failed": int,
+          "strategies": ["mobile", "desktop"],
+          "primary_strategy": "mobile",
+          "error": "..."   (only present when ok=false)
+        }
+
+    Returns ``{}`` when no PSI run has happened yet.
+    """
+    from .engine import psi_capture
+    return Response(psi_capture.read_status())
+
+
 @api_view(["POST"])
 def gsc_inspect_unknowns_view(request):
     """Upgrade `unknown` rows to definitive verdicts via URL Inspection API.

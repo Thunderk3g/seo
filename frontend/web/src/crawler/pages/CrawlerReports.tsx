@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearch } from 'wouter';
 import GscCoverageUploader from '../components/GscCoverageUploader';
 import Icon from '../components/Icon';
+import PsiStatusBanner from '../components/PsiStatusBanner';
 import StatusSections from '../components/StatusSections';
 // ConsoleCaptureBanner removed — Playwright capture now runs automatically
 // at the end of every regular crawl (see engine.run_crawl). File kept at
@@ -82,6 +83,8 @@ export default function CrawlerReports() {
           <Icon name="error" /> {error}
         </div>
       )}
+
+      <PsiStatusBanner />
 
       <GscCoverageUploader />
 

@@ -312,4 +312,21 @@ export const crawlerApi = {
     request<{ ok: boolean; message?: string }>('/console/capture/stop', {
       method: 'POST',
     }),
+
+  // PSI / Core Web Vitals — last-run status. Returns {} (empty object)
+  // when no PSI run has happened yet. When a run completed, this carries
+  // ok / urls_inspected / rows_written / failed / error so the UI can
+  // render either a success or a "PSI skipped because <reason>" banner.
+  psiStatus: () =>
+    request<{
+      ok?: boolean;
+      started_at?: string;
+      finished_at?: string;
+      urls_inspected?: number;
+      rows_written?: number;
+      failed?: number;
+      strategies?: string[];
+      primary_strategy?: string;
+      error?: string;
+    }>('/psi/status'),
 };
