@@ -237,13 +237,31 @@ def _build_profile(
         if isinstance(p.cwv_mobile.get("field_inp_ms"), (int, float))
     ]
 
+    # All OK pages we sampled — capped at 25 to match the per-domain
+    # crawl ceiling. The body_text + meta + headings fields below feed
+    # the AEM-vs-competitor content comparison view (our AEM page on
+    # one side, the topically-closest competitor page on the other).
+    # 25 × 10 rivals × ~30 KB typical body ≈ 7.5 MB per profile JSON —
+    # well within Postgres JSONB limits.
     sample_pages = [
         {
             "url": p.url,
             "title": p.title,
+            "meta_description": p.meta_description,
+            "h1_texts": p.h1_texts,
+            "h2_texts": p.h2_texts,
+            "schema_types": p.schema_types,
             "word_count": p.word_count,
             "has_schema": p.has_schema_org,
             "page_type": _classify_page(p.url, p),
+            "response_time_ms": p.response_time_ms,
+            "internal_link_count": p.internal_link_count,
+            "external_link_count": p.external_link_count,
+            "last_modified": p.last_modified,
+            # Full body text — used by the content comparison view to
+            # show their content side-by-side with ours from AEM. Capped
+            # at 200 KB upstream in _parse_html.
+            "body_text": p.body_text,
             # Per-page CWV alongside the structural metrics so the
             # frontend can show "this page: LCP 2.4s, score 65" without
             # an extra DB hit.
@@ -261,7 +279,7 @@ def _build_profile(
             ),
             "inp_ms": (p.cwv_mobile or {}).get("field_inp_ms"),
         }
-        for p in ok_pages[:10]
+        for p in ok_pages[:25]
     ]
 
     return {

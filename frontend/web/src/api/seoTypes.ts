@@ -615,9 +615,21 @@ export interface GapCrawlProfile {
   sample_pages?: {
     url: string;
     title: string;
+    meta_description?: string;
+    h1_texts?: string[];
+    h2_texts?: string[];
+    schema_types?: string[];
     word_count: number;
     has_schema: boolean;
     page_type: string;
+    response_time_ms?: number;
+    internal_link_count?: number;
+    external_link_count?: number;
+    last_modified?: string;
+    // Full body text captured by the competitor crawler (capped at
+    // 200 KB upstream). Used by the AEM-vs-competitor content comparison
+    // view to render their content side-by-side with ours from AEM.
+    body_text?: string;
     pagespeed_score?: number | null;
     lcp_ms?: number | null;
     cls?: number | null;

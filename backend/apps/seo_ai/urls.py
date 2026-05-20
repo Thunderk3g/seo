@@ -6,6 +6,8 @@ from .views import (
     chat_stream,
     competitor_dashboard,
     competitor_gap_detection,
+    content_comparison,
+    content_comparison_our_pages,
     gap_pipeline_detail,
     gap_pipeline_latest,
     gap_pipeline_start,
@@ -57,6 +59,18 @@ urlpatterns = [
         "gap-pipeline/<uuid:run_id>/",
         gap_pipeline_detail,
         name="gap-pipeline-detail",
+    ),
+    # Content comparison — AEM page vs topically-closest competitor page.
+    # No LLM required; pure-string matcher under gap_pipeline/page_pairing.py.
+    path(
+        "content-comparison/our-pages/",
+        content_comparison_our_pages,
+        name="content-comparison-our-pages",
+    ),
+    path(
+        "content-comparison/",
+        content_comparison,
+        name="content-comparison",
     ),
     path("chat/stream/", chat_stream, name="chat-stream"),
     path("", include(_router.urls)),

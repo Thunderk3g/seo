@@ -182,11 +182,13 @@ COMPETITOR = {
     # to "false" because the Debian trust store doesn't include the
     # corporate MITM root that intercepts competitor HTTPS traffic.
     "ssl_verify": os.environ.get("COMPETITOR_SSL_VERIFY", "").strip(),
-    # Hard byte cap on the response body. Anything above is recorded
-    # with an error and not parsed. Default 5 MB — a real competitor
-    # page is <1 MB; pathological responses get filtered out cleanly.
+    # Hard byte cap on the response body. ``0`` (or negative) disables
+    # the cap entirely — needed for the AEM-vs-competitor content
+    # comparison view, which wants the full body of every sampled page.
+    # Default 100 MB is a soft safety net for pathological responses
+    # from untrusted competitor hosts; flip to 0 in .env to take it off.
     "max_body_bytes": int(
-        os.environ.get("COMPETITOR_MAX_BODY_BYTES", str(5 * 1024 * 1024))
+        os.environ.get("COMPETITOR_MAX_BODY_BYTES", str(100 * 1024 * 1024))
     ),
     # Number of fetch attempts before giving up on a URL. Each attempt
     # is followed by exponential backoff with jitter (same shape as the
@@ -204,6 +206,16 @@ COMPETITOR = {
     # simultaneously. With 10 competitors typically on 10 distinct CDNs,
     # 10 is fine. Set to 1 for fully-sequential legacy behaviour.
     "fetch_concurrency": int(os.environ.get("COMPETITOR_FETCH_CONCURRENCY", "10")),
+    # Max characters of visible body text kept per page after HTML
+    # stripping. ``0`` (or negative) = unlimited — every word from
+    # navbar to footer survives into ``CompetitorPage.body_text`` and
+    # downstream into ``GapDeepCrawl.profile.sample_pages[].body_text``.
+    # Default 0 because the AEM-vs-competitor comparison flow needs the
+    # full text. Set a positive value (e.g. 200000 for ~30k words) to
+    # cap if Postgres JSONB rows start getting unwieldy.
+    "body_text_max_chars": int(
+        os.environ.get("COMPETITOR_BODY_TEXT_MAX_CHARS", "0")
+    ),
 }
 
 # ─────────────────────────────────────────────────────────────
