@@ -625,6 +625,42 @@ def issues_view(request):
 
 
 @api_view(["GET"])
+def page_explorer_view(request):
+    """Ahrefs-style sortable/filterable URL inventory over the latest
+    crawl_results.csv.
+
+    Query params (all optional; see services/page_explorer.py for the
+    full contract):
+      sort, status, subdomain, page_type, indexed, has_psi, q,
+      limit (1-500, default 50), offset (default 0).
+
+    Returns ``{total, returned, limit, offset, sort, rows, columns}``.
+    Phase 3 will swap the data source to Postgres without changing
+    this response shape.
+    """
+    from .services.page_explorer import query as run_query
+
+    params = {
+        k: request.query_params.get(k)
+        for k in ("status", "subdomain", "page_type", "indexed",
+                  "has_psi", "q")
+    }
+    sort = request.query_params.get("sort") or "url"
+    limit = request.query_params.get("limit") or 50
+    offset = request.query_params.get("offset") or 0
+    return Response(run_query(params=params, sort=sort, limit=limit, offset=offset))
+
+
+@api_view(["GET"])
+def page_explorer_facets_view(_request):
+    """Distinct values for the filterable enum columns. Populates the
+    Page Explorer filter dropdowns."""
+    from .services.page_explorer import facets
+
+    return Response(facets())
+
+
+@api_view(["GET"])
 def issue_detail_view(_request, slug: str):
     """Per-issue drill-in: metadata + affected URLs.
 

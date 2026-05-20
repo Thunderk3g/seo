@@ -5,7 +5,9 @@ from .views import (
     SEORunViewSet,
     chat_stream,
     competitor_dashboard,
+    competitor_detail_view,
     competitor_gap_detection,
+    competitor_page_detail_view,
     content_comparison,
     content_comparison_our_pages,
     gap_pipeline_detail,
@@ -71,6 +73,19 @@ urlpatterns = [
         "content-comparison/",
         content_comparison,
         name="content-comparison",
+    ),
+    # Phase 2 — per-competitor landing + per-URL detail. Replaces the
+    # inline DeepCrawlPanel "dropdown" view. URL segments are
+    # base64url-encoded so any URL round-trips through routing.
+    path(
+        "competitor/<str:domain>/",
+        competitor_detail_view,
+        name="competitor-detail",
+    ),
+    path(
+        "competitor/<str:domain>/pages/<str:url_b64>/",
+        competitor_page_detail_view,
+        name="competitor-page-detail",
     ),
     path("chat/stream/", chat_stream, name="chat-stream"),
     path("", include(_router.urls)),

@@ -13,6 +13,9 @@ import CrawlerLogs from './crawler/pages/CrawlerLogs';
 import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
 import IssuesPage from './crawler/pages/IssuesPage';
+import PageExplorerPage from './crawler/pages/PageExplorerPage';
+import CompetitorDetailPage from './pages/CompetitorDetailPage';
+import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 
 export default function App() {
   return (
@@ -29,6 +32,13 @@ export default function App() {
             <Route path="/semrush" component={SemrushPage} />
             <Route path="/sitemap" component={SitemapContentPage} />
             <Route path="/competitors" component={CompetitorsPage} />
+            {/* Phase 2 — per-competitor + per-URL detail. Replaces
+                the DeepCrawlPanel "dropdown" pattern. */}
+            <Route
+              path="/competitors/:domain/pages/:b64"
+              component={CompetitorPageDetailPage}
+            />
+            <Route path="/competitors/:domain" component={CompetitorDetailPage} />
 
             {/* ── Crawler Engine (v2) ─────────────────────────── */}
             {/* /crawler/settings removed per request — to restore, re-add  */}
@@ -42,6 +52,9 @@ export default function App() {
             {/* Phase 1 — audit engine: typed issues inbox + Health Score. */}
             <Route path="/crawler/issues" component={IssuesPage} />
             <Route path="/crawler/issues/:slug" component={IssuesPage} />
+            {/* Phase 2 — Ahrefs-style Page Explorer with sortable/
+                filterable URL inventory over the latest crawl. */}
+            <Route path="/crawler/pages" component={PageExplorerPage} />
 
             <Route>
               <div style={{ padding: 24 }}>Not found</div>

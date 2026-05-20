@@ -28,6 +28,12 @@ urlpatterns = [
     path("issues", views.issues_view, name="issues"),
     path("issues/<str:slug>", views.issue_detail_view, name="issue-detail"),
 
+    # Page Explorer — Ahrefs-style sortable/filterable URL inventory.
+    # Phase 2: reads CSV via in-process mtime cache. Phase 3 will swap
+    # to Postgres with the same response contract.
+    path("pages", views.page_explorer_view, name="pages"),
+    path("pages/facets", views.page_explorer_facets_view, name="pages-facets"),
+
     # Reports
     path("reports/xlsx", views.report_xlsx_view, name="report-xlsx"),
 
