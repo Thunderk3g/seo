@@ -271,6 +271,11 @@ def build_report(output_path: Path | None = None) -> Path:
 
         audit = run_all()
         hs = compute_health_score(audit)
+        # Phase 4: per-URL × issue detail sheet (one row per occurrence).
+        # Created BEFORE the catalogue sheet so the index parameter
+        # pushes it to position 2 after we insert the catalogue at 0.
+        detail_ws = wb.create_sheet(title="Issues Detail", index=0)
+        _write_issues_detail_sheet(detail_ws, audit)
         issues_ws = wb.create_sheet(title="Issues Catalogue", index=0)
         _write_issues_catalog_sheet(issues_ws, audit)
         health_ws = wb.create_sheet(title="Health Score", index=0)
@@ -1071,4 +1076,120 @@ def _add_summary_charts(ws, res_hdr: list[str], res_rows: list[list[str]]) -> No
         chart.width = 16
         chart.height = 8
         ws.add_chart(chart, ws.cell(row=start_row, column=4).coordinate)
+
+
+# ── Phase 4: per-URL × issue detail sheet ─────────────────────────────
+
+
+def _write_issues_detail_sheet(ws: Worksheet, audit) -> None:
+    """One row per (issue × affected URL) — the triage drill-down.
+
+    Different shape from the Phase 1 "Issues Catalogue" sheet which
+    has one row per issue type. The Detail sheet lets the operator
+    sort/filter the full URL list in Excel: all errors on the branch
+    subdomain, all warnings touching the /term-insurance/ path, etc.
+
+    Affected URLs are already capped at 1000 per issue in the audit
+    runner; with ~30-50 active issue types, the detail sheet stays
+    under ~50,000 rows — well within Excel's 1M limit.
+    """
+    ws.sheet_view.showGridLines = False
+    headers = (
+        "Issue", "Severity", "Category", "URL", "Title",
+        "Status", "Page type", "Subdomain", "Words", "Response (ms)",
+    )
+    widths = (38, 12, 16, 60, 40, 10, 14, 14, 10, 14)
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.merge_cells(f"A1:{get_column_letter(len(headers))}1")
+    ws["A1"] = "Issues Detail (per URL)"
+    ws["A1"].font = _TITLE_FONT
+    ws["A1"].alignment = _LEFT
+
+    ws.merge_cells(f"A2:{get_column_letter(len(headers))}2")
+    finished = audit.finished_at[:19] if audit.finished_at else ""
+    severity_breakdown = audit.severity_counts()
+    ws["A2"] = (
+        f"Computed {finished}  -  "
+        f"{audit.total_urls:,} URLs scanned  -  "
+        f"{severity_breakdown['error']:,} errors + "
+        f"{severity_breakdown['warning']:,} warnings + "
+        f"{severity_breakdown['notice']:,} notices"
+    )
+    ws["A2"].font = _SUB_FONT
+    ws["A2"].alignment = _LEFT
+
+    header_row = 4
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=i, value=h)
+        c.font = _HEADER_FONT
+        c.fill = _HEADER_FILL
+        c.alignment = _CENTER
+        c.border = _BORDER
+
+    sev_fill = {
+        "error": _ERR_FILL,
+        "warning": _WARN_FILL,
+        "notice": PatternFill("solid", fgColor="E6EEF9"),
+    }
+    sev_text = {
+        "error": ERR_RED,
+        "warning": "F59E0B",
+        "notice": BRAND_NAVY,
+    }
+    severity_order = {"error": 0, "warning": 1, "notice": 2}
+
+    # Sort issue occurrences errors-first, then by count desc, then
+    # iterate affected URLs within each occurrence.
+    occs = sorted(
+        [o for o in audit.occurrences if o.count > 0],
+        key=lambda o: (severity_order[o.issue.severity], -o.count),
+    )
+
+    row = header_row + 1
+    for occ in occs:
+        issue = occ.issue
+        for affected in occ.affected_urls:
+            url = (affected.get("url") or "").strip()
+            if not url:
+                continue
+            zebra = _ZEBRA_FILL if (row - header_row) % 2 == 0 else None
+            values = [
+                issue.title,
+                issue.severity.title(),
+                issue.category,
+                url,
+                (affected.get("title") or "").strip(),
+                (affected.get("status_code") or "").strip(),
+                (affected.get("page_type") or "").strip(),
+                (affected.get("subdomain") or "").strip(),
+                affected.get("word_count") or "",
+                affected.get("response_time_ms") or "",
+            ]
+            for col, val in enumerate(values, start=1):
+                c = ws.cell(row=row, column=col, value=val)
+                c.font = Font(
+                    name="Consolas" if col == 4 else "Calibri",
+                    size=10,
+                    bold=(col == 2),
+                    color=sev_text[issue.severity] if col == 2 else TEXT_DARK,
+                )
+                c.alignment = Alignment(
+                    horizontal="center" if col in (2, 3, 6, 7, 8, 9, 10) else "left",
+                    vertical="top",
+                    wrap_text=col in (1, 5),
+                )
+                c.border = _BORDER
+                if col == 2:
+                    c.fill = sev_fill[issue.severity]
+                elif zebra is not None:
+                    c.fill = zebra
+            row += 1
+
+    if row > header_row + 1:
+        ws.freeze_panes = ws.cell(row=header_row + 1, column=5)
+        ws.auto_filter.ref = (
+            f"A{header_row}:{get_column_letter(len(headers))}{row - 1}"
+        )
 

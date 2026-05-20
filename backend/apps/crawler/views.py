@@ -625,6 +625,48 @@ def issues_view(request):
 
 
 @api_view(["GET"])
+def pagerank_view(_request):
+    """Top URLs by internal PageRank + summary aggregates.
+
+    Powers the Health Dashboard "Top-linked pages" tile and the chat
+    tool `get_pagerank_top`. Results are mtime-cached over
+    crawl_discovered.csv so the first request pays the ~2s compute
+    cost and subsequent requests are < 10 ms.
+    """
+    from .services.pagerank import summary, top_n
+
+    return Response({
+        "summary": summary(),
+        "top": top_n(50),
+    })
+
+
+@api_view(["GET"])
+def near_duplicates_view(request):
+    """Near-duplicate URL clusters via MinHash + LSH.
+
+    Query params:
+      threshold (float 0.0-1.0, default 0.9 = Screaming Frog default)
+      n (int, default 20, max 100)
+    """
+    from .services.near_dup import summary, top_clusters
+
+    try:
+        threshold = float(request.query_params.get("threshold") or 0.9)
+    except (TypeError, ValueError):
+        threshold = 0.9
+    try:
+        n = int(request.query_params.get("n") or 20)
+    except (TypeError, ValueError):
+        n = 20
+
+    return Response({
+        "summary": summary(threshold=threshold),
+        "clusters": top_clusters(n, threshold=threshold),
+    })
+
+
+@api_view(["GET"])
 def page_explorer_view(request):
     """Ahrefs-style sortable/filterable URL inventory over the latest
     crawl_results.csv.

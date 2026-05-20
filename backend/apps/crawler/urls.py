@@ -34,6 +34,10 @@ urlpatterns = [
     path("pages", views.page_explorer_view, name="pages"),
     path("pages/facets", views.page_explorer_facets_view, name="pages-facets"),
 
+    # Phase 4 — PageRank / Near-duplicate services.
+    path("pagerank", views.pagerank_view, name="pagerank"),
+    path("near-duplicates", views.near_duplicates_view, name="near-duplicates"),
+
     # Reports
     path("reports/xlsx", views.report_xlsx_view, name="report-xlsx"),
 
