@@ -159,19 +159,24 @@ def _fetch_once(
                 # content_type column ("application/pdf" etc).
                 resp.close()
                 return result, [], False, None
-            # HTML/XML: bounded body read. Content-Length hint short-circuits
-            # absurdly large responses before we even read; otherwise we
-            # stream up to settings.max_body_bytes and bail if exceeded.
-            max_bytes = int(getattr(settings, "max_body_bytes", 5 * 1024 * 1024))
-            content_length = resp.headers.get("Content-Length")
-            if content_length and content_length.isdigit() and int(content_length) > max_bytes:
-                result["status"] = "OK (body too large — skipped)"
-                result["error_type"] = "BodyTooLarge"
-                result["error_message"] = (
-                    f"Content-Length={content_length} exceeds {max_bytes}"
-                )
-                resp.close()
-                return result, [], False, None
+            # HTML/XML body read. settings.max_body_bytes == 0 means
+            # "no cap" — never skip a page. Positive values act as a
+            # defensive guard if you ever crawl untrusted domains.
+            max_bytes = int(getattr(settings, "max_body_bytes", 0))
+            if max_bytes > 0:
+                content_length = resp.headers.get("Content-Length")
+                if (
+                    content_length
+                    and content_length.isdigit()
+                    and int(content_length) > max_bytes
+                ):
+                    result["status"] = "OK (body too large — skipped)"
+                    result["error_type"] = "BodyTooLarge"
+                    result["error_message"] = (
+                        f"Content-Length={content_length} exceeds {max_bytes}"
+                    )
+                    resp.close()
+                    return result, [], False, None
             try:
                 chunks: list[bytes] = []
                 received = 0
@@ -179,7 +184,7 @@ def _fetch_once(
                     if not chunk:
                         continue
                     received += len(chunk)
-                    if received > max_bytes:
+                    if max_bytes > 0 and received > max_bytes:
                         result["status"] = "OK (body too large — truncated)"
                         result["error_type"] = "BodyTooLarge"
                         result["error_message"] = (

@@ -103,13 +103,16 @@ class CrawlerSettings:
     ssl_verify: str = field(
         default_factory=lambda: _env_str("SSL_VERIFY", "true")
     )
-    # Hard ceiling on HTML body bytes per page. Default 5 MB — a real
-    # marketing page is <1 MB; anything over this is almost certainly
-    # a misconfigured server, a CSS-as-HTML asset, or a crawler trap.
-    # Pages exceeding the cap are recorded as status=OK but with a
-    # body_truncated error_type so they're visible in reports.
+    # Hard ceiling on HTML body bytes per page. **0 = unlimited
+    # (default).** The in-house crawler only hits our own domain, so
+    # no defensive cap is needed — every page must be captured no
+    # matter the size. Set CRAWLER_MAX_BODY_BYTES to a positive
+    # integer (e.g., 104857600 for 100 MB) if you ever want a safety
+    # net for crawling third-party domains. The competitor crawler
+    # has its own COMPETITOR_MAX_BODY_BYTES knob and uses a 5 MB
+    # default because untrusted hosts can serve pathological responses.
     max_body_bytes: int = field(
-        default_factory=lambda: _env_int("MAX_BODY_BYTES", 5 * 1024 * 1024)
+        default_factory=lambda: _env_int("MAX_BODY_BYTES", 0)
     )
     # In-memory state caps. Crawler streams to CSV anyway; the in-process
     # lists were originally for "recent activity" UI. Past this many
