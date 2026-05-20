@@ -254,7 +254,14 @@ def _enrich(row: dict) -> dict:
 
 
 def append(stream: str, row: dict) -> None:
-    """Append one row to a stream. Flushes periodically."""
+    """Append one row to a stream. Flushes periodically.
+
+    Phase 3 — when ``stream == 'results'`` we ALSO dual-write to the
+    Postgres CrawlerPageResult ORM table via ``_dual_write_pageresult``.
+    Best-effort and idempotent: when Postgres is down, snapshot isn't
+    started, or the dual-write flag is off, this no-ops silently and
+    the CSV path keeps working untouched.
+    """
     global _writes_since_flush
     _enrich(row)
     with _lock:
@@ -268,6 +275,93 @@ def append(stream: str, row: dict) -> None:
             for f, _ in _handles.values():
                 f.flush()
             _writes_since_flush = 0
+    if stream == "results":
+        _dual_write_pageresult(row)
+
+
+def _dual_write_pageresult(row: dict) -> None:
+    """Best-effort write of a results row into CrawlerPageResult.
+
+    Skipped when:
+      * dual_write_postgres flag is False
+      * no current CrawlSnapshot (Postgres unreachable at crawl start)
+      * the URL+snapshot pair already exists (idempotent on retry)
+      * any DB error fires — logged once at WARNING level
+
+    Type-coercion mirrors the model field types: integers for status
+    columns, FloatField for cls, BooleanField for from_sitemap, etc.
+    """
+    if not getattr(settings, "dual_write_postgres", True):
+        return
+    try:
+        from ..services import snapshot as snapshot_svc
+        snap_id = snapshot_svc.current_snapshot_id()
+        if not snap_id:
+            return
+        from ..models import CrawlerPageResult
+        url = (row.get("url") or "").strip()
+        if not url:
+            return
+
+        def _i(v):
+            try:
+                return int(v) if v not in ("", None) else 0
+            except (TypeError, ValueError):
+                return 0
+
+        def _opt_i(v):
+            if v in ("", None):
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
+        def _opt_f(v):
+            if v in ("", None):
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        CrawlerPageResult.objects.update_or_create(
+            snapshot_id=snap_id,
+            url=url[:2048],
+            defaults={
+                "status_code": (row.get("status_code") or "")[:4],
+                "status": (row.get("status") or "")[:64],
+                "content_type": (row.get("content_type") or "")[:128],
+                "response_time_ms": _i(row.get("response_time_ms")),
+                "title": (row.get("title") or "")[:1024],
+                "word_count": _i(row.get("word_count")),
+                "error_type": (row.get("error_type") or "")[:64],
+                "error_message": (row.get("error_message") or "")[:4000],
+                "subdomain": (row.get("subdomain") or "")[:64],
+                "page_type": (row.get("page_type") or "")[:64],
+                "category_key": (row.get("category_key") or "")[:128],
+                "from_sitemap": (row.get("from_sitemap") or "0") == "1",
+                "indexed_status": (row.get("indexed_status") or "unknown")[:16],
+                "pagespeed_score": _opt_i(row.get("pagespeed_score")),
+                "lcp_ms": _opt_i(row.get("lcp_ms")),
+                "cls": _opt_f(row.get("cls")),
+                "inp_ms": _opt_i(row.get("inp_ms")),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — never block the CSV path
+        # Throttle log spam: only log the FIRST failure per process.
+        global _dual_write_warned
+        if not _dual_write_warned:
+            log.warning(
+                "csv_writer: dual-write to Postgres failed (%s) — "
+                "continuing with CSV-only writes for this process. "
+                "Set CRAWLER_DUAL_WRITE_POSTGRES=false to silence.",
+                exc,
+            )
+            _dual_write_warned = True
+
+
+_dual_write_warned = False
 
 
 def flush_streams() -> None:
