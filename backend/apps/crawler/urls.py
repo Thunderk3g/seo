@@ -81,4 +81,11 @@ urlpatterns = [
 
     # Live logs (polling replaces WebSocket)
     path("logs", views.logs_view, name="logs"),
+
+    # Phase 6 — GEO suite (AI-search readiness).
+    path("geo/llms-txt", views.llms_txt_audit_view, name="geo-llms-txt"),
+    path("geo/llms-txt/draft", views.llms_txt_draft_view, name="geo-llms-txt-draft"),
+    path("geo/indexnow/ping", views.indexnow_ping_view, name="geo-indexnow-ping"),
+    path("geo/ai-bots", views.ai_bot_hits_view, name="geo-ai-bots"),
+    path("geo/backlinks", views.backlinks_view, name="geo-backlinks"),
 ]

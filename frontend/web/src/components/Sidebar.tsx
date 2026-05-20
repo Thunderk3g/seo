@@ -37,6 +37,12 @@ const DATA_SOURCE_NAV: NavItem[] = [
 // crawler-engine/ (proxied at /crawler-api). See src/crawler/*.
 const CRAWLER_NAV: NavItem[] = [
   { id: 'crawler-dash', label: 'Crawler Dashboard', icon: 'globe', path: '/crawler' },
+  { id: 'crawler-health', label: 'Health Overview', icon: 'analytics', path: '/health' },
+  { id: 'crawler-issues', label: 'Issues', icon: 'issues', path: '/crawler/issues' },
+  { id: 'crawler-pages', label: 'Page Explorer', icon: 'pages', path: '/crawler/pages' },
+  { id: 'crawler-trends', label: 'Trends', icon: 'analytics', path: '/trends' },
+  { id: 'crawler-compare', label: 'Compare Crawls', icon: 'visualizations', path: '/compare' },
+  { id: 'crawler-geo', label: 'GEO suite', icon: 'zap', path: '/geo' },
   { id: 'crawler-tree', label: 'Site Tree', icon: 'visualizations', path: '/crawler/tree' },
   { id: 'crawler-logs', label: 'Live Logs', icon: 'zap', path: '/crawler/logs' },
   { id: 'crawler-reports', label: 'Reports', icon: 'pages', path: '/crawler/reports' },
