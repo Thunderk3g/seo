@@ -146,6 +146,31 @@ class BajajSpider(Spider):
         "ITEM_PIPELINES": {
             "apps.crawler.pipelines.csv_dual_write.CsvDualWritePipeline": 300,
         },
+        # ── Phase 3e middlewares ──────────────────────────────────
+        # Playwright gate: re-routes thin static responses through
+        # scrapy-playwright so SPA shells get a real DOM.
+        # Order 850 means it runs AFTER Scrapy's built-in retries
+        # (550) so we don't double-render a 5xx.
+        "DOWNLOADER_MIDDLEWARES": {
+            "apps.crawler.middlewares.playwright_gate.PlaywrightGateMiddleware": 850,
+        },
+        # Similar-URL collapse: Katana-style faceted-URL drop. Runs
+        # at order 500 in the spider middleware chain (early enough
+        # to dedupe before the dupefilter sees anything).
+        "SPIDER_MIDDLEWARES": {
+            "apps.crawler.middlewares.similar_url_collapse.SimilarUrlCollapseMiddleware": 500,
+        },
+        # scrapy-playwright settings — only used when the gate
+        # re-issues a request with meta={"playwright": True}.
+        "DOWNLOAD_HANDLERS": {
+            "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+            "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+        },
+        "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
+        "PLAYWRIGHT_BROWSER_TYPE": "chromium",
+        "PLAYWRIGHT_LAUNCH_OPTIONS": {"headless": True},
+        "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT": 30_000,  # ms
+        "PLAYWRIGHT_MAX_PAGES_PER_CONTEXT": 8,
         # ── Memory / cache ────────────────────────────────────────
         "HTTPCACHE_ENABLED": False,
         "TELNETCONSOLE_ENABLED": False,
@@ -310,6 +335,20 @@ class BajajSpider(Spider):
         else:
             status_label = str(response.status)
 
+        # Phase 3e: stamp Playwright-rendered metadata so the pipeline
+        # can record both static + rendered word counts on the row,
+        # exposing the JS-only-content delta in the Page Explorer.
+        playwright_used = bool(response.meta.get("playwright_render_pass"))
+        static_word_count = response.meta.get("static_text_length")
+        if playwright_used and static_word_count is not None:
+            # Convert the static text-byte length to a rough word count
+            # so the delta column is in matching units.
+            rendered_word_count = word_count
+            static_word_count_words = max(0, int(static_word_count) // 6)  # ~6 chars/word
+        else:
+            rendered_word_count = None
+            static_word_count_words = None
+
         yield {
             "url": url,
             "status_code": str(response.status),
@@ -323,6 +362,12 @@ class BajajSpider(Spider):
             "error_type": "",
             "error_message": "",
             "from_sitemap": from_sitemap,
+            # Phase 3e: JS-rendering metadata. Persisted onto
+            # CrawlerPageResult by the dual-write pipeline (model has
+            # static_word_count + rendered_word_count + playwright_used).
+            "playwright_used": playwright_used,
+            "static_word_count": static_word_count_words,
+            "rendered_word_count": rendered_word_count,
         }
 
         # Discover links — but only when this was an HTML 2xx
