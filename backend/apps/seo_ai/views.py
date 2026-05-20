@@ -23,8 +23,11 @@ the grading agents consume so the UI can render the source tables.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
+import re
 from dataclasses import asdict
 
 from django.http import StreamingHttpResponse
@@ -945,6 +948,235 @@ def content_comparison(request: Request):
             "competitors_with_match": with_match,
             "competitors_without_match": without_match,
         },
+    })
+
+
+# ── Per-competitor + per-URL endpoints (Phase 2) ────────────────────────
+#
+# Replaces the inline DeepCrawlPanel expandable-rows view with proper
+# per-competitor landing pages and per-URL detail pages. Reads the same
+# GapDeepCrawl.profile.sample_pages payload already populated by the
+# gap pipeline (commit 1f78935 added body_text persistence).
+#
+#   GET /api/v1/seo-ai/competitor/<domain>/                    landing
+#   GET /api/v1/seo-ai/competitor/<domain>/pages/<b64url>/     per-URL
+#
+# URLs are base64url-encoded path segments so any URL (including ones
+# with query strings or special chars) round-trips cleanly through
+# Django URL routing without needing query strings.
+
+
+def _b64url_encode(url: str) -> str:
+    """URL-safe base64 encoding without padding — used for per-URL
+    routes. Padding-less keeps the URL slug shorter and avoids the `=`
+    character that some URL libraries mishandle."""
+    return base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(b64: str) -> str | None:
+    """Reverse of _b64url_encode. Returns None on bad input — callers
+    should respond 404 rather than 500."""
+    padding = 4 - (len(b64) % 4)
+    if padding != 4:
+        b64 = b64 + ("=" * padding)
+    try:
+        return base64.urlsafe_b64decode(b64.encode("ascii")).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _normalize_competitor_domain(d: str) -> str:
+    """Strip protocol + www prefix + trailing slash so the route param
+    matches GapDeepCrawl.domain exactly."""
+    d = (d or "").strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = re.sub(r"^www\d?\.", "", d)
+    return d.split("/")[0]
+
+
+def _latest_deep_crawl_for(domain: str) -> GapDeepCrawl | None:
+    """Most-recent GapDeepCrawl row for a competitor domain across all
+    runs. Defensive against ordering quirks: we tier-sort by run start
+    time so the freshest snapshot wins."""
+    normalized = _normalize_competitor_domain(domain)
+    return (
+        GapDeepCrawl.objects
+        .select_related("run", "competitor")
+        .filter(domain=normalized, is_us=False)
+        .order_by("-run__started_at")
+        .first()
+    )
+
+
+def _build_sample_index(crawl: GapDeepCrawl) -> dict[str, dict]:
+    """Map every sample page URL to its dict for O(1) per-URL lookup."""
+    samples = (crawl.profile or {}).get("sample_pages") or []
+    return {(s.get("url") or "").strip(): s for s in samples if s.get("url")}
+
+
+def _profile_summary_card(profile: dict) -> dict:
+    """Trim the profile JSON to the 12 KPI fields the per-competitor
+    landing page renders at the top."""
+    if not profile:
+        return {}
+    return {
+        "page_count": profile.get("page_count", 0),
+        "ok_count": profile.get("ok_count", 0),
+        "avg_word_count": profile.get("avg_word_count", 0),
+        "median_word_count": profile.get("median_word_count", 0),
+        "avg_response_ms": profile.get("avg_response_ms", 0),
+        "schema_pct": profile.get("schema_pct", 0),
+        "h1_pct": profile.get("h1_pct", 0),
+        "page_types": profile.get("page_types") or {},
+        "schema_types": (profile.get("schema_types") or [])[:20],
+        "has_pricing_page": profile.get("has_pricing_page", False),
+        "has_llms_txt": profile.get("has_llms_txt", False),
+        "has_pricing_md": profile.get("has_pricing_md", False),
+        "ai_citability_score": profile.get("ai_citability_score", 0),
+        # CWV aggregates
+        "cwv_pages_count": profile.get("cwv_pages_count", 0),
+        "avg_pagespeed_score": profile.get("avg_pagespeed_score", 0),
+        "median_lcp_ms": profile.get("median_lcp_ms", 0),
+        "median_cls": profile.get("median_cls", 0),
+        "median_inp_ms": profile.get("median_inp_ms", 0),
+    }
+
+
+def _slim_sample_for_index(sample: dict) -> dict:
+    """Strip body_text from a sample-page dict so the list view stays
+    light. Per-URL detail view re-fetches the full body via the second
+    endpoint."""
+    return {
+        "url": sample.get("url"),
+        "url_b64": _b64url_encode(sample.get("url") or ""),
+        "title": sample.get("title") or "",
+        "meta_description": (sample.get("meta_description") or "")[:280],
+        "page_type": sample.get("page_type") or "",
+        "word_count": sample.get("word_count") or 0,
+        "has_schema": sample.get("has_schema", False),
+        "schema_types": sample.get("schema_types") or [],
+        "response_time_ms": sample.get("response_time_ms") or 0,
+        "pagespeed_score": sample.get("pagespeed_score"),
+        "lcp_ms": sample.get("lcp_ms"),
+        "cls": sample.get("cls"),
+        "inp_ms": sample.get("inp_ms"),
+        "h1_text": (sample.get("h1_texts") or [None])[0] or "",
+        "internal_link_count": sample.get("internal_link_count") or 0,
+        "external_link_count": sample.get("external_link_count") or 0,
+    }
+
+
+@api_view(["GET"])
+def competitor_detail_view(_request, domain: str):
+    """Per-competitor landing page payload.
+
+    Returns:
+      - the normalized domain
+      - the deep-crawl profile summary (KPIs, page-type breakdown,
+        schema coverage, AI citability, CWV aggregates)
+      - a slim list of every sample page (URL, title, meta, page_type,
+        CWV, etc. — body_text excluded to keep the response under
+        ~50 KB even for the 25-page-per-competitor max)
+      - the run_id and started_at so the UI can show "based on crawl
+        from <date>"
+
+    Returns 404 when we have no GapDeepCrawl for the domain.
+    """
+    crawl = _latest_deep_crawl_for(domain)
+    if crawl is None:
+        return Response(
+            {
+                "error": f"no deep-crawl data for {domain}",
+                "hint": "run the gap pipeline first",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    samples = (crawl.profile or {}).get("sample_pages") or []
+    return Response({
+        "domain": crawl.domain,
+        "is_us": crawl.is_us,
+        "run_id": str(crawl.run_id),
+        "run_started_at": (
+            crawl.run.started_at.isoformat() if crawl.run.started_at else None
+        ),
+        "sitemap_url_count": crawl.sitemap_url_count,
+        "pages_attempted": crawl.pages_attempted,
+        "pages_ok": crawl.pages_ok,
+        "profile_summary": _profile_summary_card(crawl.profile or {}),
+        "sample_pages": [_slim_sample_for_index(s) for s in samples],
+        "sample_count": len(samples),
+        "error": crawl.error or "",
+    })
+
+
+@api_view(["GET"])
+def competitor_page_detail_view(_request, domain: str, url_b64: str):
+    """Per-URL detail view payload.
+
+    Returns the full sample-page dict including the body_text that the
+    landing endpoint omits. Title, meta, H1/H2 texts, schema types,
+    response time, per-URL CWV, internal/external link counts, and the
+    full visible body text captured by the competitor crawler.
+
+    404 when:
+      - the domain has no deep crawl (same as the landing endpoint)
+      - the base64 segment doesn't decode to a valid URL
+      - that URL isn't in this competitor's sample_pages
+    """
+    decoded = _b64url_decode(url_b64)
+    if decoded is None:
+        return Response(
+            {"error": "invalid base64url segment"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    crawl = _latest_deep_crawl_for(domain)
+    if crawl is None:
+        return Response(
+            {
+                "error": f"no deep-crawl data for {domain}",
+                "hint": "run the gap pipeline first",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    index = _build_sample_index(crawl)
+    sample = index.get(decoded.strip())
+    if sample is None:
+        return Response(
+            {
+                "error": f"URL {decoded} not in {crawl.domain}'s sample pages",
+                "available_urls": list(index.keys())[:5],
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    return Response({
+        "domain": crawl.domain,
+        "url": sample.get("url"),
+        "url_b64": url_b64,
+        "title": sample.get("title") or "",
+        "meta_description": sample.get("meta_description") or "",
+        "h1_texts": sample.get("h1_texts") or [],
+        "h2_texts": sample.get("h2_texts") or [],
+        "schema_types": sample.get("schema_types") or [],
+        "word_count": sample.get("word_count") or 0,
+        "has_schema": sample.get("has_schema", False),
+        "page_type": sample.get("page_type") or "",
+        "response_time_ms": sample.get("response_time_ms") or 0,
+        "internal_link_count": sample.get("internal_link_count") or 0,
+        "external_link_count": sample.get("external_link_count") or 0,
+        "last_modified": sample.get("last_modified") or "",
+        "body_text": sample.get("body_text") or "",
+        "pagespeed_score": sample.get("pagespeed_score"),
+        "lcp_ms": sample.get("lcp_ms"),
+        "cls": sample.get("cls"),
+        "inp_ms": sample.get("inp_ms"),
+        "run_id": str(crawl.run_id),
+        "run_started_at": (
+            crawl.run.started_at.isoformat() if crawl.run.started_at else None
+        ),
     })
 
 

@@ -16,6 +16,7 @@ organised by URL category (subdomain + page-type), not just by error type:
 from __future__ import annotations
 
 import csv
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -278,6 +279,25 @@ def build_report(output_path: Path | None = None) -> Path:
         # Audit engine import failure or runtime error must not prevent
         # the rest of the workbook from generating. Logged silently — the
         # operator still gets the Summary + raw sheets they always had.
+        pass
+
+    # ── Phase 2: per-competitor sheets + Summary chart ─────────────────
+    # One sheet per tracked competitor pulled from the latest gap-
+    # pipeline run's GapDeepCrawl rows. Each sheet lists every sampled
+    # page with KPI columns the operator can re-slice in Excel.
+    # Appended at the end so the legacy sheet order around Summary and
+    # per-category is undisturbed.
+    try:
+        _write_per_competitor_sheets(wb)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Add a response-time histogram + status-code bar chart to the
+    # existing Summary sheet so the at-a-glance overview gains the
+    # charts the operator asked for in Phase 2.
+    try:
+        _add_summary_charts(summary_ws, res_hdr, res_rows)
+    except Exception:  # noqa: BLE001
         pass
 
     # Per-subdomain overview sheets — readable at-a-glance KPIs per surface.
@@ -784,3 +804,271 @@ def _write_issues_catalog_sheet(ws: Worksheet, audit) -> None:
         if row > header_row + 1
         else f"A{header_row}:G{header_row}"
     )
+
+
+# ── Phase 2: per-competitor sheets + Summary charts ────────────────────
+
+
+def _safe_sheet_title(raw: str) -> str:
+    """Excel sheet names cap at 31 chars and ban these characters:
+    ``: \\ / ? * [ ]``. Sanitises the competitor domain into a
+    spreadsheet-valid title."""
+    cleaned = re.sub(r"[:\\/?*\[\]]", "-", raw or "")
+    cleaned = cleaned[:31].rstrip()
+    return cleaned or "Competitor"
+
+
+def _write_per_competitor_sheets(wb) -> None:
+    """One sheet per top-10 competitor from the latest gap-pipeline run.
+
+    Each row = one URL the competitor crawler sampled from that domain.
+    Columns mirror the per-competitor Page Explorer view: URL, title,
+    meta_description, page_type, word_count, schema, internal/external
+    link counts, response time, PageSpeed, LCP, CLS, INP.
+
+    Skipped silently when:
+      - apps.seo_ai is unavailable (e.g., migrations not applied)
+      - no GapDeepCrawl rows for the latest run
+      - a competitor row has an empty profile (crawl failed for that
+        domain — surface only the error column to flag it)
+    """
+    from apps.seo_ai.models import GapDeepCrawl, GapPipelineRun
+
+    run = GapPipelineRun.objects.order_by("-started_at").first()
+    if run is None:
+        return
+    crawls = list(
+        GapDeepCrawl.objects.filter(run=run).order_by("is_us", "domain")
+    )
+    if not crawls:
+        return
+
+    columns = (
+        ("url", 60),
+        ("title", 50),
+        ("meta_description", 60),
+        ("page_type", 14),
+        ("word_count", 12),
+        ("has_schema", 12),
+        ("schema_types", 30),
+        ("response_time_ms", 16),
+        ("internal_link_count", 18),
+        ("external_link_count", 18),
+        ("pagespeed_score", 16),
+        ("lcp_ms", 12),
+        ("cls", 10),
+        ("inp_ms", 12),
+        ("last_modified", 22),
+    )
+
+    for c in crawls:
+        title_prefix = "Us - " if c.is_us else "Comp - "
+        sheet_title = _safe_sheet_title(title_prefix + c.domain)
+        ws = wb.create_sheet(title=sheet_title)
+        ws.sheet_view.showGridLines = False
+
+        # Header / context block
+        ws.merge_cells(f"A1:{get_column_letter(len(columns))}1")
+        ws["A1"] = c.domain + (" (us)" if c.is_us else "")
+        ws["A1"].font = _TITLE_FONT
+        ws["A1"].alignment = _LEFT
+
+        ws.merge_cells(f"A2:{get_column_letter(len(columns))}2")
+        ws["A2"] = (
+            f"Sampled {c.pages_attempted} pages ({c.pages_ok} OK) "
+            f"from a sitemap of {c.sitemap_url_count:,} URLs"
+        )
+        ws["A2"].font = _SUB_FONT
+
+        if c.error:
+            ws.merge_cells(f"A4:{get_column_letter(len(columns))}4")
+            err_cell = ws["A4"]
+            err_cell.value = f"Crawl error: {c.error}"
+            err_cell.font = Font(name="Calibri", size=11, color=ERR_RED)
+            err_cell.fill = _ERR_FILL
+            continue
+
+        samples = (c.profile or {}).get("sample_pages") or []
+        if not samples:
+            ws["A4"] = "No sample pages captured."
+            ws["A4"].font = _SUB_FONT
+            continue
+
+        # Column widths + header row
+        for i, (name, width) in enumerate(columns, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = width
+        for i, (name, _) in enumerate(columns, start=1):
+            cell = ws.cell(row=4, column=i, value=name)
+            cell.font = _HEADER_FONT
+            cell.fill = _HEADER_FILL
+            cell.alignment = _CENTER
+            cell.border = _BORDER
+
+        # Data rows
+        for ridx, sample in enumerate(samples, start=5):
+            zebra = _ZEBRA_FILL if (ridx - 5) % 2 == 1 else None
+            for cidx, (name, _) in enumerate(columns, start=1):
+                value = sample.get(name)
+                if name == "schema_types" and isinstance(value, list):
+                    value = ", ".join(str(v) for v in value[:10])
+                elif name == "has_schema":
+                    value = "yes" if value else "no"
+                if value is None:
+                    value = ""
+                cell = ws.cell(row=ridx, column=cidx, value=value)
+                cell.alignment = Alignment(
+                    horizontal=("left" if cidx in (1, 2, 3, 7) else "center"),
+                    vertical="center",
+                    wrap_text=cidx in (2, 3),
+                )
+                cell.border = _BORDER
+                if zebra is not None:
+                    cell.fill = zebra
+            ws.row_dimensions[ridx].height = 24
+
+        # Freeze headers, add auto-filter
+        ws.freeze_panes = ws.cell(row=5, column=2)
+        ws.auto_filter.ref = (
+            f"A4:{get_column_letter(len(columns))}{4 + len(samples)}"
+        )
+
+
+def _add_summary_charts(ws, res_hdr: list[str], res_rows: list[list[str]]) -> None:
+    """Append two charts to the existing Summary sheet:
+
+      * Status-code distribution (bar chart) — shows the OK / 4xx /
+        5xx / 0 split visually.
+      * Response-time histogram (bar chart) — buckets pages into 5
+        speed tiers (<200ms, 200-500ms, 500ms-1s, 1-3s, >3s).
+
+    Both charts placed below the existing category pivot so the
+    layout above is unchanged.
+    """
+    if not res_rows:
+        return
+    from collections import Counter
+    from openpyxl.chart import BarChart, Reference
+
+    status_idx = res_hdr.index("status_code") if "status_code" in res_hdr else -1
+    rt_idx = (
+        res_hdr.index("response_time_ms")
+        if "response_time_ms" in res_hdr
+        else -1
+    )
+
+    # Find an empty row below the existing pivot. Iterate up to row 50
+    # safely — the pivot block never approaches that depth.
+    start_row = 32
+    while ws.cell(row=start_row, column=1).value is not None and start_row < 80:
+        start_row += 1
+
+    if status_idx >= 0:
+        counts = Counter()
+        for r in res_rows:
+            if status_idx < len(r):
+                code = (r[status_idx] or "").strip() or "unknown"
+                counts[code] += 1
+
+        ws.cell(row=start_row, column=1, value="STATUS CODE DISTRIBUTION").font = (
+            Font(name="Calibri", size=10, bold=True, color=TEXT_MUTED)
+        )
+        header_row = start_row + 1
+        ws.cell(row=header_row, column=1, value="Status")
+        ws.cell(row=header_row, column=2, value="Count")
+        for c in (1, 2):
+            cell = ws.cell(row=header_row, column=c)
+            cell.font = _HEADER_FONT
+            cell.fill = _HEADER_FILL
+            cell.alignment = _CENTER
+            cell.border = _BORDER
+
+        ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+        for i, (code, n) in enumerate(ordered, start=1):
+            ws.cell(row=header_row + i, column=1, value=code).alignment = _CENTER
+            ws.cell(row=header_row + i, column=2, value=n).alignment = _CENTER
+
+        chart = BarChart()
+        chart.type = "col"
+        chart.style = 11
+        chart.title = "Status code distribution"
+        chart.y_axis.title = "URLs"
+        chart.x_axis.title = "HTTP status"
+        data = Reference(
+            ws,
+            min_col=2, min_row=header_row,
+            max_row=header_row + len(ordered), max_col=2,
+        )
+        cats = Reference(
+            ws,
+            min_col=1, min_row=header_row + 1,
+            max_row=header_row + len(ordered),
+        )
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        chart.width = 16
+        chart.height = 8
+        ws.add_chart(chart, ws.cell(row=start_row, column=4).coordinate)
+
+        start_row = header_row + len(ordered) + 3
+
+    if rt_idx >= 0:
+        buckets = [
+            ("<200 ms",   lambda v: v < 200),
+            ("200-500 ms", lambda v: 200 <= v < 500),
+            ("500ms-1s",  lambda v: 500 <= v < 1000),
+            ("1-3 s",     lambda v: 1000 <= v < 3000),
+            (">3 s",      lambda v: v >= 3000),
+        ]
+        counts = [0] * len(buckets)
+        for r in res_rows:
+            if rt_idx >= len(r):
+                continue
+            try:
+                v = int(r[rt_idx] or 0)
+            except ValueError:
+                continue
+            if v <= 0:
+                continue
+            for i, (_, pred) in enumerate(buckets):
+                if pred(v):
+                    counts[i] += 1
+                    break
+
+        ws.cell(row=start_row, column=1, value="RESPONSE TIME HISTOGRAM").font = (
+            Font(name="Calibri", size=10, bold=True, color=TEXT_MUTED)
+        )
+        header_row = start_row + 1
+        ws.cell(row=header_row, column=1, value="Bucket")
+        ws.cell(row=header_row, column=2, value="Count")
+        for c in (1, 2):
+            cell = ws.cell(row=header_row, column=c)
+            cell.font = _HEADER_FONT
+            cell.fill = _HEADER_FILL
+            cell.alignment = _CENTER
+            cell.border = _BORDER
+        for i, ((label, _), n) in enumerate(zip(buckets, counts), start=1):
+            ws.cell(row=header_row + i, column=1, value=label).alignment = _CENTER
+            ws.cell(row=header_row + i, column=2, value=n).alignment = _CENTER
+
+        chart = BarChart()
+        chart.type = "col"
+        chart.style = 10
+        chart.title = "Response time distribution"
+        chart.y_axis.title = "URLs"
+        chart.x_axis.title = "Response time"
+        data = Reference(
+            ws,
+            min_col=2, min_row=header_row,
+            max_row=header_row + len(buckets), max_col=2,
+        )
+        cats = Reference(
+            ws,
+            min_col=1, min_row=header_row + 1,
+            max_row=header_row + len(buckets),
+        )
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        chart.width = 16
+        chart.height = 8
+        ws.add_chart(chart, ws.cell(row=start_row, column=4).coordinate)
+

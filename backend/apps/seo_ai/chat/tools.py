@@ -414,6 +414,42 @@ def get_health_score() -> dict[str, Any]:
 
 
 @_safe
+def query_page_explorer(
+    sort: str = "url",
+    status: str = "",
+    subdomain: str = "",
+    page_type: str = "",
+    indexed: str = "",
+    has_psi: str = "",
+    q: str = "",
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Sortable / filterable URL inventory (Ahrefs Page Explorer style).
+
+    Use this when the user asks to surface a slice of URLs:
+      * "show me our slow pages over 3 seconds"
+      * "what are our 404s on the branch subdomain"
+      * "find pages with low word count under 300"
+      * "list URLs with no schema"
+    Filters mirror the query params on /api/v1/crawler/pages — see
+    services/page_explorer.py for the contract. Returns up to 25 rows
+    per call (cap is 200; raising further bloats the LLM context)."""
+    from apps.crawler.services.page_explorer import query as run_query
+
+    capped = max(1, min(int(limit or 25), 200))
+    params = {
+        "status": status,
+        "subdomain": subdomain,
+        "page_type": page_type,
+        "indexed": indexed,
+        "has_psi": has_psi,
+        "q": q,
+    }
+    return {"ok": True, **run_query(params=params, sort=sort, limit=capped, offset=offset)}
+
+
+@_safe
 def get_issues_summary(
     severity: str = "",
     category: str = "",
@@ -773,6 +809,69 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "query_page_explorer",
+            "description": (
+                "Ahrefs-style sortable/filterable URL inventory over the "
+                "latest crawl. Use when the user asks to find a slice of "
+                "URLs by status code, subdomain, page type, indexed "
+                "status, response time, or substring match. Returns up "
+                "to 25 rows per call. Sort with column name (prefix `-` "
+                "for descending, e.g. `-response_time_ms`)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sort": {
+                        "type": "string",
+                        "description": (
+                            "Column to sort by. Prefix - for descending. "
+                            "Valid: url, status_code, title, word_count, "
+                            "response_time_ms, subdomain, page_type, "
+                            "indexed_status, pagespeed_score, lcp_ms, "
+                            "cls, inp_ms."
+                        ),
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated HTTP status codes to keep "
+                            "(e.g. '200', '404,500')."
+                        ),
+                    },
+                    "subdomain": {
+                        "type": "string",
+                        "description": "e.g. 'www', 'branch', or 'www,branch'.",
+                    },
+                    "page_type": {"type": "string"},
+                    "indexed": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated subset of indexed,"
+                            "not_indexed,excluded,unknown."
+                        ),
+                    },
+                    "has_psi": {
+                        "type": "string",
+                        "description": (
+                            "'1' to only return URLs with PSI data; "
+                            "'0' for only URLs missing PSI."
+                        ),
+                    },
+                    "q": {
+                        "type": "string",
+                        "description": (
+                            "Case-insensitive substring filter over URL + title."
+                        ),
+                    },
+                    "limit": {"type": "integer", "description": "1-200, default 25."},
+                    "offset": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "emit_card",
             "description": (
                 "Render a structured card inline with the assistant's "
@@ -819,5 +918,6 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "run_extractability_audit": run_extractability_audit,
     "get_health_score": get_health_score,
     "get_issues_summary": get_issues_summary,
+    "query_page_explorer": query_page_explorer,
     "emit_card": emit_card,
 }

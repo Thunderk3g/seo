@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -337,11 +338,37 @@ def _row_from_record(record) -> dict:
     }
 
 
-def _merge_into_results_csv(psi_data: dict[str, dict]) -> int:
+# Single-flight lock for _merge_into_results_csv. After the inline PSI
+# scheduler shipped in commit f0459d9, two callers race for the merge:
+# the inline scheduler (engine.py finally block) AND the legacy Phase 3
+# batch fallback. Both used to share the same crawl_results.csv.psi.tmp
+# filename, leading to ENOENT during os.replace when one caller's tmp
+# was renamed out from under another caller. The lock serialises the
+# merge per process; the unique-tmp logic below handles the cross-
+# process case (e.g., chained celery workers).
+_merge_lock = threading.Lock()
+
+
+def _merge_into_results_csv(psi_data: dict[str, dict],
+                            *, _retry_remaining: int = 1) -> int:
     """Rewrite crawl_results.csv with PSI values filled in on rows whose
     URL is in ``psi_data``. Other rows are preserved verbatim. Done as
     a read-then-write-temp-then-rename so a crash mid-rewrite can't
     corrupt the file.
+
+    Hardening shipped to fix the ENOENT race we observed in production:
+
+      1. ``threading.Lock`` serialises merges within one process so the
+         inline scheduler + legacy Phase 3 batch can't double-merge.
+      2. Tmp filename is per-call unique (pid + ns counter) so two
+         processes racing don't truncate each other's tmp.
+      3. ``fout.flush()`` + ``os.fsync()`` before ``os.replace`` so the
+         data is durable before the atomic rename.
+      4. If ``os.replace`` still fails with ENOENT (transient overlay
+         filesystem race in Docker), we recurse once with a fresh tmp.
+      5. If that retry also fails we fall back to rebuilding the file
+         in-place from the sidecar, logging loudly. The crawl_results
+         file is preserved either way.
 
     IMPORTANT: callers must ensure no writer is appending to
     crawl_results.csv during this call. The engine's Phase 3 hook runs
@@ -362,30 +389,123 @@ def _merge_into_results_csv(psi_data: dict[str, dict]) -> int:
         pass
 
     psi_cols = ("pagespeed_score", "lcp_ms", "cls", "inp_ms")
-    tmp = path.with_suffix(path.suffix + ".psi.tmp")
-    merged = 0
+
+    # Per-call unique tmp name. Same directory as the target so
+    # os.replace is atomic on POSIX + Windows. Includes PID + monotonic
+    # ns counter so concurrent processes never collide.
+    tmp = path.with_name(
+        f"{path.name}.psi-{os.getpid()}-{time.time_ns()}.tmp"
+    )
+
+    with _merge_lock:
+        merged = 0
+        with open(path, "r", encoding="utf-8", newline="") as fin:
+            reader = csv.DictReader(fin)
+            header = list(reader.fieldnames or [])
+            # If the file pre-dates the new columns, add them now.
+            for col in psi_cols:
+                if col not in header:
+                    header.append(col)
+            with open(tmp, "w", encoding="utf-8", newline="") as fout:
+                writer = csv.DictWriter(
+                    fout, fieldnames=header, extrasaction="ignore",
+                )
+                writer.writeheader()
+                for row in reader:
+                    url = (row.get("url") or "").strip()
+                    values = psi_data.get(url)
+                    if values:
+                        for col in psi_cols:
+                            row[col] = values.get(col, row.get(col, ""))
+                        merged += 1
+                    else:
+                        for col in psi_cols:
+                            row.setdefault(col, "")
+                    writer.writerow(row)
+                # Ensure bytes are on disk before the rename. Overlay
+                # filesystems in Docker have surprised us here.
+                try:
+                    fout.flush()
+                    os.fsync(fout.fileno())
+                except (OSError, AttributeError):
+                    pass
+
+        try:
+            os.replace(tmp, path)
+            return merged
+        except (FileNotFoundError, PermissionError) as exc:
+            # Two failure modes we've seen:
+            #   - FileNotFoundError: Docker overlay race / concurrent
+            #     merge stole the tmp.
+            #   - PermissionError: Windows file lock — usually the
+            #     operator has crawl_results.csv open in Excel.
+            kind = "missing tmp" if isinstance(exc, FileNotFoundError) else "target locked"
+            log.warning(
+                "psi_capture: os.replace failed (%s) "
+                "(%s -> %s): %s; retries_left=%d",
+                kind, tmp, path, exc, _retry_remaining,
+            )
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            if _retry_remaining > 0:
+                # Brief back-off in case the lock is from another
+                # short-lived process (PSI scheduler finishing up).
+                time.sleep(0.5)
+                return _merge_into_results_csv(
+                    psi_data, _retry_remaining=_retry_remaining - 1,
+                )
+            # Last-resort recovery: rewrite in-place. Skipped silently
+            # if the same lock prevents `open(path, "w")` — in that
+            # case the operator must close Excel and re-run.
+            try:
+                return _merge_inplace(path, psi_data, header, psi_cols)
+            except PermissionError as inner:
+                log.error(
+                    "psi_capture: in-place rewrite also blocked by file "
+                    "lock on %s (%s). Close whatever has the file open "
+                    "(Excel / viewer / indexer) and re-run.",
+                    path, inner,
+                )
+                return 0
+
+
+def _merge_inplace(path, psi_data: dict[str, dict],
+                   header: list[str], psi_cols: tuple[str, ...]) -> int:
+    """Fallback merge that doesn't use tmp+rename. Reads the whole CSV
+    into memory, writes back in place. Logged as a degraded path
+    because a crash mid-write could corrupt the file."""
+    log.warning(
+        "psi_capture: falling back to in-place rewrite of %s "
+        "(no tmp file — crash here will corrupt the CSV)", path,
+    )
+    rows: list[dict] = []
     with open(path, "r", encoding="utf-8", newline="") as fin:
         reader = csv.DictReader(fin)
-        header = list(reader.fieldnames or [])
-        # If the file pre-dates the new columns, add them now.
-        for col in psi_cols:
-            if col not in header:
-                header.append(col)
-        with open(tmp, "w", encoding="utf-8", newline="") as fout:
-            writer = csv.DictWriter(fout, fieldnames=header, extrasaction="ignore")
-            writer.writeheader()
-            for row in reader:
-                url = (row.get("url") or "").strip()
-                values = psi_data.get(url)
-                if values:
-                    for col in psi_cols:
-                        row[col] = values.get(col, row.get(col, ""))
-                    merged += 1
-                else:
-                    for col in psi_cols:
-                        row.setdefault(col, "")
-                writer.writerow(row)
-    tmp.replace(path)
+        for row in reader:
+            rows.append(row)
+    merged = 0
+    with open(path, "w", encoding="utf-8", newline="") as fout:
+        writer = csv.DictWriter(fout, fieldnames=header, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            url = (row.get("url") or "").strip()
+            values = psi_data.get(url)
+            if values:
+                for col in psi_cols:
+                    row[col] = values.get(col, row.get(col, ""))
+                merged += 1
+            else:
+                for col in psi_cols:
+                    row.setdefault(col, "")
+            writer.writerow(row)
+        try:
+            fout.flush()
+            os.fsync(fout.fileno())
+        except (OSError, AttributeError):
+            pass
     return merged
 
 

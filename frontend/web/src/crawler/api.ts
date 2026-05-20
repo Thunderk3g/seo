@@ -434,4 +434,43 @@ export const crawlerApi = {
       }>;
       started_at: string;
     }>(`/issues/${encodeURIComponent(slug)}`),
+
+  // Phase 2 — Page Explorer (Ahrefs-style sortable/filterable URL
+  // inventory). Server-side sort + filter; pass query params 1:1.
+  pages: (params: {
+    sort?: string;
+    status?: string;
+    subdomain?: string;
+    page_type?: string;
+    indexed?: string;
+    has_psi?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && String(v) !== '') {
+        qs.set(k, String(v));
+      }
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{
+      total: number;
+      returned: number;
+      limit: number;
+      offset: number;
+      sort: string;
+      rows: Array<Record<string, string>>;
+      columns: string[];
+    }>(`/pages${suffix}`);
+  },
+
+  pagesFacets: () =>
+    request<{
+      status_code: string[];
+      subdomain: string[];
+      page_type: string[];
+      indexed_status: string[];
+    }>('/pages/facets'),
 };
