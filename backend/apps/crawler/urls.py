@@ -43,6 +43,11 @@ urlpatterns = [
     path("console/capture/stop", views.console_capture_stop_view,
          name="console-capture-stop"),
 
+    # PSI / Core Web Vitals — last-run status surface for the UI banner.
+    # Reads _psi_status.json written by psi_capture at the end of each
+    # run. Returns {} if no PSI run has happened yet.
+    path("psi/status", views.psi_status_view, name="psi-status"),
+
     # Site tree
     path("tree", views.tree_view, name="tree"),
 

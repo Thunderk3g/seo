@@ -140,9 +140,24 @@ def open_streams(resume: bool) -> None:
 
 
 def _ensure_migrated(data_dir: Path) -> None:
-    """Run the one-shot enrichment migration if any CSV has the old header."""
-    needs_migration = False
-    for name, (fname, _fields) in _STREAMS.items():
+    """Heal any CSV whose header no longer matches the current schema.
+
+    Two paths:
+      1. Legacy enrichment migration — triggers when a file is missing
+         the historical ``category_key`` column. Delegates to the
+         purpose-built ``migrate_reports.run()`` which knows how to
+         re-classify rows for that specific schema bump.
+      2. Generic column-add — for any other missing field in the
+         current ``_STREAMS`` schema (e.g. the four PSI columns
+         ``pagespeed_score`` / ``lcp_ms`` / ``cls`` / ``inp_ms`` added
+         in 2026-05-20), we just append the missing columns with empty
+         values. Idempotent: re-running is a no-op once the header
+         matches. Atomic via temp+rename so a crash mid-rewrite can't
+         corrupt the file.
+    """
+    # Phase 1 — legacy enrichment migration
+    needs_legacy_migration = False
+    for _name, (fname, _fields) in _STREAMS.items():
         p = data_dir / fname
         if not p.exists() or p.stat().st_size == 0:
             continue
@@ -150,16 +165,65 @@ def _ensure_migrated(data_dir: Path) -> None:
             with open(p, "r", encoding="utf-8", newline="") as f:
                 header = next(csv.reader(f), [])
             if "category_key" not in header:
-                needs_migration = True
+                needs_legacy_migration = True
                 break
         except Exception:  # noqa: BLE001
             continue
-    if needs_migration:
+    if needs_legacy_migration:
         try:
             from . import migrate_reports
             migrate_reports.run(data_dir)
         except Exception as exc:  # noqa: BLE001
-            log.warning("csv_writer: auto-migration failed: %s", exc)
+            log.warning("csv_writer: legacy migration failed: %s", exc)
+
+    # Phase 2 — generic column add. Run AFTER legacy migration so we
+    # operate on the post-legacy schema if both were needed.
+    for name, (fname, fields) in _STREAMS.items():
+        p = data_dir / fname
+        if not p.exists() or p.stat().st_size == 0:
+            continue
+        try:
+            _add_missing_columns_inplace(p, fields)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "csv_writer: column-add migration failed on %s: %s", fname, exc
+            )
+
+
+def _add_missing_columns_inplace(path: Path, expected_fields: list[str]) -> None:
+    """Append any missing columns from ``expected_fields`` to a CSV's
+    header (and pad each existing row with empty cells) so reads via
+    csv.DictReader / DictWriter line up. No-op if every expected field
+    is already present.
+
+    Implementation: read-rewrite-rename. Streams row-by-row so a 100k
+    row file doesn't materialise in memory.
+    """
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        try:
+            current_header = next(reader)
+        except StopIteration:
+            return
+        missing = [c for c in expected_fields if c not in current_header]
+        if not missing:
+            return
+        new_header = current_header + missing
+        empty_pad = [""] * len(missing)
+        tmp = path.with_suffix(path.suffix + ".colmig.tmp")
+        with open(tmp, "w", encoding="utf-8", newline="") as out:
+            writer = csv.writer(out)
+            writer.writerow(new_header)
+            for row in reader:
+                # Pad to length of new_header in case prior rows are
+                # short (legacy data). Then add the empties for new cols.
+                pad_to_current = max(0, len(current_header) - len(row))
+                writer.writerow(row + [""] * pad_to_current + empty_pad)
+    tmp.replace(path)
+    log.info(
+        "csv_writer: added %d missing column(s) %s to %s",
+        len(missing), missing, path.name,
+    )
 
 
 def _enrich(row: dict) -> dict:

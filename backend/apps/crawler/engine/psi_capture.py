@@ -12,6 +12,11 @@ results table gains ``pagespeed_score``, ``lcp_ms``, ``cls``, and
 ``inp_ms`` populated for the PSI subset (mobile strategy, top N
 HTTP-200 www pages, capped by ``PSI_MAX_URLS_PER_RUN``).
 
+After every run we persist a small status file at
+``{data_dir}/_psi_status.json`` so the frontend can show "last PSI run
+skipped because <reason>" instead of a silently empty column. The
+frontend reads this via ``GET /api/v1/crawler/psi/status``.
+
 Field metrics are preferred when CrUX has data for the URL (real-user
 p75 across 28 days); lab metrics are the fallback for low-traffic
 pages with no field data.
@@ -32,9 +37,11 @@ or automatically at the end of every crawl via the engine hook.
 from __future__ import annotations
 
 import csv
+import json
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Iterable
 
 from ..conf import settings as crawler_settings
@@ -42,6 +49,38 @@ from ..logger import get_logger
 from ..storage import csv_writer
 
 log = get_logger(__name__)
+
+
+def _status_path():
+    return crawler_settings.data_path / "_psi_status.json"
+
+
+def _write_status(status: dict) -> None:
+    """Persist the most-recent PSI run outcome so the UI can render a
+    banner. Atomic write via temp+rename so a crash mid-write can't
+    corrupt the file. Best-effort: log and continue on disk error."""
+    path = _status_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(status, f)
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("psi_capture: status write failed: %s", exc)
+
+
+def read_status() -> dict:
+    """Return the last persisted PSI status. Empty dict if no PSI run
+    has happened yet. Used by the API view that powers the UI banner."""
+    path = _status_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 @dataclass
@@ -141,19 +180,28 @@ def capture(
 
     Returns a summary dict matching ``browser_console.capture``'s shape.
     """
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
         from apps.seo_ai.adapters.cwv_psi import (
             AdapterDisabledError,
             PSIAdapter,
         )
     except ImportError as exc:
-        return {"ok": False, "error": f"cwv_psi import: {exc}"}
+        result = {"ok": False, "error": f"cwv_psi import: {exc}"}
+        _write_status({**result, "started_at": started_at,
+                       "finished_at": datetime.now(timezone.utc).isoformat(),
+                       "urls_inspected": 0, "rows_written": 0, "failed": 0})
+        return result
 
     try:
         psi = PSIAdapter()
     except AdapterDisabledError as exc:
         log.info("psi_capture: skipped (%s)", exc)
-        return {"ok": False, "error": str(exc)}
+        result = {"ok": False, "error": str(exc)}
+        _write_status({**result, "started_at": started_at,
+                       "finished_at": datetime.now(timezone.utc).isoformat(),
+                       "urls_inspected": 0, "rows_written": 0, "failed": 0})
+        return result
 
     if strategies is None:
         from django.conf import settings as dj_settings
@@ -222,18 +270,26 @@ def capture(
             rows_merged = _merge_into_results_csv(psi_data)
         except Exception as exc:  # noqa: BLE001
             log.warning("psi_capture: results-csv merge failed: %s", exc)
-            return {
+            result = {
                 "ok": False,
                 "error": f"merge failed: {exc}",
                 "urls_inspected": len(url_list),
                 "failed": failed,
                 "rows_written": 0,
             }
+            _write_status({
+                **result,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "strategies": list(strategies),
+                "primary_strategy": primary,
+            })
+            return result
 
     with CAPTURE_STATE.lock:
         CAPTURE_STATE.rows_written = rows_merged
 
-    return {
+    result = {
         "ok": True,
         "urls_inspected": len(url_list),
         "failed": failed,
@@ -241,6 +297,13 @@ def capture(
         "strategies": list(strategies),
         "primary_strategy": primary,
     }
+    _write_status({
+        **result,
+        "started_at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "error": "",
+    })
+    return result
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
