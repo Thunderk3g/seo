@@ -15,6 +15,8 @@ import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
 import IssuesPage from './crawler/pages/IssuesPage';
 import PageExplorerPage from './crawler/pages/PageExplorerPage';
 import HealthDashboard from './crawler/pages/HealthDashboard';
+import TrendsPage from './crawler/pages/TrendsPage';
+import CompareCrawlsPage from './crawler/pages/CompareCrawlsPage';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 
@@ -58,6 +60,9 @@ export default function App() {
             <Route path="/crawler/pages" component={PageExplorerPage} />
             {/* Phase 4 — Health Dashboard (Ahrefs overview). */}
             <Route path="/health" component={HealthDashboard} />
+            {/* Phase 5 — Trends (Health Score over time) + Compare Crawls. */}
+            <Route path="/trends" component={TrendsPage} />
+            <Route path="/compare" component={CompareCrawlsPage} />
 
             <Route>
               <div style={{ padding: 24 }}>Not found</div>

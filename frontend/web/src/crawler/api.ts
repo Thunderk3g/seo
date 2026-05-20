@@ -494,6 +494,111 @@ export const crawlerApi = {
       }>;
     }>('/pagerank'),
 
+  // Phase 5 — Daily Health Score trend snapshots.
+  trends: (params?: { window?: number; engine?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.window !== undefined) qs.set('window', String(params.window));
+    if (params?.engine) qs.set('engine', params.engine);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{
+      engine: string;
+      window: number;
+      snapshot_count: number;
+      snapshots: Array<{
+        recorded_date: string;
+        engine: string;
+        health_score: number | null;
+        health_tier: string;
+        pages_attempted: number;
+        pages_ok: number;
+        pages_errored: number;
+        errors: number;
+        warnings: number;
+        notices: number;
+        issue_counts: Record<string, number>;
+        category_counts: Record<string, number>;
+        pagerank_node_count: number;
+        pagerank_orphan_count: number;
+        near_dup_cluster_count: number;
+        near_dup_total_dupes: number;
+      }>;
+    }>(`/trends${suffix}`);
+  },
+
+  // Phase 5 — SEMrush-style Compare Crawls diff.
+  compare: (params?: { a?: string; b?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.a) qs.set('a', params.a);
+    if (params?.b) qs.set('b', params.b);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{
+      a_snapshot_id: string;
+      b_snapshot_id: string;
+      a_started_at: string;
+      b_started_at: string;
+      a_engine: string;
+      b_engine: string;
+      a_health_score: number | null;
+      b_health_score: number | null;
+      health_score_delta: number | null;
+      issues: Array<{
+        slug: string;
+        title: string;
+        severity: string;
+        category: string;
+        a_count: number;
+        b_count: number;
+        delta: number;
+        fixed_urls: string[];
+        new_urls: string[];
+        changed_urls: string[];
+      }>;
+      pages_added: Array<{ url: string; b_status: string; b_word_count: number }>;
+      pages_removed: Array<{ url: string; a_status: string; a_word_count: number }>;
+      pages_status_changed: Array<{
+        url: string;
+        a_status: string; b_status: string;
+        a_word_count: number; b_word_count: number;
+      }>;
+      fixed_count: number;
+      new_count: number;
+      changed_count: number;
+    }>(`/compare${suffix}`);
+  },
+
+  // Phase 5 — Thematic deep-dive reports.
+  themesList: () =>
+    request<{ themes: Array<{ slug: string; title: string; description: string }> }>('/themes'),
+
+  themeDetail: (slug: string) =>
+    request<{
+      slug: string;
+      title: string;
+      description: string;
+      headline_stat: {
+        total_affected_urls: number;
+        errors: number;
+        warnings: number;
+        notices: number;
+        total_urls_in_audit: number;
+      } | null;
+      sections: Array<{
+        title: string;
+        description: string;
+        issues: Array<{
+          slug: string;
+          title: string;
+          severity: string;
+          category: string;
+          why: string;
+          how_to_fix: string;
+          count: number;
+        }>;
+        notes: string[];
+      }>;
+      related_routes: Array<{ label: string; href: string }>;
+    }>(`/themes/${encodeURIComponent(slug)}`),
+
   // Phase 4 — Near-duplicate URL clusters (MinHash + LSH).
   nearDuplicates: (params?: { n?: number; threshold?: number }) => {
     const qs = new URLSearchParams();

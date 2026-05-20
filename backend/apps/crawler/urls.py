@@ -38,6 +38,12 @@ urlpatterns = [
     path("pagerank", views.pagerank_view, name="pagerank"),
     path("near-duplicates", views.near_duplicates_view, name="near-duplicates"),
 
+    # Phase 5 — Trends + Compare Crawls + Thematic Reports.
+    path("trends", views.trends_view, name="trends"),
+    path("compare", views.compare_view, name="compare"),
+    path("themes", views.themes_list_view, name="themes"),
+    path("themes/<str:slug>", views.theme_detail_view, name="theme-detail"),
+
     # Reports
     path("reports/xlsx", views.report_xlsx_view, name="report-xlsx"),
 

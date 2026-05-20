@@ -236,3 +236,77 @@ class CrawlIssue(models.Model):
 
     def __str__(self) -> str:
         return f"{self.severity}: {self.issue_slug} on {self.url}"
+
+
+class MetricSnapshot(models.Model):
+    """Daily Health Score + per-category counters snapshot.
+
+    Phase 5a. Populated by ``services.snapshot_runner.take_snapshot``
+    which runs nightly via Celery beat (and on demand via the
+    management command ``snapshot_metrics``). One row per
+    (date × engine) so the trends UI can show the Health Score
+    trajectory over 30 / 90 days.
+
+    Storage choice: own table, not piggybacking on CrawlSnapshot,
+    because CrawlSnapshot fires on every crawl (potentially many per
+    day during testing) and we want a stable daily heartbeat for the
+    chart. MetricSnapshot writes once per day even if zero crawls
+    ran — read-only re-computes the Health Score from the most-recent
+    CrawlSnapshot's data.
+
+    Trend chart contract: the frontend pulls 30/90/365-day windows
+    by ordering by recorded_date desc and reverses for left-to-right
+    display.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    recorded_date = models.DateField(db_index=True)
+    # Engine label matches CrawlSnapshot.Engine — lets us track legacy
+    # and scrapy trajectories independently during the 30-day overlap.
+    engine = models.CharField(max_length=16, default="legacy")
+    # Headline Health Score for the day.
+    health_score = models.IntegerField(null=True, blank=True)
+    health_tier = models.CharField(max_length=16, blank=True, default="")
+    # Crawl totals so the chart can show pages-attempted alongside score
+    # (a falling score with rising attempted is more meaningful than
+    # just the score number alone).
+    pages_attempted = models.IntegerField(default=0)
+    pages_ok = models.IntegerField(default=0)
+    pages_errored = models.IntegerField(default=0)
+    # Severity counts (distinct issue TYPES firing, not raw URL counts).
+    # Per-category breakdown stays in `category_counts`.
+    errors = models.IntegerField(default=0)
+    warnings = models.IntegerField(default=0)
+    notices = models.IntegerField(default=0)
+    # Per-issue-type counts as { slug: affected_url_count }. Big enough
+    # to power deep drill-ins ("show me how 'duplicate_title' moved over
+    # time") without an extra table.
+    issue_counts = models.JSONField(default=dict, blank=True)
+    # Per-category counts as { category: distinct_issue_type_count }.
+    # Same shape the Health Score endpoint already returns.
+    category_counts = models.JSONField(default=dict, blank=True)
+    # PageRank + near-duplicate summary numbers for the day, so the
+    # trend chart can plot non-Health-Score metrics on a second axis.
+    pagerank_node_count = models.IntegerField(default=0)
+    pagerank_orphan_count = models.IntegerField(default=0)
+    near_dup_cluster_count = models.IntegerField(default=0)
+    near_dup_total_dupes = models.IntegerField(default=0)
+    # Bookkeeping
+    created_at = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-recorded_date",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["recorded_date", "engine"],
+                name="uniq_metricsnapshot_date_engine",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["-recorded_date"]),
+            models.Index(fields=["engine", "-recorded_date"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.recorded_date} {self.engine} score={self.health_score}"
