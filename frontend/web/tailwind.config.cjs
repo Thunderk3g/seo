@@ -1,7 +1,11 @@
-/** Tailwind config — Bajaj SEO dashboard
+/** Tailwind config — Bajaj SEO dashboard (CommonJS).
  *
- * Co-exists with the existing hand-rolled `styles/lattice.css` palette.
- * Key decisions:
+ * Uses .cjs to bypass jiti's ESM dynamic-import transpilation bug.
+ * package.json has "type": "module" so plain .js files are ESM, but
+ * Tailwind's loader can't handle top-level await in ESM configs.
+ * CommonJS sidesteps the issue.
+ *
+ * Co-exists with the existing hand-rolled styles/lattice.css palette:
  *
  *   corePlugins.preflight: false
  *     Disables Tailwind's global CSS reset. lattice.css and all existing
@@ -23,7 +27,7 @@
  *     mapped to the same Bajaj tokens.
  */
 /** @type {import('tailwindcss').Config} */
-export default {
+module.exports = {
   darkMode: 'class',
   content: [
     './index.html',
@@ -139,8 +143,8 @@ export default {
   },
   plugins: [
     // tailwindcss-animate provides the keyframes shadcn primitives expect
-    // for dropdown/popover open/close animations.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    (await import('tailwindcss-animate')).default,
+    // for dropdown/popover open/close animations. Synchronous require()
+    // works because this file is .cjs (CommonJS).
+    require('tailwindcss-animate'),
   ],
 };
