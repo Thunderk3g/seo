@@ -198,7 +198,7 @@ export default function PageExplorerPage() {
       </header>
 
       <Card className="mb-4">
-        <CardContent className="grid grid-cols-1 gap-3 py-4 md:grid-cols-5">
+        <CardContent className="grid grid-cols-1 gap-3 py-4 md:grid-cols-6">
           <div className="md:col-span-2">
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-brand-text-3">
               Search URL or title
@@ -226,6 +226,12 @@ export default function PageExplorerPage() {
             value={pageTypeFilter}
             onChange={setPageTypeFilter}
             options={facets.data?.page_type || []}
+          />
+          <FacetSelect
+            label="Indexed"
+            value={indexedFilter}
+            onChange={setIndexedFilter}
+            options={facets.data?.indexed_status || []}
           />
         </CardContent>
       </Card>
