@@ -14,6 +14,7 @@ import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
 import IssuesPage from './crawler/pages/IssuesPage';
 import PageExplorerPage from './crawler/pages/PageExplorerPage';
+import HealthDashboard from './crawler/pages/HealthDashboard';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 
@@ -55,6 +56,8 @@ export default function App() {
             {/* Phase 2 — Ahrefs-style Page Explorer with sortable/
                 filterable URL inventory over the latest crawl. */}
             <Route path="/crawler/pages" component={PageExplorerPage} />
+            {/* Phase 4 — Health Dashboard (Ahrefs overview). */}
+            <Route path="/health" component={HealthDashboard} />
 
             <Route>
               <div style={{ padding: 24 }}>Not found</div>

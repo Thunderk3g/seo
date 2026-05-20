@@ -772,4 +772,11 @@ ALL_ISSUES: tuple[IssueDef, ...] = (
 )
 
 
+# Phase 4 expansion — appended after the original 28. Import is at
+# the bottom of the file to avoid circular-import risk; the new module
+# imports IssueDef + helper predicates from this one.
+from . import detectors_phase4 as _phase4  # noqa: E402
+
+ALL_ISSUES = ALL_ISSUES + _phase4.PHASE_4_ISSUES
+
 ISSUES_BY_SLUG: dict[str, IssueDef] = {i.slug: i for i in ALL_ISSUES}

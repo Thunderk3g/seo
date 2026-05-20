@@ -473,4 +473,48 @@ export const crawlerApi = {
       page_type: string[];
       indexed_status: string[];
     }>('/pages/facets'),
+
+  // Phase 4 — Internal PageRank ("Link Score" / Ahrefs Page Rating).
+  pagerank: () =>
+    request<{
+      summary: {
+        computed: boolean;
+        node_count: number;
+        edge_count: number;
+        top_url: string | null;
+        top_score?: number;
+        orphan_count: number;
+      };
+      top: Array<{
+        url: string;
+        pagerank: number;
+        pagerank_score: number;
+        in_degree: number;
+        out_degree: number;
+      }>;
+    }>('/pagerank'),
+
+  // Phase 4 — Near-duplicate URL clusters (MinHash + LSH).
+  nearDuplicates: (params?: { n?: number; threshold?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.n !== undefined) qs.set('n', String(params.n));
+    if (params?.threshold !== undefined) qs.set('threshold', String(params.threshold));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{
+      summary: {
+        cluster_count: number;
+        total_dupes: number;
+        largest_cluster_size: number;
+        largest_cluster_title: string;
+        threshold: number;
+      };
+      clusters: Array<{
+        cluster_id: number;
+        cluster_size: number;
+        representative_title: string;
+        member_urls: string[];
+        more_members: number;
+      }>;
+    }>(`/near-duplicates${suffix}`);
+  },
 };

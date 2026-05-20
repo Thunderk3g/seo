@@ -414,6 +414,57 @@ def get_health_score() -> dict[str, Any]:
 
 
 @_safe
+def get_pagerank_top(n: int = 20) -> dict[str, Any]:
+    """Top URLs by internal PageRank ("Link Score") — Ahrefs Page Rating
+    equivalent. Computed from crawl_discovered.csv link graph using
+    networkx. Use when the user asks "what are our most-linked pages?",
+    "which URLs concentrate link equity?", or "are our hero pages
+    well-linked internally?". Returns URLs with pagerank_score 0-100
+    (log-rescaled) + in_degree / out_degree."""
+    from apps.crawler.services.pagerank import all_entries, top_n, summary
+
+    cap = max(1, min(int(n or 20), 200))
+    return {
+        "ok": True,
+        "summary": summary(),
+        "top": top_n(cap),
+    }
+
+
+@_safe
+def get_orphan_pages(max_in_degree: int = 0) -> dict[str, Any]:
+    """URLs with no internal inbound links (or below a threshold).
+    High-leverage SEO fix: orphan pages can't accumulate link equity
+    and are slow to be discovered by Google. Use when the user asks
+    "what pages have no internal links?", "orphans?", "buried pages?".
+    """
+    from apps.crawler.services.pagerank import orphans
+
+    return {
+        "ok": True,
+        "max_in_degree": max_in_degree,
+        "orphans": orphans(max_in_degree=int(max_in_degree or 0)),
+    }
+
+
+@_safe
+def get_near_duplicates(n: int = 20, threshold: float = 0.9) -> dict[str, Any]:
+    """Near-duplicate URL clusters via MinHash + LSH (Screaming Frog
+    uses the same algorithm). Returns clusters where multiple URLs
+    share a near-identical title + URL pattern. Use when the user
+    asks "duplicate content?", "title duplicates?", "cannibalised
+    pages?", or wants to find template bugs producing dup pages."""
+    from apps.crawler.services.near_dup import top_clusters, summary
+
+    cap = max(1, min(int(n or 20), 100))
+    return {
+        "ok": True,
+        "summary": summary(threshold=threshold),
+        "clusters": top_clusters(cap, threshold=threshold),
+    }
+
+
+@_safe
 def query_page_explorer(
     sort: str = "url",
     status: str = "",
@@ -872,6 +923,80 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_pagerank_top",
+            "description": (
+                "Top URLs by internal PageRank ('Link Score', Ahrefs "
+                "Page Rating equivalent) computed from the crawl link "
+                "graph. Use when the user asks which pages concentrate "
+                "the most internal link equity, or which hero pages "
+                "are well-linked. Returns pagerank_score 0-100 + "
+                "in/out degree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "description": "Top-N to return (1-200, default 20)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_orphan_pages",
+            "description": (
+                "URLs with no internal inbound links (or below "
+                "max_in_degree). Orphans can't accumulate link equity "
+                "and are slow to be discovered by Google. Use when the "
+                "user asks 'orphan pages', 'pages with no inbound "
+                "links', 'buried content'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_in_degree": {
+                        "type": "integer",
+                        "description": (
+                            "Cap on inbound link count to qualify as "
+                            "orphan. 0 = strict (zero inbound), 1-3 "
+                            "for 'effectively orphan'."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_near_duplicates",
+            "description": (
+                "Near-duplicate URL clusters via MinHash + LSH "
+                "(Screaming Frog uses the same algorithm). Surfaces "
+                "URLs whose title + URL pattern is similar enough that "
+                "Google will treat them as duplicates. Use when the "
+                "user asks 'duplicate content', 'cannibalised pages', "
+                "or to find template bugs producing dup pages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "description": "Top-N clusters (1-100, default 20)."},
+                    "threshold": {
+                        "type": "number",
+                        "description": (
+                            "Jaccard similarity threshold 0.0-1.0. "
+                            "Default 0.9 matches SF default. Lower "
+                            "for fuzzier matching."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "emit_card",
             "description": (
                 "Render a structured card inline with the assistant's "
@@ -919,5 +1044,8 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_health_score": get_health_score,
     "get_issues_summary": get_issues_summary,
     "query_page_explorer": query_page_explorer,
+    "get_pagerank_top": get_pagerank_top,
+    "get_orphan_pages": get_orphan_pages,
+    "get_near_duplicates": get_near_duplicates,
     "emit_card": emit_card,
 }

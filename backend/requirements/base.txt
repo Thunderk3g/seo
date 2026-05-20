@@ -63,3 +63,14 @@ scrapy>=2.11
 # whose static fetch returns < 500 chars of body text (SPA shells like
 # iciciprulife homepage, which returned 19 words on static fetch).
 scrapy-playwright>=0.0.40
+
+# ── Phase 4 audit services ───────────────────────────────────────
+# Internal PageRank ("Link Score") — same algorithm Ahrefs publishes,
+# same algorithm Screaming Frog computes. networkx ships pure-Python
+# pagerank(); 10k-node iteration converges in <2s on the existing
+# crawl_discovered.csv link graph.
+networkx>=3.0
+# Near-duplicate detection via MinHash + LSH (Screaming Frog uses the
+# same algorithm internally). datasketch's MinHashLSH is the de-facto
+# Python implementation — 90% Jaccard threshold matches SF's default.
+datasketch>=1.6
