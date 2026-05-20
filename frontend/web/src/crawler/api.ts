@@ -328,5 +328,28 @@ export const crawlerApi = {
       strategies?: string[];
       primary_strategy?: string;
       error?: string;
+      mode?: string;
     }>('/psi/status'),
+
+  // Live progress of the inline PSI scheduler while a crawl is running.
+  // Returns {} when no crawl/scheduler is in flight. While active,
+  // exposes per-URL counters so the banner can render a live progress
+  // bar instead of waiting for the end-of-crawl summary.
+  psiProgress: () =>
+    request<{
+      is_running?: boolean;
+      started_at?: number;
+      finished_at?: number;
+      submitted?: number;
+      in_flight?: number;
+      completed?: number;
+      failed?: number;
+      queue_size?: number;
+      last_url?: string;
+      workers?: number;
+      strategies?: string[];
+      primary_strategy?: string;
+      disabled?: boolean;
+      disabled_reason?: string;
+    }>('/psi/progress'),
 };

@@ -37,7 +37,12 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     # Crawl outputs are file-backed (CSV + crawl_state.json + XLSX reports).
     # Bind-mount the two output dirs so they survive `docker compose down`.
+    # Source code is also bind-mounted in dev so Python edits land
+    # instantly via Django's StatReloader — no rebuild needed. For prod
+    # the source-mount must be removed (use a compose override file)
+    # so the baked image is the source of truth.
     volumes:
+      - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
     depends_on: [db, redis]
@@ -53,6 +58,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
+      - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
     depends_on: [db, redis]

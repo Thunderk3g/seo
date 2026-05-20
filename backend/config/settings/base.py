@@ -362,6 +362,11 @@ PSI = {
     # Cap per refresh — PSI quota is 25k/day; this prevents a runaway
     # crawl from burning the whole budget. Set to 0 for unlimited.
     "max_urls_per_run": int(os.environ.get("PSI_MAX_URLS_PER_RUN", "100")),
+    # Concurrent PSI worker count used by both the in-house crawler's
+    # inline scheduler (apps.crawler.engine.psi_scheduler) and the
+    # competitor crawler's enrich_with_cwv pass. 4 is conservative —
+    # Google PSI tolerates ~8 concurrent calls per IP before 429s.
+    "inline_workers": int(os.environ.get("PSI_WORKERS", "4")),
     "ssl_verify": os.environ.get("PSI_SSL_VERIFY", "").strip(),
 }
 

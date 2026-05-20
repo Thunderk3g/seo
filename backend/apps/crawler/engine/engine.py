@@ -24,6 +24,7 @@ from ..conf import settings
 from ..logger import get_logger
 from ..state import STATE, CrawlStats
 from ..storage import csv_writer
+from . import psi_scheduler
 from . import robots as robots_mod
 from . import sitemap as sitemap_mod
 from .fetcher import fetch, new_session
@@ -267,6 +268,16 @@ def _ingest(url: str, parent: str | None, depth: int,
             csv_writer.append(error_stream, error_entry)
     for entry in console_entries:
         csv_writer.append("console_logs", entry)
+
+    # Inline PSI: hand the URL off to the background scheduler. No-op
+    # when PSI is disabled or the scheduler isn't running. Submit only
+    # the canonical (post-redirect) URL — same key the CSV row uses.
+    sched = psi_scheduler.get_current()
+    if sched is not None:
+        try:
+            sched.submit(final_url or url)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("psi submit failed for %s: %s", url, exc)
     return added
 
 
@@ -317,11 +328,79 @@ def run_crawl() -> None:
         STATE.is_running = False
         STATE.stats.finished_at = STATE.stats.finished_at or time.time()
         STATE.stats.active_workers = 0
+        # Close crawler CSV handles BEFORE the PSI merger rewrites
+        # crawl_results.csv — otherwise the rewrite would orphan rows
+        # the crawler hasn't yet flushed.
         try:
             csv_writer.flush_streams()
             csv_writer.close_streams()
         except Exception:  # noqa: BLE001
             pass
+        # Drain the inline PSI scheduler and do one atomic merge into
+        # crawl_results.csv. Runs even on stop/error so whatever PSI
+        # data we already collected lands in the CSV.
+        sched = psi_scheduler.get_current()
+        if sched is not None:
+            try:
+                _finalise_psi_scheduler(sched)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("psi scheduler finalise failed: %s", exc)
+            finally:
+                psi_scheduler.set_current(None)
+
+
+def _finalise_psi_scheduler(sched) -> None:
+    """Drain workers + atomic-merge the sidecar into crawl_results.csv.
+
+    Split out so the ``finally`` block stays readable. Mirrors the
+    Phase 3 log shape from the legacy batch path so the UI banner /
+    PSI status JSON keep working.
+    """
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    from .psi_capture import _write_status
+
+    snap_before = sched.progress()
+    started = (
+        _dt.fromtimestamp(snap_before["started_at"], tz=_tz.utc).isoformat()
+        if snap_before.get("started_at") else _dt.now(_tz.utc).isoformat()
+    )
+    sched.stop(drain=not STATE.should_stop)
+    rows_merged = sched.merge_into_results_csv()
+    snap = sched.progress()
+    if sched.is_disabled:
+        _write_status({
+            "ok": False,
+            "error": sched.disabled_reason or "PSI disabled",
+            "started_at": started,
+            "finished_at": _dt.now(_tz.utc).isoformat(),
+            "urls_inspected": 0,
+            "rows_written": 0,
+            "failed": 0,
+            "mode": "inline",
+        })
+        return
+    _write_status({
+        "ok": rows_merged > 0 or snap["completed"] > 0,
+        "error": "",
+        "started_at": started,
+        "finished_at": _dt.now(_tz.utc).isoformat(),
+        "urls_inspected": snap["completed"],
+        "rows_written": rows_merged,
+        "failed": snap["failed"],
+        "strategies": snap["strategies"],
+        "primary_strategy": snap["primary_strategy"],
+        "mode": "inline",
+    })
+    log_bus.post({
+        "type": "info",
+        "message": (
+            f"PSI inline merged {rows_merged} row(s) into crawl_results.csv "
+            f"(completed={snap['completed']}, failed={snap['failed']})"
+        ),
+        "timestamp": _dt.now().isoformat(),
+    })
 
 
 def _run_crawl_body() -> None:
@@ -349,6 +428,35 @@ def _run_crawl_body() -> None:
                 "timestamp": datetime.now().isoformat(),
             })
     csv_writer.open_streams(resume=resumed)
+
+    # ── Inline PSI scheduler ─────────────────────────────────────────
+    # Spin up the background PSI worker pool BEFORE the crawl loop so
+    # the first finished URL can be submitted immediately. ``start()``
+    # returns False if PSI is disabled (missing SA file, etc.); in
+    # that case we register a None handle and ``_ingest`` becomes a
+    # no-op for the submit call.
+    if getattr(settings, "psi_inline_enabled", True):
+        sched = psi_scheduler.InlinePSIScheduler()
+        if sched.start():
+            psi_scheduler.set_current(sched)
+            log_bus.post({
+                "type": "info",
+                "message": (
+                    f"Inline PSI scheduler online — {sched.workers} worker(s), "
+                    f"strategies={list(sched.strategies)}. CWV columns will "
+                    f"populate as the crawl progresses."
+                ),
+                "timestamp": datetime.now().isoformat(),
+            })
+        else:
+            log_bus.post({
+                "type": "warning",
+                "message": (
+                    "Inline PSI disabled: "
+                    f"{sched.disabled_reason or 'unknown reason'}"
+                ),
+                "timestamp": datetime.now().isoformat(),
+            })
 
     seeded = _seed(session, rp, robots_sitemaps)
     log_bus.post({
@@ -469,12 +577,20 @@ def _run_crawl_body() -> None:
                 "timestamp": datetime.now().isoformat(),
             })
 
-    # ── Phase 3: PSI / Core Web Vitals capture ──────────────────────────
-    # Hit Google's PSI API on the same www HTTP-200 subset and append
-    # one row per (url, strategy) to crawl_psi.csv. Slow (mobile ~2s,
-    # desktop ~30s) so capped at psi_capture_limit. Silently skipped if
-    # PSI_ENABLED=false or the service-account file is missing.
-    if getattr(settings, "capture_psi_after_crawl", True) and not STATE.should_stop:
+    # ── Phase 3: PSI / Core Web Vitals (legacy batch fallback) ──────────
+    # The default path is the inline scheduler started before the crawl
+    # loop (see ``_run_crawl_body`` top). The batch path below only runs
+    # when CRAWLER_PSI_INLINE=false. It is kept for environments that
+    # explicitly opt out of the concurrent scheduler (e.g. unit tests).
+    inline_active = (
+        getattr(settings, "psi_inline_enabled", True)
+        and psi_scheduler.get_current() is not None
+    )
+    if (
+        not inline_active
+        and getattr(settings, "capture_psi_after_crawl", True)
+        and not STATE.should_stop
+    ):
         try:
             from . import psi_capture
             psi_targets = psi_capture.select_target_urls(
@@ -486,7 +602,7 @@ def _run_crawl_body() -> None:
                 log_bus.post({
                     "type": "info",
                     "message": (
-                        f"Phase 3 — capturing Core Web Vitals for "
+                        f"Phase 3 (batch) — capturing CWV for "
                         f"{len(psi_targets)} URL(s) via PageSpeed Insights..."
                     ),
                     "timestamp": datetime.now().isoformat(),
@@ -505,8 +621,8 @@ def _run_crawl_body() -> None:
                     log_bus.post({
                         "type": "info",
                         "message": (
-                            f"Phase 3 done — merged {psi_result.get('rows_written', 0)} "
-                            f"PSI rows into crawl_results.csv "
+                            f"Phase 3 done — merged "
+                            f"{psi_result.get('rows_written', 0)} PSI rows "
                             f"(failed={psi_result.get('failed', 0)})"
                         ),
                         "timestamp": datetime.now().isoformat(),
