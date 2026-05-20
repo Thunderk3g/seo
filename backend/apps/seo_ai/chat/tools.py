@@ -394,6 +394,62 @@ def run_architecture_audit(domain: str = _DEFAULT_DOMAIN) -> dict[str, Any]:
     }
 
 
+# ── Audit engine — Health Score + Issues catalogue (Phase 1) ─────────
+# These wrap the new typed audit catalogue at apps/crawler/audits/.
+# Read-only: they re-run the detectors over the current crawl_results.csv.
+# Use when the user asks for overall health, the issue inbox, or details
+# on a specific issue type.
+
+
+@_safe
+def get_health_score() -> dict[str, Any]:
+    """Compute the current site Health Score (0-100) using the Ahrefs
+    formula ``(URLs without errors / total URLs) × 100`` over the latest
+    crawl results. Returns score, tier (Excellent/Good/Fair/Weak),
+    severity counts, top 5 errors. Call this when the user asks
+    "how are we doing?" or wants a single-number overview."""
+    from apps.crawler.services.health_score import compute
+
+    return {"ok": True, **compute().as_dict()}
+
+
+@_safe
+def get_issues_summary(
+    severity: str = "",
+    category: str = "",
+) -> dict[str, Any]:
+    """List every issue type detected in the latest crawl, sorted errors
+    first then by URL count. Optional filters:
+      * severity — comma-separated subset of error,warning,notice
+      * category — comma-separated subset of the 8 categories
+        (crawlability, indexability, content, titles, performance, cwv,
+        urls, compliance)
+    Returns slim summaries with counts; drill into a specific issue via
+    affected URLs through the issue-detail endpoint."""
+    from apps.crawler.audits import run_all
+
+    sev_filter = {s for s in severity.split(",") if s}
+    cat_filter = {c for c in category.split(",") if c}
+
+    audit = run_all()
+    occs = [o for o in audit.occurrences if o.count > 0]
+    if sev_filter:
+        occs = [o for o in occs if o.issue.severity in sev_filter]
+    if cat_filter:
+        occs = [o for o in occs if o.issue.category in cat_filter]
+    order = {"error": 0, "warning": 1, "notice": 2}
+    occs.sort(key=lambda o: (order[o.issue.severity], -o.count))
+
+    return {
+        "ok": True,
+        "total_urls": audit.total_urls,
+        "ok_urls": audit.ok_urls,
+        "severity_counts": audit.severity_counts(),
+        "issue_type_counts": audit.issue_type_counts(),
+        "issues": [o.as_summary() for o in occs[:60]],
+    }
+
+
 @_safe
 def run_extractability_audit(domain: str = _DEFAULT_DOMAIN) -> dict[str, Any]:
     """Detection-only content-extractability scoring — for each top AEM
@@ -666,6 +722,57 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_health_score",
+            "description": (
+                "Compute the site Health Score (0-100) using the Ahrefs "
+                "formula: URLs without any error-severity issue divided "
+                "by total URLs, times 100. Returns score, tier "
+                "(Excellent/Good/Fair/Weak), severity counts, and the top "
+                "5 most-affecting error-severity issues. Call this when "
+                "the user asks 'how are we doing?', 'overall status', or "
+                "wants a single-number health overview."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_issues_summary",
+            "description": (
+                "List every issue type detected in the latest crawl, "
+                "sorted errors first then by URL count. Each issue "
+                "carries slug, title, severity, category, why-it-matters "
+                "copy, how-to-fix copy, and count of affected URLs. Use "
+                "this for the issues inbox view or when the user asks "
+                "'what's broken?', 'show me errors', 'top issues'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "description": (
+                            "Optional comma-separated subset of "
+                            "error,warning,notice. Default: all."
+                        ),
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": (
+                            "Optional comma-separated subset of the 8 "
+                            "categories: crawlability, indexability, "
+                            "content, titles, performance, cwv, urls, "
+                            "compliance."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "emit_card",
             "description": (
                 "Render a structured card inline with the assistant's "
@@ -710,5 +817,7 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "run_technical_audit": run_technical_audit,
     "run_architecture_audit": run_architecture_audit,
     "run_extractability_audit": run_extractability_audit,
+    "get_health_score": get_health_score,
+    "get_issues_summary": get_issues_summary,
     "emit_card": emit_card,
 }

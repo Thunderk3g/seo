@@ -1,0 +1,97 @@
+/* Tailwind entry — imported AFTER lattice.css in main.tsx.
+ *
+ * Two responsibilities:
+ *   1. Inject the three @tailwind directives so utility classes work.
+ *   2. Define the shadcn CSS variables (--background, --primary, etc.)
+ *      mapped to Bajaj brand colours so every shadcn primitive renders
+ *      Bajaj-branded without per-component overrides.
+ *
+ * Tailwind preflight is disabled in tailwind.config.js — no global
+ * resets here. Existing lattice.css selectors keep their cascade.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* shadcn token bindings — HSL values mapped to Bajaj brand.
+ *
+ * Why HSL: shadcn primitives compose colors with opacity modifiers like
+ * bg-primary/50; Tailwind only supports that syntax when the colour is
+ * declared as separate HSL channels (no commas, no hsl() wrapper).
+ *
+ * Source colours (matched to lattice.css):
+ *   --text       #002c6e   →  hsl(213, 100%, 22%)
+ *   --accent     #0072ce   →  hsl(207, 100%, 40%)
+ *   --bg         #f4f7fb   →  hsl(213, 43%, 97%)
+ *   --surface    #ffffff   →  hsl(0,   0%,   100%)
+ *   --border     rgba(0,44,110,.08)  →  hsl(213, 100%, 22% / 0.08)
+ *   --error      #d32f2f   →  hsl(0,   65%, 51%)
+ */
+:root {
+  --background: 213 43% 97%;
+  --foreground: 213 100% 22%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 213 100% 22%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 213 100% 22%;
+
+  --primary: 207 100% 40%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 213 50% 95%;
+  --secondary-foreground: 213 100% 22%;
+
+  --muted: 213 30% 94%;
+  --muted-foreground: 213 30% 35%;
+
+  --accent: 207 100% 40%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 0 65% 51%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 213 100% 22%;
+  --input: 213 30% 88%;
+  --ring: 207 100% 40%;
+}
+
+/* Optional dark theme tokens — included as a no-op for shadcn
+ * compatibility; the dashboard is light-only per Bajaj brand spec.
+ * If a future toggle wants dark mode, swap these. */
+.dark {
+  --background: 213 100% 8%;
+  --foreground: 0 0% 95%;
+  --card: 213 100% 12%;
+  --card-foreground: 0 0% 95%;
+  --popover: 213 100% 12%;
+  --popover-foreground: 0 0% 95%;
+  --primary: 207 100% 50%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 213 50% 18%;
+  --secondary-foreground: 0 0% 95%;
+  --muted: 213 30% 18%;
+  --muted-foreground: 213 30% 65%;
+  --accent: 207 100% 50%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 65% 51%;
+  --destructive-foreground: 0 0% 95%;
+  --border: 213 30% 22%;
+  --input: 213 30% 18%;
+  --ring: 207 100% 50%;
+}
+
+/* Scope shadcn defaults so they don't leak onto legacy pages.
+ *
+ * Every shadcn-rendered component (cards, badges, buttons, dialogs…)
+ * wraps in a `<div className="bajaj-ui">` block. This selector applies
+ * the brand background + sans font + base text colour ONLY inside that
+ * scope. Legacy pages (/, /gsc, /semrush, /sitemap) keep their existing
+ * styling completely untouched.
+ */
+.bajaj-ui {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               Helvetica, Arial, sans-serif;
+  color: hsl(var(--foreground));
+}

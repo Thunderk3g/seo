@@ -20,6 +20,14 @@ urlpatterns = [
     path("tables/<str:key>", views.table_detail_view, name="table-detail"),
     path("download/<str:key>", views.download_csv_view, name="download"),
 
+    # Audit engine — Health Score KPI + Issues triage inbox
+    # Phase 1 of the tool-clone roadmap: typed issue catalogue + Ahrefs-
+    # style transparent Health Score formula. Drives the new dashboard
+    # widget, the /crawler/issues page, and the chat tools.
+    path("health-score", views.health_score_view, name="health-score"),
+    path("issues", views.issues_view, name="issues"),
+    path("issues/<str:slug>", views.issue_detail_view, name="issue-detail"),
+
     # Reports
     path("reports/xlsx", views.report_xlsx_view, name="report-xlsx"),
 

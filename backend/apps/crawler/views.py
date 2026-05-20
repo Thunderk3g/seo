@@ -562,3 +562,102 @@ def logs_view(request):
         "is_running": is_running,
         "stats": stats,
     })
+
+
+# ── Audit engine — Health Score + Issues ────────────────────────────────
+
+
+@api_view(["GET"])
+def health_score_view(_request):
+    """Single-KPI overview of crawl health.
+
+    Computes the Ahrefs-formula Health Score from the current crawl
+    results CSV. Returns score (0-100), tier (Excellent/Good/Fair/Weak),
+    per-severity issue-type counts, per-category counts, and top-5 error
+    occurrences. Powers the dashboard widget and the chat ``get_health_score``
+    tool.
+    """
+    from .services.health_score import compute as compute_health_score
+
+    return Response(compute_health_score().as_dict())
+
+
+@api_view(["GET"])
+def issues_view(request):
+    """List every issue type with its current occurrence count.
+
+    Query params:
+      * severity (optional) — comma-separated subset of
+        ``error,warning,notice`` to filter the response. Default: all.
+      * category (optional) — comma-separated subset of the 8 categories.
+
+    Returns slim summaries (no per-URL lists) so the response stays small.
+    Drill into a specific issue via ``/issues/<slug>`` for the affected URLs.
+    """
+    from .audits import run_all
+
+    severity_filter = {
+        s for s in (request.query_params.get("severity") or "").split(",") if s
+    }
+    category_filter = {
+        c for c in (request.query_params.get("category") or "").split(",") if c
+    }
+
+    audit = run_all()
+    occs = [o for o in audit.occurrences if o.count > 0]
+    if severity_filter:
+        occs = [o for o in occs if o.issue.severity in severity_filter]
+    if category_filter:
+        occs = [o for o in occs if o.issue.category in category_filter]
+    # Sort by severity (errors first) then by count desc.
+    severity_order = {"error": 0, "warning": 1, "notice": 2}
+    occs.sort(key=lambda o: (severity_order[o.issue.severity], -o.count))
+
+    return Response({
+        "total_urls": audit.total_urls,
+        "ok_urls": audit.ok_urls,
+        "severity_counts": audit.severity_counts(),
+        "issue_type_counts": audit.issue_type_counts(),
+        "issues": [o.as_summary() for o in occs],
+        "started_at": audit.started_at,
+        "finished_at": audit.finished_at,
+    })
+
+
+@api_view(["GET"])
+def issue_detail_view(_request, slug: str):
+    """Per-issue drill-in: metadata + affected URLs.
+
+    Caps at 1000 affected URLs to keep the response bounded. Returns 404
+    for unknown slugs.
+    """
+    from .audits import ISSUES_BY_SLUG, run_all
+
+    issue = ISSUES_BY_SLUG.get(slug)
+    if issue is None:
+        return Response({"error": f"unknown issue slug: {slug}"}, status=404)
+
+    audit = run_all()
+    occ = next((o for o in audit.occurrences if o.issue.slug == slug), None)
+    if occ is None:
+        return Response({"error": f"issue {slug} not present in audit"}, status=404)
+
+    affected = [
+        {
+            "url": (r.get("url") or "").strip(),
+            "title": (r.get("title") or "").strip(),
+            "status_code": r.get("status_code") or "",
+            "subdomain": r.get("subdomain") or "",
+            "page_type": r.get("page_type") or "",
+            "word_count": r.get("word_count") or "",
+            "response_time_ms": r.get("response_time_ms") or "",
+            "indexed_status": r.get("indexed_status") or "",
+        }
+        for r in occ.affected_urls
+    ]
+
+    return Response({
+        **occ.as_summary(),
+        "affected_urls": affected,
+        "started_at": audit.started_at,
+    })
