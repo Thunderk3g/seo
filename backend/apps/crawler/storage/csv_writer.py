@@ -325,6 +325,17 @@ def _dual_write_pageresult(row: dict) -> None:
             except (TypeError, ValueError):
                 return None
 
+        # Phase 3e: Scrapy spider passes Playwright metadata as
+        # native types (bool / int / None), not CSV strings. Coerce
+        # defensively for both shapes.
+        playwright_used_raw = row.get("playwright_used")
+        if isinstance(playwright_used_raw, bool):
+            playwright_used = playwright_used_raw
+        elif isinstance(playwright_used_raw, str):
+            playwright_used = playwright_used_raw.lower() in ("1", "true", "yes")
+        else:
+            playwright_used = False
+
         CrawlerPageResult.objects.update_or_create(
             snapshot_id=snap_id,
             url=url[:2048],
@@ -346,6 +357,10 @@ def _dual_write_pageresult(row: dict) -> None:
                 "lcp_ms": _opt_i(row.get("lcp_ms")),
                 "cls": _opt_f(row.get("cls")),
                 "inp_ms": _opt_i(row.get("inp_ms")),
+                # Phase 3e Playwright fields
+                "static_word_count": _opt_i(row.get("static_word_count")),
+                "rendered_word_count": _opt_i(row.get("rendered_word_count")),
+                "playwright_used": playwright_used,
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path
