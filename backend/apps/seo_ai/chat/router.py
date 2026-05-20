@@ -34,7 +34,13 @@ from .tools import TOOL_HANDLERS, TOOL_SCHEMAS
 
 logger = logging.getLogger("seo.ai.chat.router")
 
-MAX_TOOL_ROUNDS = 5
+# Bumped 5 → 8 to give the new audit + multi-source-pull flow headroom.
+# A typical "audit our term-insurance page" turn now needs:
+#   round 1: get_sitemap_pages (find the URL) + get_competitor_gap
+#   round 2: run_content_audit
+#   round 3: emit_card with the verdict
+#   plus 1-2 follow-up rounds if the user drills in same-turn.
+MAX_TOOL_ROUNDS = 8
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
