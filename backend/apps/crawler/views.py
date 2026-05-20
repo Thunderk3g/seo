@@ -625,6 +625,99 @@ def issues_view(request):
 
 
 @api_view(["GET"])
+def themes_list_view(_request):
+    """List every available thematic report (8 themes)."""
+    from .services.themes import list_themes
+    return Response({"themes": list_themes()})
+
+
+@api_view(["GET"])
+def theme_detail_view(_request, slug: str):
+    """One thematic deep-dive report — issues curated for one concern
+    (robots, crawlability, https, international, performance, linking,
+    markup, cwv)."""
+    from .services.themes import get
+    theme = get(slug)
+    if theme is None:
+        return Response(
+            {"error": f"unknown theme: {slug}"},
+            status=404,
+        )
+    return Response(theme.as_dict())
+
+
+@api_view(["GET"])
+def compare_view(request):
+    """SEMrush-style Compare Crawls — diff any two CrawlSnapshot rows.
+
+    Query params:
+      * a (UUID, optional) — older snapshot. Default: second-most-recent.
+      * b (UUID, optional) — newer snapshot. Default: most-recent.
+
+    Returns per-issue diffs (Fixed / New / Changed) + per-URL page-set
+    diffs (added / removed / status-changed) + Health Score delta. If
+    fewer than two snapshots exist, returns 404 with an explanation.
+
+    Works across engines: an "a" from the legacy engine vs "b" from
+    Scrapy lets the operator visually validate parity at any granularity
+    during the 30-day migration soak.
+    """
+    from .services.crawl_diff import diff, latest_two_snapshots
+
+    a_id = request.query_params.get("a")
+    b_id = request.query_params.get("b")
+    if not (a_id and b_id):
+        pair = latest_two_snapshots()
+        if pair is None:
+            return Response(
+                {
+                    "error": "Need at least 2 CrawlSnapshot rows to compare.",
+                    "hint": "Run python manage.py crawl twice (or once + crawl_scrapy).",
+                },
+                status=404,
+            )
+        a_id, b_id = pair
+
+    try:
+        result = diff(a_id, b_id)
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            {"error": f"diff failed: {type(exc).__name__}: {exc}"},
+            status=404,
+        )
+    return Response(result.as_dict())
+
+
+@api_view(["GET"])
+def trends_view(request):
+    """Time-series of Health Score + per-category counts.
+
+    Powers the /trends route (Health Score over 30/90/365 days).
+    Reads MetricSnapshot rows written daily by the
+    snapshot_runner.take_snapshot task (Celery beat) or manually via
+    the snapshot_metrics management command.
+
+    Query params:
+      * window (int days, default 90, max 365)
+      * engine (legacy | scrapy | empty for both)
+    """
+    from .services.snapshot_runner import latest
+
+    engine = request.query_params.get("engine", "")
+    try:
+        window = int(request.query_params.get("window") or 90)
+    except (TypeError, ValueError):
+        window = 90
+    rows = latest(engine=engine, limit=window)
+    return Response({
+        "engine": engine or "any",
+        "window": window,
+        "snapshot_count": len(rows),
+        "snapshots": rows,
+    })
+
+
+@api_view(["GET"])
 def pagerank_view(_request):
     """Top URLs by internal PageRank + summary aggregates.
 

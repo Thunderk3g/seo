@@ -414,6 +414,70 @@ def get_health_score() -> dict[str, Any]:
 
 
 @_safe
+def get_trends(window: int = 90, engine: str = "") -> dict[str, Any]:
+    """Time-series of daily Health Score + per-category counts from
+    MetricSnapshot rows. Use when the user asks "are we improving?",
+    "trend?", "health score history", "how did errors change over
+    time?". Returns chronologically ascending snapshots (oldest -> newest).
+    Empty list when MetricSnapshot table is empty — operator must run
+    `python manage.py snapshot_metrics` (or wait for the Celery beat
+    nightly task) at least once."""
+    from apps.crawler.services.snapshot_runner import latest
+
+    capped = max(1, min(int(window or 90), 365))
+    rows = latest(engine=engine, limit=capped)
+    return {
+        "ok": True,
+        "engine": engine or "any",
+        "window": capped,
+        "snapshot_count": len(rows),
+        "snapshots": rows,
+    }
+
+
+@_safe
+def compare_crawls(a: str = "", b: str = "") -> dict[str, Any]:
+    """SEMrush-style Compare Crawls — diff any two CrawlSnapshot rows
+    (legacy or scrapy). When a/b are blank, picks the two most-recent
+    snapshots automatically. Use when the user asks "what changed
+    since the last crawl?", "compare snapshots", "did <X> get fixed?".
+    Returns Fixed / New / Changed per issue + per-URL page-set diffs
+    + Health Score delta."""
+    from apps.crawler.services.crawl_diff import diff, latest_two_snapshots
+
+    if not (a and b):
+        pair = latest_two_snapshots()
+        if pair is None:
+            return {
+                "ok": False,
+                "error": "need at least 2 CrawlSnapshot rows",
+                "hint": "run python manage.py crawl twice",
+            }
+        a, b = pair
+    return {"ok": True, **diff(a, b).as_dict()}
+
+
+@_safe
+def get_thematic_report(slug: str = "") -> dict[str, Any]:
+    """One of 8 thematic deep-dive reports: robots, crawlability,
+    https, international, performance, linking, markup, cwv.
+    Bundles curated issues + relevant page-explorer slices into one
+    focused payload. Use when the user asks about a specific concern
+    ("how are our robots?", "markup hygiene?", "international SEO?",
+    "performance theme?"). Without `slug`, returns the list of
+    available themes."""
+    from apps.crawler.services.themes import get as get_theme, list_themes
+
+    if not slug:
+        return {"ok": True, "themes": list_themes()}
+    theme = get_theme(slug)
+    if theme is None:
+        return {"ok": False, "error": f"unknown theme slug: {slug}",
+                "available": [t["slug"] for t in list_themes()]}
+    return {"ok": True, **theme.as_dict()}
+
+
+@_safe
 def get_pagerank_top(n: int = 20) -> dict[str, Any]:
     """Top URLs by internal PageRank ("Link Score") — Ahrefs Page Rating
     equivalent. Computed from crawl_discovered.csv link graph using
@@ -997,6 +1061,67 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_trends",
+            "description": (
+                "Time-series of daily Health Score + per-category "
+                "counts from MetricSnapshot rows. Use when the user "
+                "asks 'are we improving?', 'trend?', 'health score "
+                "history', 'how did errors change over time?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "integer", "description": "Days to return (1-365, default 90)."},
+                    "engine": {"type": "string", "description": "Optional 'legacy' or 'scrapy' filter."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_crawls",
+            "description": (
+                "SEMrush-style Compare Crawls — diff any two "
+                "CrawlSnapshot rows. Without args, picks the two "
+                "most-recent automatically. Use when the user asks "
+                "'what changed since last crawl?', 'compare snapshots', "
+                "'did X get fixed?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "description": "Older snapshot UUID (optional)."},
+                    "b": {"type": "string", "description": "Newer snapshot UUID (optional)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_thematic_report",
+            "description": (
+                "One of 8 thematic deep-dive reports: robots, "
+                "crawlability, https, international, performance, "
+                "linking, markup, cwv. Bundles curated issues for one "
+                "focused concern. Without slug, returns the list of "
+                "available themes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Theme slug. Empty returns the available list.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "emit_card",
             "description": (
                 "Render a structured card inline with the assistant's "
@@ -1047,5 +1172,8 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_pagerank_top": get_pagerank_top,
     "get_orphan_pages": get_orphan_pages,
     "get_near_duplicates": get_near_duplicates,
+    "get_trends": get_trends,
+    "compare_crawls": compare_crawls,
+    "get_thematic_report": get_thematic_report,
     "emit_card": emit_card,
 }
