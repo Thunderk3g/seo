@@ -297,6 +297,38 @@ def console_capture_stop_view(_request):
 
 
 @api_view(["GET"])
+def psi_progress_view(_request):
+    """Live snapshot of the inline PSI scheduler while a crawl is running.
+
+    Returns an empty object when no scheduler is registered (no crawl in
+    flight, or PSI is disabled). When active, returns the scheduler's
+    progress dict::
+
+        {
+          "is_running": bool,
+          "started_at": float | null,
+          "finished_at": float | null,
+          "submitted": int,
+          "in_flight": int,
+          "completed": int,
+          "failed": int,
+          "queue_size": int,
+          "last_url": str,
+          "workers": int,
+          "strategies": ["mobile", "desktop"],
+          "primary_strategy": "mobile",
+          "disabled": bool,
+          "disabled_reason": str   (only when disabled)
+        }
+    """
+    from .engine import psi_scheduler
+    sched = psi_scheduler.get_current()
+    if sched is None:
+        return Response({})
+    return Response(sched.progress())
+
+
+@api_view(["GET"])
 def psi_status_view(_request):
     """Return the last-persisted PSI run outcome. Powers the
     "PSI capture skipped because <reason>" banner on the Reports page.

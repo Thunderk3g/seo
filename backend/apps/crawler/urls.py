@@ -47,6 +47,10 @@ urlpatterns = [
     # Reads _psi_status.json written by psi_capture at the end of each
     # run. Returns {} if no PSI run has happened yet.
     path("psi/status", views.psi_status_view, name="psi-status"),
+    # Live progress of the inline PSI scheduler during an active crawl.
+    # Frontend polls this every ~5 s while is_running is true. Returns
+    # {} when no crawl/scheduler is in flight.
+    path("psi/progress", views.psi_progress_view, name="psi-progress"),
 
     # Site tree
     path("tree", views.tree_view, name="tree"),

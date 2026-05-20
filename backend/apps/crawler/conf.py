@@ -177,6 +177,25 @@ class CrawlerSettings:
         default_factory=lambda: _env_int("PSI_CAPTURE_LIMIT", 100)
     )
 
+    # ── Inline PSI scheduler (concurrent, per-URL during crawl) ──────
+    # When True (default), every crawled URL is submitted to a small
+    # PSI worker pool that calls Google PSI in parallel with the crawl
+    # itself. Results stream into ``crawl_psi_inline.csv`` as they
+    # complete; the final merge into ``crawl_results.csv`` happens once
+    # the crawl is done, atomically. This replaces the slower Phase-3
+    # batch path (kept around only as a fallback when inline is off).
+    #
+    # CRAWLER_PSI_WORKERS: pool size. 4 is conservative — Google PSI
+    # tolerates ~8 concurrent calls per IP before 429s start. Bump if
+    # you have a paid quota and want PSI to finish closer to crawl
+    # completion time.
+    psi_inline_enabled: bool = field(
+        default_factory=lambda: _env_bool("PSI_INLINE", True)
+    )
+    psi_inline_workers: int = field(
+        default_factory=lambda: _env_int("PSI_WORKERS", 4)
+    )
+
     # ── Data dirs ────────────────────────────────────────────
     data_dir: str = field(default_factory=lambda: _env_str("DATA_DIR", ""))
     reports_dir: str = field(default_factory=lambda: _env_str("REPORTS_DIR", ""))

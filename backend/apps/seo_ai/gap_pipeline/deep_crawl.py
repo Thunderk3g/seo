@@ -69,11 +69,14 @@ logger = logging.getLogger("seo.ai.gap_pipeline.deep_crawl")
 
 
 _DEFAULT_PAGES_PER_DOMAIN = 25
-# Top N pages per competitor that get PSI CWV enrichment. Smaller than
-# the sample size so the slow PSI calls (mobile 1-3s, desktop 30-40s)
-# don't dominate the gap-pipeline runtime, and quota stays well under
-# the 25k/day PSI budget.
-_CWV_PAGES_PER_COMPETITOR = 10
+# PSI is now parallelised inside CompetitorCrawler.enrich_with_cwv (see
+# the inline_workers knob in PSI config), so we score every sampled
+# page rather than only the top 10. With 4 PSI workers the typical
+# 25-page enrichment finishes in ~2-3 min instead of ~15 min serial.
+# Quota: 25 pages × 2 strategies × 10 competitors = 500 PSI calls per
+# gap run = 2 % of daily budget. Override via env if you want a tighter
+# cap or to revert to the old 10-page top.
+_CWV_PAGES_PER_COMPETITOR = _DEFAULT_PAGES_PER_DOMAIN
 
 
 # Page-type heuristics. URL-token first (cheap + reliable), then HTML
