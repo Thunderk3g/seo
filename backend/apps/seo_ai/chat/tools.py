@@ -40,9 +40,38 @@ _DEFAULT_DOMAIN = "bajajlifeinsurance.com"
 
 
 def _safe(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
-    """Wrap a handler so any exception is returned as a structured dict."""
+    """Wrap a handler so any exception is returned as a structured dict.
+
+    Also strips unknown kwargs before calling the underlying function.
+    The LLM occasionally hallucinates arguments not in the schema
+    (e.g., calling ``get_crawler_summary(limit=0)`` when the schema
+    declares zero params); silently dropping unknowns is friendlier to
+    the chat surface than a 500 error with a TypeError traceback.
+    """
+    import inspect
+
+    sig = inspect.signature(fn)
+    accepts_var_kwargs = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in sig.parameters.values()
+    )
+    known_param_names = {
+        name for name, p in sig.parameters.items()
+        if p.kind not in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        )
+    }
 
     def wrapper(**kwargs: Any) -> dict[str, Any]:
+        if not accepts_var_kwargs:
+            unknown = set(kwargs) - known_param_names
+            if unknown:
+                logger.info(
+                    "chat tool %s: dropping unknown kwargs %s",
+                    fn.__name__, sorted(unknown),
+                )
+                kwargs = {k: v for k, v in kwargs.items() if k in known_param_names}
         try:
             return fn(**kwargs)
         except Exception as exc:  # noqa: BLE001 - LLM-facing surface
@@ -261,6 +290,132 @@ def emit_card(card_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "card_type": card_type, "emitted": True}
 
 
+# ── Audit / detection agents invokable from chat ─────────────────────
+# Each wrapper takes the same single-URL or single-domain shape so the
+# LLM doesn't have to learn separate calling conventions per agent.
+# The three existing detection agents (Technical/Architecture/
+# Extractability) need a SEORun for their event logging; we create a
+# transient row keyed triggered_by="chat" so logs land somewhere
+# inspectable without polluting full-grade history.
+
+
+def _ephemeral_run(domain: str):
+    """Create a transient SEORun for chat-invoked agent calls.
+
+    Same pattern used by ``get_competitor_gap`` above. Lets the existing
+    detection agents log to ``SEORunMessage`` without us having to make
+    the run argument optional everywhere in the agent class.
+    """
+    from ..models import SEORun
+    return SEORun.objects.create(domain=domain, triggered_by="chat")
+
+
+def _drafts_to_dicts(drafts: list, cap: int = 30) -> list[dict[str, Any]]:
+    """Serialize FindingDraft list to LLM-friendly dicts (slim)."""
+    out: list[dict[str, Any]] = []
+    for d in drafts[:cap]:
+        out.append({
+            "category": getattr(d, "category", ""),
+            "severity": getattr(d, "severity", "notice"),
+            "title": getattr(d, "title", ""),
+            "description": (getattr(d, "description", "") or "")[:500],
+            "impact": getattr(d, "impact", "medium"),
+            "evidence_refs": list(getattr(d, "evidence_refs", []) or [])[:5],
+        })
+    return out
+
+
+@_safe
+def run_content_audit(
+    our_url: str,
+    their_url: str = "",
+    run_id: str = "",
+) -> dict[str, Any]:
+    """LLM-grade our AEM page vs the topically-closest competitor page.
+
+    Pairs the URL via the page_pairing matcher (or uses ``their_url`` if
+    explicitly provided), then asks Groq to grade both pages on the v1
+    rubric (E-E-A-T, intent match, freshness, structural extractability,
+    schema coverage, internal links, word-count fit). Returns winner,
+    scores, and 3-5 prioritized recommendations.
+
+    Persists ``GapAuditFinding`` so the verdict is auditable later.
+    No LLM billing required — runs on Groq's free tier.
+    """
+    from ..agents.content_audit_agent import ContentAuditAgent
+
+    verdict = ContentAuditAgent(triggered_by="chat").audit(
+        our_url=our_url,
+        their_url=their_url or None,
+        run_id=run_id or None,
+    )
+    return verdict.as_dict()
+
+
+@_safe
+def run_technical_audit(domain: str = _DEFAULT_DOMAIN) -> dict[str, Any]:
+    """Detection-only technical SEO audit — AI bot access (robots.txt),
+    sitemap, response times, HTTPS, canonical, viewport, structured-data
+    coverage. Returns prioritized findings without recommendations.
+    """
+    from ..agents.technical_audit import TechnicalAuditAgent
+
+    run = _ephemeral_run(domain)
+    agent = TechnicalAuditAgent(run=run, step_index_start=0)
+    findings = agent.detect(domain=domain)
+    return {
+        "ok": True,
+        "domain": domain,
+        "agent": "technical_audit",
+        "run_id": str(run.id),
+        "finding_count": len(findings),
+        "findings": _drafts_to_dicts(findings),
+    }
+
+
+@_safe
+def run_architecture_audit(domain: str = _DEFAULT_DOMAIN) -> dict[str, Any]:
+    """Detection-only site-architecture audit — URL hierarchy depth,
+    page-type distribution (product / category / blog / landing /
+    comparison / calculator), orphan clusters, internal-linking shape.
+    """
+    from ..agents.architecture_audit import ArchitectureAuditAgent
+
+    run = _ephemeral_run(domain)
+    agent = ArchitectureAuditAgent(run=run, step_index_start=0)
+    findings = agent.detect(domain=domain)
+    return {
+        "ok": True,
+        "domain": domain,
+        "agent": "architecture_audit",
+        "run_id": str(run.id),
+        "finding_count": len(findings),
+        "findings": _drafts_to_dicts(findings),
+    }
+
+
+@_safe
+def run_extractability_audit(domain: str = _DEFAULT_DOMAIN) -> dict[str, Any]:
+    """Detection-only content-extractability scoring — for each top AEM
+    page: lead-paragraph definition, answer blocks, statistics, FAQ
+    blocks, schema markup, author attribution, freshness, query-style
+    headings. Surfaces the patterns AI search engines reward.
+    """
+    from ..agents.content_extractability import ContentExtractabilityAgent
+
+    run = _ephemeral_run(domain)
+    agent = ContentExtractabilityAgent(run=run, step_index_start=0)
+    findings = agent.detect(domain=domain)
+    return {
+        "ok": True,
+        "domain": domain,
+        "agent": "content_extractability",
+        "run_id": str(run.id),
+        "finding_count": len(findings),
+        "findings": _drafts_to_dicts(findings),
+    }
+
+
 # ── schema definitions ──────────────────────────────────────────────────
 
 
@@ -392,6 +547,125 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "run_content_audit",
+            "description": (
+                "Run an LLM-graded content audit comparing one of OUR "
+                "AEM pages to the topically-closest competitor page. "
+                "Returns winner (us/them/tie), 0-100 scores for both "
+                "sides, our strengths, our gaps, and 3-5 prioritized "
+                "fix recommendations. Persists the verdict for history. "
+                "Use this when the user asks to audit a specific page, "
+                "compare against a competitor, or get fix suggestions. "
+                "Requires a prior gap-pipeline run for competitor data."
+            ),
+            "parameters": {
+                "type": "object",
+                "required": ["our_url"],
+                "properties": {
+                    "our_url": {
+                        "type": "string",
+                        "description": (
+                            "Full public URL of our AEM page, "
+                            "e.g. https://www.bajajlifeinsurance.com/"
+                            "term-insurance-plans.html"
+                        ),
+                    },
+                    "their_url": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Specific competitor URL to "
+                            "compare against. Default: auto-match "
+                            "via URL slug + title similarity."
+                        ),
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Pin to a specific "
+                            "gap-pipeline run UUID. Default: latest."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_technical_audit",
+            "description": (
+                "Detection-only technical SEO audit: AI bot access in "
+                "robots.txt (GPTBot/ClaudeBot/PerplexityBot/Google-"
+                "Extended/Bingbot), sitemap presence + indexable URL "
+                "count, median response time, HTTPS/canonical/viewport/"
+                "structured-data coverage. No fix recommendations "
+                "(detection only). Use when the user asks for technical "
+                "issues / health-check / AI bot accessibility."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": (
+                            "Domain to audit. Defaults to "
+                            "bajajlifeinsurance.com when omitted."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_architecture_audit",
+            "description": (
+                "Detection-only site-architecture audit: URL hierarchy "
+                "depth, page-type distribution (product / category / "
+                "blog / landing / comparison / calculator), orphan "
+                "clusters, internal-linking shape. Use when the user "
+                "asks about site structure, page organization, or "
+                "navigation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Domain to audit. Default: bajajlifeinsurance.com.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_extractability_audit",
+            "description": (
+                "Detection-only content-extractability audit on our top "
+                "AEM pages: lead-paragraph definition, self-contained "
+                "answer blocks, statistics with sources, FAQ blocks, "
+                "schema markup, author attribution, freshness signals, "
+                "query-style headings. Surfaces the structural patterns "
+                "AI search engines (ChatGPT/Claude/Perplexity/Gemini) "
+                "reward when picking what to cite."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Domain to audit. Default: bajajlifeinsurance.com.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "emit_card",
             "description": (
                 "Render a structured card inline with the assistant's "
@@ -432,5 +706,9 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_crawler_summary": get_crawler_summary,
     "get_latest_grade": get_latest_grade,
     "run_grade_async": run_grade_async,
+    "run_content_audit": run_content_audit,
+    "run_technical_audit": run_technical_audit,
+    "run_architecture_audit": run_architecture_audit,
+    "run_extractability_audit": run_extractability_audit,
     "emit_card": emit_card,
 }
