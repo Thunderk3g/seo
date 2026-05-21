@@ -39,16 +39,40 @@ _ENRICH_FIELDS = [
     "from_sitemap", "indexed_status",
 ]
 
+# Per-strategy CWV column suffixes — mobile_/desktop_ versions of these
+# are stamped onto every PSI-enriched row. Keep in sync with
+# ``apps.crawler.engine.psi_capture.PSI_STRATEGY_SUFFIXES``.
+_PSI_SUFFIXES = (
+    "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+    "fcp_ms", "ttfb_ms", "tbt_ms", "si_ms",
+    "lcp_category", "cls_category", "inp_category",
+    "has_field_data",
+)
+PSI_STRATEGIES = ("mobile", "desktop")
+PSI_FIELDS = [
+    f"{strat}_{sfx}" for strat in PSI_STRATEGIES for sfx in _PSI_SUFFIXES
+]
+
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
     *_ENRICH_FIELDS,
-    # PSI / Core Web Vitals (mobile strategy by default). Populated by
-    # the end-of-crawl PSI phase via _merge_into_results_csv. Empty for
-    # rows that weren't in the PSI subset (skipped, non-200, capped by
-    # PSI_MAX_URLS_PER_RUN). lcp/inp are p75 field values when CrUX has
-    # data; lab values are used as a fallback.
+    # PSI / Core Web Vitals — LEGACY headline columns (mobile-only).
+    # Kept for backward compat with operators / spreadsheets that read
+    # ``pagespeed_score`` directly. These mirror the values in
+    # ``mobile_*`` for the same row. Field (CrUX p75) preferred, lab
+    # fallback.
     "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+    # Full dual-strategy CWV (Mobile + Desktop, lab + field metrics).
+    # Populated by the end-of-crawl PSI phase via
+    # ``_merge_into_results_csv``. Empty when:
+    #   - the URL wasn't in the PSI subset (non-200, skipped, capped),
+    #   - PSI_ENABLED=false or the service-account file is missing,
+    #   - this strategy errored (network / quota / unsupported).
+    # Lab metrics (TBT, Speed Index) are present even on URLs with no
+    # CrUX data; field metrics (INP, *_category, has_field_data) only
+    # populate when the URL has 28-day real-user data in CrUX.
+    *PSI_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -336,6 +360,31 @@ def _dual_write_pageresult(row: dict) -> None:
         else:
             playwright_used = False
 
+        # Build the dual-strategy CWV column dict — picks up
+        # mobile_*/desktop_* values when the PSI scheduler ran both.
+        cwv_cols: dict = {}
+        for strat in ("mobile", "desktop"):
+            cwv_cols[f"{strat}_pagespeed_score"] = _opt_i(row.get(f"{strat}_pagespeed_score"))
+            cwv_cols[f"{strat}_lcp_ms"] = _opt_i(row.get(f"{strat}_lcp_ms"))
+            cwv_cols[f"{strat}_cls"] = _opt_f(row.get(f"{strat}_cls"))
+            cwv_cols[f"{strat}_inp_ms"] = _opt_i(row.get(f"{strat}_inp_ms"))
+            cwv_cols[f"{strat}_fcp_ms"] = _opt_i(row.get(f"{strat}_fcp_ms"))
+            cwv_cols[f"{strat}_ttfb_ms"] = _opt_i(row.get(f"{strat}_ttfb_ms"))
+            cwv_cols[f"{strat}_tbt_ms"] = _opt_i(row.get(f"{strat}_tbt_ms"))
+            cwv_cols[f"{strat}_si_ms"] = _opt_i(row.get(f"{strat}_si_ms"))
+            cwv_cols[f"{strat}_lcp_category"] = (
+                row.get(f"{strat}_lcp_category") or ""
+            )[:24]
+            cwv_cols[f"{strat}_cls_category"] = (
+                row.get(f"{strat}_cls_category") or ""
+            )[:24]
+            cwv_cols[f"{strat}_inp_category"] = (
+                row.get(f"{strat}_inp_category") or ""
+            )[:24]
+            cwv_cols[f"{strat}_has_field_data"] = (
+                str(row.get(f"{strat}_has_field_data") or "0") == "1"
+            )
+
         CrawlerPageResult.objects.update_or_create(
             snapshot_id=snap_id,
             url=url[:2048],
@@ -353,10 +402,15 @@ def _dual_write_pageresult(row: dict) -> None:
                 "category_key": (row.get("category_key") or "")[:128],
                 "from_sitemap": (row.get("from_sitemap") or "0") == "1",
                 "indexed_status": (row.get("indexed_status") or "unknown")[:16],
+                # Legacy headline columns (mobile aliases for back-compat).
                 "pagespeed_score": _opt_i(row.get("pagespeed_score")),
                 "lcp_ms": _opt_i(row.get("lcp_ms")),
                 "cls": _opt_f(row.get("cls")),
                 "inp_ms": _opt_i(row.get("inp_ms")),
+                # Full dual-strategy CWV — 24 columns of mobile + desktop
+                # lab + field metrics. Populated when PSI ran both
+                # strategies for the URL.
+                **cwv_cols,
                 # Phase 3e Playwright fields
                 "static_word_count": _opt_i(row.get("static_word_count")),
                 "rendered_word_count": _opt_i(row.get("rendered_word_count")),

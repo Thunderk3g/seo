@@ -237,6 +237,12 @@ def capture(
             if CAPTURE_STATE.should_stop:
                 log.info("psi_capture: stop requested at %s/%s", i, len(url_list))
                 break
+            # Per-URL: seed an empty merged row covering both strategies
+            # so any single-strategy run still emits the full column set
+            # (the merge step expects a stable schema per URL).
+            merged: dict = {}
+            for s in ("mobile", "desktop"):
+                merged.update(_strategy_columns(None, s))
             for strategy in strategies:
                 try:
                     record = psi.fetch(url, strategy=strategy)
@@ -247,19 +253,21 @@ def capture(
                 if record is None or record.error:
                     if record and record.error:
                         failed += 1
+                    if strategy == primary and "pagespeed_score" not in merged:
+                        merged["pagespeed_score"] = ""
+                        merged["lcp_ms"] = ""
+                        merged["cls"] = ""
+                        merged["inp_ms"] = ""
+                else:
+                    if strategy in ("mobile", "desktop"):
+                        merged.update(_strategy_columns(record, strategy))
                     if strategy == primary:
-                        psi_data[url] = {
-                            "pagespeed_score": "",
-                            "lcp_ms": "",
-                            "cls": "",
-                            "inp_ms": "",
-                        }
-                elif strategy == primary:
-                    psi_data[url] = _row_from_record(record)
+                        merged.update(_row_from_record(record))
                 with CAPTURE_STATE.lock:
                     CAPTURE_STATE.processed += 1
                     CAPTURE_STATE.failed = failed
                     CAPTURE_STATE.last_url = url
+            psi_data[url] = merged
     finally:
         with CAPTURE_STATE.lock:
             CAPTURE_STATE.is_running = False
@@ -311,13 +319,17 @@ def capture(
 
 
 def _row_from_record(record) -> dict:
-    """Pick the four numbers we surface on the main results row.
+    """Pick the four headline numbers we surface as legacy (unprefixed)
+    columns on the main results row.
 
     Field (CrUX p75) is preferred when present — it reflects what real
     Chrome users see. Lab is the fallback for low-traffic URLs.
     ``pagespeed_score`` is rescaled from PSI's 0-1 float to a 0-100
     integer because that's how Lighthouse historically presents it and
     it reads cleaner in a spreadsheet.
+
+    Use ``_strategy_columns(record, strategy)`` for the full per-strategy
+    column set (mobile + desktop lab + field metrics).
     """
     score = record.performance_score
     if isinstance(score, (int, float)):
@@ -335,6 +347,82 @@ def _row_from_record(record) -> dict:
         "lcp_ms": lcp if lcp is not None else "",
         "cls": round(cls, 3) if isinstance(cls, (int, float)) else "",
         "inp_ms": inp if inp is not None else "",
+    }
+
+
+# Columns produced by _strategy_columns(...) for one strategy, prefixed
+# with the strategy slug ("mobile" / "desktop"). Field is preferred for
+# the headline numbers (LCP/CLS), with lab as the fallback; lab-only
+# metrics (TBT, Speed Index) stay lab. INP and TTFB come from CrUX
+# because Lighthouse lab can't simulate input or capture real-user TTFB.
+PSI_STRATEGY_SUFFIXES = (
+    # headline + lab
+    "pagespeed_score",  # 0-100 int, rescaled from PSI 0-1 float
+    "lcp_ms",           # field LCP if present else lab LCP
+    "cls",              # field CLS if present else lab CLS
+    "inp_ms",           # field-only (lab can't measure INP)
+    "fcp_ms",           # field if present else lab
+    "ttfb_ms",          # field if present else lab (server-response-time)
+    "tbt_ms",           # lab-only (Total Blocking Time)
+    "si_ms",            # lab-only (Speed Index)
+    # CrUX p75 ratings (GOOD / NEEDS_IMPROVEMENT / POOR)
+    "lcp_category",
+    "cls_category",
+    "inp_category",
+    # CrUX availability flag — 1 if this URL has 28-day real-user data.
+    "has_field_data",
+)
+
+
+def _strategy_columns(record, strategy: str) -> dict:
+    """Per-strategy column values, keyed by ``{strategy}_{suffix}``.
+
+    Empty string when a metric isn't available (rather than None) so
+    csv.DictWriter renders blank cells, matching the rest of the
+    pipeline's "missing = empty string" convention.
+    """
+    if record is None or getattr(record, "error", None):
+        return {f"{strategy}_{s}": "" for s in PSI_STRATEGY_SUFFIXES}
+
+    score = record.performance_score
+    if isinstance(score, (int, float)):
+        score = round(score * 100)
+    else:
+        score = ""
+
+    lcp = (
+        record.field_lcp_ms if record.has_field_data and record.field_lcp_ms is not None
+        else record.lab_lcp_ms
+    )
+    cls = (
+        record.field_cls if record.has_field_data and record.field_cls is not None
+        else record.lab_cls
+    )
+    fcp = (
+        record.field_fcp_ms if record.has_field_data and record.field_fcp_ms is not None
+        else record.lab_fcp_ms
+    )
+    ttfb = (
+        record.field_ttfb_ms if record.has_field_data and record.field_ttfb_ms is not None
+        else record.lab_ttfb_ms
+    )
+
+    def _emit(v):
+        return v if v is not None else ""
+
+    return {
+        f"{strategy}_pagespeed_score": score if score != "" else "",
+        f"{strategy}_lcp_ms": _emit(lcp),
+        f"{strategy}_cls": round(cls, 3) if isinstance(cls, (int, float)) else "",
+        f"{strategy}_inp_ms": _emit(record.field_inp_ms),
+        f"{strategy}_fcp_ms": _emit(fcp),
+        f"{strategy}_ttfb_ms": _emit(ttfb),
+        f"{strategy}_tbt_ms": _emit(record.lab_tbt_ms),
+        f"{strategy}_si_ms": _emit(record.lab_si_ms),
+        f"{strategy}_lcp_category": record.field_lcp_category or "",
+        f"{strategy}_cls_category": record.field_cls_category or "",
+        f"{strategy}_inp_category": record.field_inp_category or "",
+        f"{strategy}_has_field_data": "1" if record.has_field_data else "0",
     }
 
 
@@ -388,7 +476,16 @@ def _merge_into_results_csv(psi_data: dict[str, dict],
     except Exception:  # noqa: BLE001 - safe to ignore
         pass
 
-    psi_cols = ("pagespeed_score", "lcp_ms", "cls", "inp_ms")
+    # Legacy unprefixed columns (mobile-only headline numbers) PLUS the
+    # full dual-strategy column set. Same names ``psi_scheduler`` writes
+    # into its per-URL results dict — see ``_strategy_columns``.
+    psi_cols = (
+        "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+    ) + tuple(
+        f"{strat}_{sfx}"
+        for strat in ("mobile", "desktop")
+        for sfx in PSI_STRATEGY_SUFFIXES
+    )
 
     # Per-call unique tmp name. Same directory as the target so
     # os.replace is atomic on POSIX + Windows. Includes PID + monotonic

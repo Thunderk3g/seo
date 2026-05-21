@@ -45,8 +45,25 @@ from ..logger import get_logger
 
 log = get_logger(__name__)
 
+# Per-strategy CWV column suffixes — mirrored from
+# ``apps.crawler.engine.psi_capture.PSI_STRATEGY_SUFFIXES``. Repeating
+# here to avoid a circular import at module load time.
+_PSI_SUFFIXES = (
+    "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+    "fcp_ms", "ttfb_ms", "tbt_ms", "si_ms",
+    "lcp_category", "cls_category", "inp_category",
+    "has_field_data",
+)
+_PSI_STRATS = ("mobile", "desktop")
+_PSI_PER_STRATEGY_COLS = tuple(
+    f"{s}_{sfx}" for s in _PSI_STRATS for sfx in _PSI_SUFFIXES
+)
 _SIDECAR_FIELDS = [
-    "url", "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+    "url",
+    # Legacy headline columns (mobile, the operator's primary view).
+    "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+    # Full dual-strategy column set.
+    *_PSI_PER_STRATEGY_COLS,
     "primary_strategy", "fetched_at",
 ]
 _SIDECAR_FILE = "crawl_psi_inline.csv"
@@ -265,10 +282,21 @@ class InlinePSIScheduler:
                 self._queue.task_done()
 
     def _process(self, url: str) -> None:
-        from .psi_capture import _row_from_record
+        from .psi_capture import _row_from_record, _strategy_columns
 
+        # Aggregate one merged row across all strategies so the
+        # downstream merge gets a single dict per URL containing both
+        # mobile_* and desktop_* columns plus the legacy aliases.
+        merged_row: dict[str, Any] = {}
         primary_row: dict | None = None
         had_error = False
+
+        # Always emit empty per-strategy columns so the merge never
+        # leaves cells "missing" — the CSV consumer can rely on a stable
+        # column set even if one strategy failed.
+        for strategy in _PSI_STRATS:
+            merged_row.update(_strategy_columns(None, strategy))
+
         for strategy in self.strategies:
             if self._stop_evt.is_set():
                 return
@@ -284,8 +312,13 @@ class InlinePSIScheduler:
             if record is None or getattr(record, "error", None):
                 had_error = had_error or bool(record and record.error)
                 continue
+            # Always stamp the per-strategy columns — even non-primary
+            # strategies populate their dedicated columns.
+            if strategy in _PSI_STRATS:
+                merged_row.update(_strategy_columns(record, strategy))
             if strategy == self._primary:
                 primary_row = _row_from_record(record)
+
         if primary_row is None:
             primary_row = {
                 "pagespeed_score": "", "lcp_ms": "", "cls": "", "inp_ms": "",
@@ -293,15 +326,18 @@ class InlinePSIScheduler:
             if had_error:
                 with self.state.lock:
                     self.state.failed += 1
+        merged_row.update(primary_row)
+
         with self._results_lock:
-            self._results[url] = primary_row
-        self._append_sidecar(url, primary_row)
+            self._results[url] = merged_row
+        self._append_sidecar(url, merged_row)
         with self.state.lock:
             self.state.completed += 1
 
     def _append_sidecar(self, url: str, row: dict) -> None:
-        out_row = {
+        out_row: dict[str, Any] = {
             "url": url,
+            # Legacy headline columns (mobile aliases).
             "pagespeed_score": row.get("pagespeed_score", ""),
             "lcp_ms": row.get("lcp_ms", ""),
             "cls": row.get("cls", ""),
@@ -309,6 +345,9 @@ class InlinePSIScheduler:
             "primary_strategy": self._primary,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
+        # Per-strategy columns — copy whatever the merged row carries.
+        for col in _PSI_PER_STRATEGY_COLS:
+            out_row[col] = row.get(col, "")
         with self._sidecar_lock:
             try:
                 with self._sidecar_path.open(
