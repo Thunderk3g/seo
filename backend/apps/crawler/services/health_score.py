@@ -27,10 +27,13 @@ Returns a structured :class:`HealthScore` dataclass that surfaces in:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from ..audits import run_all
 from ..audits.runner import AuditResult
+
+log = logging.getLogger("apps.crawler.services.health_score")
 
 
 @dataclass
@@ -128,3 +131,58 @@ def compute(audit: AuditResult | None = None) -> HealthScore:
         started_at=a.started_at,
         finished_at=a.finished_at,
     )
+
+
+def _pageresult_to_row(p) -> dict:
+    """Adapt a CrawlerPageResult ORM row into the dict shape the
+    detectors in ``audits/catalog.py`` expect. The detectors were
+    originally written against ``crawl_results.csv`` rows, so they read
+    string-typed CSV cells (status_code "200", from_sitemap "1"/"0",
+    indexed_status "indexed"/"unknown", pagespeed_score "82"). Keep
+    that contract here so the catalog code stays untouched."""
+    return {
+        "url": p.url,
+        "status_code": (p.status_code or "").strip(),
+        "title": p.title or "",
+        "word_count": p.word_count or 0,
+        "response_time_ms": p.response_time_ms or 0,
+        "content_type": p.content_type or "",
+        "subdomain": p.subdomain or "",
+        "page_type": p.page_type or "",
+        "category_key": p.category_key or "",
+        "from_sitemap": "1" if p.from_sitemap else "0",
+        "indexed_status": p.indexed_status or "unknown",
+        "pagespeed_score": (
+            str(p.pagespeed_score) if p.pagespeed_score is not None else ""
+        ),
+        "lcp_ms": str(p.lcp_ms) if p.lcp_ms is not None else "",
+        "cls": str(p.cls) if p.cls is not None else "",
+        "inp_ms": str(p.inp_ms) if p.inp_ms is not None else "",
+    }
+
+
+def compute_for_snapshot(snapshot_id: str) -> HealthScore | None:
+    """Health Score scoped to a single CrawlSnapshot.
+
+    Used by the competitor-side pipeline so each competitor crawl
+    finalises with its own Health Score (and per-competitor trends
+    work). Returns None if the snapshot has no rows or if the ORM is
+    unavailable — the caller treats that as "score unknown".
+    """
+    try:
+        from ..models import CrawlerPageResult
+        rows_iter = CrawlerPageResult.objects.filter(
+            snapshot_id=snapshot_id,
+        ).iterator(chunk_size=500)
+        rows = [_pageresult_to_row(p) for p in rows_iter]
+    except Exception as exc:  # noqa: BLE001
+        log.info(
+            "compute_for_snapshot %s: ORM read failed (%s)",
+            snapshot_id, exc,
+        )
+        return None
+
+    if not rows:
+        return None
+    audit = run_all(rows=rows)
+    return compute(audit=audit)

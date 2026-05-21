@@ -58,6 +58,11 @@ class CrawlSnapshot(models.Model):
     class Engine(models.TextChoices):
         LEGACY = "legacy", "Legacy BFS engine"
         SCRAPY = "scrapy", "Scrapy spider"
+        SCRAPY_COMPETITOR = "scrapy_competitor", "Scrapy competitor spider"
+
+    class Kind(models.TextChoices):
+        BAJAJ = "bajaj", "Bajaj (own site)"
+        COMPETITOR = "competitor", "Competitor"
 
     class Status(models.TextChoices):
         RUNNING = "running", "Running"
@@ -69,7 +74,17 @@ class CrawlSnapshot(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     engine = models.CharField(
-        max_length=16, choices=Engine.choices, default=Engine.LEGACY,
+        max_length=24, choices=Engine.choices, default=Engine.LEGACY,
+    )
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.BAJAJ,
+        help_text="bajaj for own-site crawls; competitor for rival domains.",
+    )
+    target_domain = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Primary host being crawled — equals urlparse(seed_url).netloc "
+                  "for Bajaj, and the competitor's apex domain for competitor crawls. "
+                  "Indexed for per-domain Health Score lookups.",
     )
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.RUNNING,
@@ -91,6 +106,7 @@ class CrawlSnapshot(models.Model):
         indexes = [
             models.Index(fields=["-started_at"]),
             models.Index(fields=["status", "-started_at"]),
+            models.Index(fields=["kind", "target_domain", "-started_at"]),
         ]
 
     def __str__(self) -> str:
@@ -134,6 +150,16 @@ class CrawlerPageResult(models.Model):
     # Content
     title = models.CharField(max_length=1024, blank=True, default="")
     word_count = models.IntegerField(default=0)
+    # Full visible body text — populated by the competitor spider so the
+    # AEM-vs-competitor content comparison view has the raw text to
+    # diff against. Empty for in-house Bajaj crawls (those keep body
+    # extraction in the legacy CSV pipeline). Field is nullable + indexed
+    # nowhere because we never filter on it; it's a read-when-you-need-it
+    # blob. Cap via COMPETITOR_BODY_TEXT_MAX_CHARS env.
+    body_text = models.TextField(blank=True, default="")
+    meta_description = models.CharField(max_length=1024, blank=True, default="")
+    canonical = models.CharField(max_length=2048, blank=True, default="")
+    meta_robots = models.CharField(max_length=256, blank=True, default="")
     # Error metadata
     error_type = models.CharField(max_length=64, blank=True, default="")
     error_message = models.TextField(blank=True, default="")
