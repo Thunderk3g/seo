@@ -173,12 +173,43 @@ class CrawlerPageResult(models.Model):
         choices=IndexedStatus.choices,
         default=IndexedStatus.UNKNOWN,
     )
-    # PSI / Core Web Vitals (mobile strategy by default; populated by
-    # the PSI scheduler — see engine/psi_scheduler.py + psi_capture.py).
+    # PSI / Core Web Vitals — LEGACY headline columns (mobile strategy).
+    # Kept for backward compat with code that reads these directly. They
+    # mirror ``mobile_*`` for the same row. Field (CrUX p75) preferred,
+    # lab fallback. Populated by engine/psi_scheduler.py via
+    # engine/psi_capture.py::_merge_into_results_csv.
     pagespeed_score = models.IntegerField(null=True, blank=True)
     lcp_ms = models.IntegerField(null=True, blank=True)
     cls = models.FloatField(null=True, blank=True)
     inp_ms = models.IntegerField(null=True, blank=True)
+    # Full dual-strategy CWV — populated when PSI runs both strategies.
+    # Lab metrics (tbt, si) are present whenever the URL was successfully
+    # scored by Lighthouse on that device; field metrics (inp, *_category,
+    # has_field_data) only populate when CrUX has 28-day real-user data.
+    mobile_pagespeed_score = models.IntegerField(null=True, blank=True)
+    mobile_lcp_ms = models.IntegerField(null=True, blank=True)
+    mobile_cls = models.FloatField(null=True, blank=True)
+    mobile_inp_ms = models.IntegerField(null=True, blank=True)
+    mobile_fcp_ms = models.IntegerField(null=True, blank=True)
+    mobile_ttfb_ms = models.IntegerField(null=True, blank=True)
+    mobile_tbt_ms = models.IntegerField(null=True, blank=True)
+    mobile_si_ms = models.IntegerField(null=True, blank=True)
+    mobile_lcp_category = models.CharField(max_length=24, blank=True, default="")
+    mobile_cls_category = models.CharField(max_length=24, blank=True, default="")
+    mobile_inp_category = models.CharField(max_length=24, blank=True, default="")
+    mobile_has_field_data = models.BooleanField(default=False)
+    desktop_pagespeed_score = models.IntegerField(null=True, blank=True)
+    desktop_lcp_ms = models.IntegerField(null=True, blank=True)
+    desktop_cls = models.FloatField(null=True, blank=True)
+    desktop_inp_ms = models.IntegerField(null=True, blank=True)
+    desktop_fcp_ms = models.IntegerField(null=True, blank=True)
+    desktop_ttfb_ms = models.IntegerField(null=True, blank=True)
+    desktop_tbt_ms = models.IntegerField(null=True, blank=True)
+    desktop_si_ms = models.IntegerField(null=True, blank=True)
+    desktop_lcp_category = models.CharField(max_length=24, blank=True, default="")
+    desktop_cls_category = models.CharField(max_length=24, blank=True, default="")
+    desktop_inp_category = models.CharField(max_length=24, blank=True, default="")
+    desktop_has_field_data = models.BooleanField(default=False)
     # JS rendering (Phase 3e: filled when Playwright re-renders a page
     # because its static fetch returned < 500 chars of body text)
     static_word_count = models.IntegerField(null=True, blank=True)
