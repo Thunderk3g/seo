@@ -25,6 +25,15 @@ urlpatterns = [
     # style transparent Health Score formula. Drives the new dashboard
     # widget, the /crawler/issues page, and the chat tools.
     path("health-score", views.health_score_view, name="health-score"),
+    # Per-competitor Health Score — populated by the Scrapy competitor
+    # crawler. Reads the most-recent completed snapshot for the domain
+    # and scores its CrawlerPageResult rows against the same 52
+    # detectors that grade the Bajaj site.
+    path(
+        "competitors/<str:domain>/health-score",
+        views.competitor_health_score_view,
+        name="competitor-health-score",
+    ),
     path("issues", views.issues_view, name="issues"),
     path("issues/<str:slug>", views.issue_detail_view, name="issue-detail"),
 

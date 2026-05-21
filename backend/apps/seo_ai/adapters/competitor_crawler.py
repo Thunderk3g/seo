@@ -114,7 +114,42 @@ class CompetitorPage:
 class CompetitorCrawler:
     """Synchronous fetcher. Caller passes a list of URLs; we group by
     host and yield :class:`CompetitorPage` results in input order.
+
+    Factory dispatch: when ``settings.COMPETITOR["engine"] == "scrapy"``,
+    instantiating ``CompetitorCrawler`` returns the Scrapy-backed
+    subclass (``CompetitorCrawlerScrapy``) instead. The Scrapy path
+    persists every fetched page to ``CrawlerPageResult`` so per-
+    competitor Health Score works without changing any caller — the
+    six existing call sites (gap pipeline, agents, scoring) keep using
+    ``CompetitorCrawler()`` exactly as before.
     """
+
+    def __new__(cls, *args, **kwargs):
+        # Only dispatch when the base class is the requested type — if
+        # a subclass (CompetitorCrawlerScrapy) is being instantiated
+        # directly we let normal MRO handle it.
+        if cls is CompetitorCrawler:
+            try:
+                cfg = getattr(settings, "COMPETITOR", {}) or {}
+                engine = str(cfg.get("engine", "legacy")).strip().lower()
+            except Exception:  # noqa: BLE001
+                engine = "legacy"
+            if engine == "scrapy":
+                try:
+                    # Import lazily so a broken Scrapy install doesn't
+                    # crash the legacy path.
+                    from .competitor_crawler_scrapy import (
+                        CompetitorCrawlerScrapy,
+                    )
+                except ImportError as exc:
+                    logger.warning(
+                        "COMPETITOR_ENGINE=scrapy requested but Scrapy "
+                        "façade import failed (%s) — falling back to legacy",
+                        exc,
+                    )
+                else:
+                    return super().__new__(CompetitorCrawlerScrapy)
+        return super().__new__(cls)
 
     def __init__(
         self,

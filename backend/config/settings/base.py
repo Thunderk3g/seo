@@ -216,6 +216,27 @@ COMPETITOR = {
     "body_text_max_chars": int(
         os.environ.get("COMPETITOR_BODY_TEXT_MAX_CHARS", "0")
     ),
+    # Engine selector. "legacy" = the requests + BeautifulSoup fetcher
+    # in adapters/competitor_crawler.py (default — battle-tested across
+    # six callers). "scrapy" routes through adapters/
+    # competitor_crawler_scrapy.py which spawns the Scrapy spider
+    # (apps.seo_ai.spiders.competitor_spider.CompetitorSpider) in a
+    # subprocess per competitor domain and persists every fetched page
+    # to CrawlerPageResult so per-competitor Health Score works.
+    #
+    # The Scrapy path keeps body_text capture identical — no content
+    # is dropped. It also runs the audit detectors against the
+    # competitor's snapshot, so each domain ends up with a Health
+    # Score visible via /api/v1/crawler/competitors/<domain>/health.
+    "engine": os.environ.get("COMPETITOR_ENGINE", "legacy").strip().lower(),
+    # When the Scrapy engine is active, this toggles the Playwright
+    # JS-rendering gate (same middleware used by BajajSpider). Off by
+    # default because Playwright adds ~3s/page; flip on for SPA-heavy
+    # competitor rosters (ICICI Pru, Tata AIA) where the static fetch
+    # returns thin HTML.
+    "use_playwright_fallback": os.environ.get(
+        "COMPETITOR_USE_PLAYWRIGHT_FALLBACK", "false",
+    ).strip().lower() in ("1", "true", "yes", "on"),
 }
 
 # ─────────────────────────────────────────────────────────────

@@ -583,6 +583,69 @@ def health_score_view(_request):
 
 
 @api_view(["GET"])
+def competitor_health_score_view(_request, domain: str):
+    """Per-competitor Health Score.
+
+    Reads the most-recent COMPLETED CrawlSnapshot whose
+    ``target_domain`` matches the URL path arg and computes the
+    Health Score over that snapshot's CrawlerPageResult rows. Returns
+    404 if no competitor crawl has run yet for that domain.
+
+    Powers the per-competitor Health Score card the dashboard renders
+    in the competitor detail view, and the chat
+    ``get_competitor_health_score`` tool.
+    """
+    from .models import CrawlSnapshot
+    from .services.health_score import compute_for_snapshot
+
+    domain = (domain or "").strip().lower().lstrip("www.")
+    if not domain:
+        return Response({"error": "domain required"}, status=400)
+
+    snap = (
+        CrawlSnapshot.objects
+        .filter(
+            kind=CrawlSnapshot.Kind.COMPETITOR,
+            target_domain=domain,
+            status=CrawlSnapshot.Status.COMPLETE,
+        )
+        .order_by("-started_at")
+        .first()
+    )
+    if snap is None:
+        return Response(
+            {
+                "error": "no completed competitor crawl for this domain",
+                "domain": domain,
+            },
+            status=404,
+        )
+    hs = compute_for_snapshot(str(snap.id))
+    if hs is None:
+        return Response(
+            {
+                "error": "snapshot has no scorable rows",
+                "domain": domain,
+                "snapshot_id": str(snap.id),
+            },
+            status=404,
+        )
+    body = hs.as_dict()
+    body.update({
+        "domain": domain,
+        "snapshot_id": str(snap.id),
+        "snapshot_started_at": snap.started_at.isoformat() if snap.started_at else "",
+        "snapshot_finished_at": (
+            snap.finished_at.isoformat() if snap.finished_at else ""
+        ),
+        "pages_attempted": snap.pages_attempted,
+        "pages_ok": snap.pages_ok,
+        "pages_errored": snap.pages_errored,
+    })
+    return Response(body)
+
+
+@api_view(["GET"])
 def issues_view(request):
     """List every issue type with its current occurrence count.
 
