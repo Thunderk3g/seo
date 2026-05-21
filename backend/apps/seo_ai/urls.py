@@ -17,6 +17,7 @@ from .views import (
     gap_pipeline_start,
     gap_pipeline_status,
     gsc_dashboard,
+    meta_ads_dashboard,
     overview,
     semrush_dashboard,
     sitemap_dashboard,
@@ -36,6 +37,10 @@ urlpatterns = [
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
     path("adobe/", adobe_dashboard, name="adobe-dashboard"),
     path("adobe/seo-join/", adobe_seo_join, name="adobe-seo-join"),
+    # Meta Ad Library — competitor ad intel via Apify scraper.
+    # Surfaces in the existing Competitor section (CompetitorDetailPage)
+    # and the CompetitorsPage overview — NOT in the Data Sources rail.
+    path("meta-ads/", meta_ads_dashboard, name="meta-ads-dashboard"),
     path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
     path("sitemap/page/", sitemap_page_detail, name="sitemap-page-detail"),
     path("competitor/", competitor_dashboard, name="competitor-dashboard"),

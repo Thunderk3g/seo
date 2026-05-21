@@ -245,6 +245,84 @@ def adobe_dashboard(request: Request):
 
 
 @api_view(["GET"])
+def meta_ads_dashboard(request: Request):
+    """Meta Ad Library data (competitor ads via Apify).
+
+    Competitor resolution order:
+      1. ``?competitor=`` query param (one or more, repeatable) —
+         single-competitor view from CompetitorDetailPage.
+      2. Latest ``GapPipelineRun`` → its ``GapCompetitor`` rows ordered
+         by rank — the same competitors the deep crawl identified. We
+         do NOT hardcode a roster; the data source follows the crawl.
+      3. ``APIFY.default_meta_ads_competitors`` env fallback (empty by
+         default).
+
+    Other query params:
+      * ``country`` (optional) — Ad Library country code (default "IN").
+      * ``count`` (optional) — ads per competitor (default 25,
+        actor-enforced minimum 10).
+      * ``refresh`` (optional, bool) — bypass the 24-hour disk cache.
+      * ``limit_competitors`` (optional, int) — when resolving from
+        GapCompetitor, cap how many of the top-N to query. Defaults
+        to 10 to keep Apify cost predictable (~$0.19 per refresh).
+    """
+    from .adapters.apify_meta_ads import dashboard_payload
+    from .models import GapCompetitor, GapPipelineRun
+
+    competitors = [c for c in request.query_params.getlist("competitor") if c.strip()]
+    resolution_source = "query_param"
+
+    if not competitors:
+        try:
+            limit_n = max(1, int(request.query_params.get("limit_competitors") or 10))
+        except ValueError:
+            limit_n = 10
+        try:
+            latest_run = (
+                GapPipelineRun.objects
+                .order_by("-created_at")
+                .first()
+            )
+            if latest_run is not None:
+                competitors = list(
+                    GapCompetitor.objects
+                    .filter(run=latest_run)
+                    .order_by("rank")
+                    .values_list("domain", flat=True)[:limit_n]
+                )
+                resolution_source = "gap_pipeline"
+        except Exception as exc:  # noqa: BLE001
+            logger.info("meta-ads: GapCompetitor lookup failed (%s)", exc)
+        # Final fallback — env list (typically empty so view returns
+        # available=False with a clear hint).
+        if not competitors:
+            resolution_source = "env_default"
+
+    country = (request.query_params.get("country") or "").strip() or None
+    try:
+        count = int(request.query_params.get("count") or 0) or None
+    except ValueError:
+        count = None
+    refresh = (
+        (request.query_params.get("refresh") or "").lower()
+        in ("1", "true", "yes", "on")
+    )
+
+    try:
+        body = dashboard_payload(
+            competitors=competitors or None,
+            country=country,
+            count=count,
+            force_refresh=refresh,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("meta-ads dashboard failed: %s", exc)
+        return Response({"available": False, "error": str(exc)})
+    body["competitor_source"] = resolution_source
+    return Response(body)
+
+
+@api_view(["GET"])
 def adobe_seo_join(request: Request):
     """SEO × Adobe cross-source join.
 
