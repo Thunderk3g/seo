@@ -30,6 +30,7 @@ const DATA_SOURCE_NAV: NavItem[] = [
   { id: 'gsc', label: 'Search Console', icon: 'analytics', path: '/gsc' },
   { id: 'semrush', label: 'SEMrush Keywords', icon: 'pages', path: '/semrush' },
   { id: 'adobe', label: 'Adobe Analytics', icon: 'analytics', path: '/adobe' },
+  { id: 'adobe-seo-join', label: 'SEO × Adobe', icon: 'zap', path: '/adobe/seo-join' },
   { id: 'sitemap', label: 'Content via Sitemap', icon: 'visualizations', path: '/sitemap' },
   { id: 'competitors', label: 'Competitor Gap', icon: 'issues', path: '/competitors' },
 ];

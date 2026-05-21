@@ -245,6 +245,39 @@ def adobe_dashboard(request: Request):
 
 
 @api_view(["GET"])
+def adobe_seo_join(request: Request):
+    """SEO × Adobe cross-source join.
+
+    Returns one row per Adobe top-page with the matching latest-crawl
+    row + GSC clicks/impressions/position when available. Used by the
+    AdobeSeoJoinPage to surface the "high impression, low actual
+    traffic" fix list and the "pages with traffic but no crawl entry"
+    sitemap-gap detector.
+
+    Query params:
+      * ``lookback`` — days of Adobe history (default 30)
+      * ``limit``    — top-N pages from Adobe (default 100)
+    """
+    from .adapters.adobe_analytics import seo_adobe_join_payload
+
+    try:
+        lookback = int(request.query_params.get("lookback") or 30)
+    except ValueError:
+        lookback = 30
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except ValueError:
+        limit = 100
+
+    try:
+        body = seo_adobe_join_payload(lookback_days=lookback, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("adobe seo join failed: %s", exc)
+        return Response({"available": False, "error": str(exc)})
+    return Response(body)
+
+
+@api_view(["GET"])
 def sitemap_dashboard(_request: Request):
     """AEM sitemap page list and authoring rollup.
 
