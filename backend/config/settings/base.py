@@ -240,6 +240,49 @@ COMPETITOR = {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Apify — Meta Ad Library (competitor ad intel via scraper-as-a-service).
+# ─────────────────────────────────────────────────────────────
+# Why Apify instead of Graph API directly: the corp Cisco WSA filter
+# blocks `graph.facebook.com` at the URL-category layer (social-media).
+# Apify scrapes the public Ad Library from their own infrastructure and
+# returns the data via `api.apify.com`, which is in the allow-list
+# (whitelisted business-data service, same class as SEMrush + SerpAPI).
+#
+# Actor used: ``curious_coder/facebook-ads-library-scraper`` — 12.8M+
+# runs, ~$0.75 / 1000 ads. The free tier starts with $5 credit which
+# covers ~6,000 ad records.
+APIFY = {
+    "enabled": bool(os.environ.get("APIFY_API_TOKEN", "").strip()),
+    "api_token": os.environ.get("APIFY_API_TOKEN", "").strip(),
+    "meta_ads_actor": os.environ.get(
+        "APIFY_META_ADS_ACTOR",
+        "curious_coder~facebook-ads-library-scraper",
+    ),
+    # Competitor list source-of-truth is the latest GapPipelineRun.
+    # The view dynamically resolves competitors from GapCompetitor rows
+    # (the same competitors the deep crawl identified). This env-var
+    # exists only as a fallback when no GapPipelineRun has been run
+    # yet on a fresh install; leave it empty to force the dynamic path.
+    "default_meta_ads_competitors": [
+        c.strip() for c in os.environ.get(
+            "APIFY_META_ADS_COMPETITORS", "",
+        ).split(",") if c.strip()
+    ],
+    "default_country": os.environ.get("APIFY_DEFAULT_COUNTRY", "IN"),
+    # Per-competitor ad cap. Actor enforces a 10-row minimum. 25 is a
+    # good "show me the top creatives" snapshot without burning credits.
+    "default_count_per_competitor": int(
+        os.environ.get("APIFY_DEFAULT_COUNT_PER_COMPETITOR", "25")
+    ),
+    # Disk cache TTL — Meta ad churn is slow enough that 24h is fine.
+    "cache_ttl_seconds": int(
+        os.environ.get("APIFY_CACHE_TTL_SECONDS", str(24 * 3600))
+    ),
+    # SSL verify — Docker base lacks corp MITM root.
+    "ssl_verify": os.environ.get("APIFY_SSL_VERIFY", "false").strip(),
+}
+
+# ─────────────────────────────────────────────────────────────
 # Adobe Analytics 2.0 — operator-approved per
 # docs/SEO_TOOLS_ARCHITECTURE/API_KEYS_AND_FALLBACKS.md
 # ─────────────────────────────────────────────────────────────

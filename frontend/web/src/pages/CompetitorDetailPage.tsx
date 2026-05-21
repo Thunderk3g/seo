@@ -14,6 +14,7 @@ import { useCompetitorDetail } from '../api/hooks/useCompetitorDetail';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import CompetitorMetaAdsSection from '../components/competitors/CompetitorMetaAdsSection';
 
 export default function CompetitorDetailPage() {
   const params = useParams<{ domain: string }>();
@@ -109,6 +110,14 @@ export default function CompetitorDetailPage() {
           pages={data.sample_pages}
         />
       </section>
+
+      {/* Meta Ad Library — competitor ad intel via Apify scraper. Caches
+          on the backend for 24h so this doesn't burn Apify credit on
+          every render. */}
+      <CompetitorMetaAdsSection
+        competitor={data.domain}
+        displayName={data.domain}
+      />
     </div>
   );
 }
