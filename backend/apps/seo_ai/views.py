@@ -209,6 +209,42 @@ def semrush_dashboard(request: Request):
 
 
 @api_view(["GET"])
+def adobe_dashboard(request: Request):
+    """Adobe Analytics 2.0 dashboard — report-suite metadata, top pages
+    by page-views over the trailing window, and the capability counters
+    (dimensions / metrics) for the configured RSID.
+
+    Query params:
+      * ``lookback`` (optional, int) — days of history for the top-pages
+        report. Defaults to ``ADOBE_ANALYTICS["default_lookback_days"]``
+        (typically 7).
+      * ``limit`` (optional, int) — top-N row count. Defaults to
+        ``ADOBE_ANALYTICS["default_top_pages_limit"]`` (typically 25).
+
+    Returns the ``available=false`` envelope with a ``reason`` field
+    when credentials aren't configured, so the AdobePage UI can render
+    the onboarding empty state without parsing exception text.
+    """
+    from .adapters.adobe_analytics import dashboard_payload
+
+    try:
+        lookback = int(request.query_params.get("lookback") or 0) or None
+    except ValueError:
+        lookback = None
+    try:
+        limit = int(request.query_params.get("limit") or 0) or None
+    except ValueError:
+        limit = None
+
+    try:
+        body = dashboard_payload(lookback_days=lookback, limit=limit)
+    except Exception as exc:  # noqa: BLE001 — render empty state
+        logger.warning("adobe analytics dashboard failed: %s", exc)
+        return Response({"available": False, "error": str(exc)})
+    return Response(body)
+
+
+@api_view(["GET"])
 def sitemap_dashboard(_request: Request):
     """AEM sitemap page list and authoring rollup.
 

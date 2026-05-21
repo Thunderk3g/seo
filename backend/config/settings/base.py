@@ -240,6 +240,35 @@ COMPETITOR = {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Adobe Analytics 2.0 — operator-approved per
+# docs/SEO_TOOLS_ARCHITECTURE/API_KEYS_AND_FALLBACKS.md
+# ─────────────────────────────────────────────────────────────
+# Server-to-Server OAuth (client_credentials grant) → IMS token →
+# Analytics 2.0 endpoints under https://analytics.adobe.io/api/{cid}/.
+# Disabled silently when ADOBE_CLIENT_ID is unset; never crashes a
+# render. Token caching + 24-hour TTL is handled by the adapter.
+ADOBE_ANALYTICS = {
+    "enabled": bool(os.environ.get("ADOBE_CLIENT_ID", "").strip()),
+    "client_id": os.environ.get("ADOBE_CLIENT_ID", "").strip(),
+    "client_secret": os.environ.get("ADOBE_CLIENT_SECRET", "").strip(),
+    "global_company_id": os.environ.get("ADOBE_GLOBAL_COMPANY_ID", "").strip(),
+    "rsid": os.environ.get("ADOBE_RSID", "").strip(),
+    "lead_hash_evar": os.environ.get("ADOBE_LEAD_HASH_EVAR", "").strip(),
+    # SSL verification — same shape as SEMRUSH_SSL_VERIFY. Default empty
+    # means truststore is injected at import-time so corp MITM proxies
+    # work without disabling verification.
+    "ssl_verify": os.environ.get("ADOBE_SSL_VERIFY", "").strip(),
+    "ims_token_url": "https://ims-na1.adobelogin.com/ims/token/v3",
+    "analytics_base": "https://analytics.adobe.io/api",
+    "default_lookback_days": int(
+        os.environ.get("ADOBE_DEFAULT_LOOKBACK_DAYS", "7")
+    ),
+    "default_top_pages_limit": int(
+        os.environ.get("ADOBE_DEFAULT_TOP_PAGES_LIMIT", "25")
+    ),
+}
+
+# ─────────────────────────────────────────────────────────────
 # AI Search Visibility (Phase 2 of the competitor-gap detection suite)
 # ─────────────────────────────────────────────────────────────
 # Probes multiple LLM-based search engines to detect whether the focus

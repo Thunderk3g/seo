@@ -3,6 +3,19 @@
 import os
 import sys
 
+# Inject the OS trust store into urllib3 / requests BEFORE anything else
+# imports SSL. Corporate MITM proxies (e.g. Bajaj's Zscaler) intercept
+# HTTPS with a custom root CA that isn't in certifi's bundle, so any
+# urllib3 SSLContext built before this would fail CERTIFICATE_VERIFY_
+# FAILED on calls to Adobe IMS / Google PSI / etc. truststore is a no-op
+# on systems whose OS store already matches certifi.
+try:
+    import truststore  # type: ignore[import-not-found]
+    truststore.inject_into_ssl()
+except Exception:  # noqa: BLE001
+    pass
+
+
 def main():
     # Load environment variables from .env file
     try:
