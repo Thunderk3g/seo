@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     SEORunViewSet,
     adobe_dashboard,
+    adobe_seo_join,
     chat_stream,
     competitor_dashboard,
     competitor_detail_view,
@@ -34,6 +35,7 @@ urlpatterns = [
     path("gsc/", gsc_dashboard, name="gsc-dashboard"),
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
     path("adobe/", adobe_dashboard, name="adobe-dashboard"),
+    path("adobe/seo-join/", adobe_seo_join, name="adobe-seo-join"),
     path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
     path("sitemap/page/", sitemap_page_detail, name="sitemap-page-detail"),
     path("competitor/", competitor_dashboard, name="competitor-dashboard"),

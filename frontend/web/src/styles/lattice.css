@@ -3124,3 +3124,157 @@ button { font: inherit; }
   padding: 8px 0 0;
 }
 
+/* ── Adobe Analytics page additions ─────────────────────────────────────── */
+
+.ts-chart-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ts-chart-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--text-2);
+  padding: 0 4px;
+}
+.ts-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ts-chart-legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+.ts-chart-ylabel { color: var(--text-3); }
+
+/* Channels: donut + table side by side */
+.seo-channels-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.seo-channels-row > svg {
+  flex: 0 0 auto;
+}
+.seo-channels-row > table {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+.seo-table-compact th,
+.seo-table-compact td {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+/* Colored legend swatch in tables */
+.seo-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* Horizontal bar inside table cells (geo / device share) */
+.seo-bar {
+  background: var(--surface-2);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+.seo-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 0.3s ease-out;
+}
+
+/* SEO × Adobe Join page */
+.seo-search {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  min-width: 240px;
+}
+.seo-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.seo-table-scroll {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.seo-cell-page {
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.seo-cell-url {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+
+/* Status badges (crawl status, indexed, sitemap) */
+.seo-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.seo-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--surface-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.seo-badge-ok {
+  background: rgba(33, 168, 132, 0.10);
+  color: #21a884;
+  border-color: rgba(33, 168, 132, 0.30);
+}
+.seo-badge-warn {
+  background: rgba(244, 163, 0, 0.10);
+  color: #b07300;
+  border-color: rgba(244, 163, 0, 0.30);
+}
+.seo-badge-err {
+  background: rgba(211, 74, 62, 0.10);
+  color: #c4392e;
+  border-color: rgba(211, 74, 62, 0.30);
+}
+.seo-badge-neutral {
+  background: rgba(123, 108, 196, 0.10);
+  color: #7b6cc4;
+  border-color: rgba(123, 108, 196, 0.30);
+}
+
+/* Tabs wrapper inside a card head — used by Adobe Geo/Device split */
+.seo-tabs {
+  display: inline-flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.seo-tabs .seo-tab {
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+
