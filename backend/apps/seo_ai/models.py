@@ -507,3 +507,176 @@ class GapAuditFinding(models.Model):
             models.Index(fields=["pair", "-graded_at"]),
             models.Index(fields=["our_url", "-graded_at"]),
         ]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Brand Mentions / Visibility — third-party sites talking about Bajaj.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class BrandVariant(models.TextChoices):
+    """Which name variant the mention uses — drives the rebrand
+    stickiness chart on the dashboard."""
+
+    NEW = "new", "Bajaj Life Insurance (new brand)"
+    OLD = "old", "Bajaj Allianz Life (legacy brand)"
+    PARENT = "parent", "Bajaj Allianz (general — ambiguous)"
+    AMBIGUOUS = "ambiguous", "Ambiguous / multiple"
+
+
+class MentionSourceTier(models.TextChoices):
+    """Source-authority tier. Tier-1 news + regulatory pass the most
+    authority; review/forum carry sentiment weight; aggregator signals
+    funnel demand."""
+
+    NEWS_TIER_1 = "news_tier_1", "News (tier 1)"
+    NEWS_TIER_2 = "news_tier_2", "News (tier 2)"
+    FORUM = "forum", "Forum / community"
+    REVIEW = "review", "Review site"
+    AGGREGATOR = "aggregator", "Insurance aggregator"
+    REGULATORY = "regulatory", "Regulatory body"
+    BLOG = "blog", "Blog / other"
+    OTHER = "other", "Other"
+
+
+class MentionSentiment(models.TextChoices):
+    POSITIVE = "positive", "Positive"
+    NEUTRAL = "neutral", "Neutral"
+    NEGATIVE = "negative", "Negative"
+    UNSCORED = "unscored", "Unscored"
+
+
+class MentionDiscoveredVia(models.TextChoices):
+    """Which sub-adapter found the mention. Lets the UI show coverage
+    per source and lets the operator see if e.g. Reddit fails on the
+    corp network."""
+
+    RSS = "rss", "RSS feed"
+    REDDIT = "reddit", "Reddit public JSON"
+    SERPAPI = "serpapi", "SerpAPI daily"
+    COMMONCRAWL = "commoncrawl", "Common Crawl"
+    MANUAL = "manual", "Manual import"
+
+
+class BrandMention(models.Model):
+    """One mention of a Bajaj brand variant on a third-party page.
+
+    Uniqueness: a given source_url can only appear once. The adapters
+    use ``update_or_create`` keyed on source_url so the same article
+    appearing in multiple sources (e.g., Google web + Reddit search
+    both surfacing the same Reddit thread) doesn't duplicate — the
+    earlier ``first_seen_at`` wins, ``last_seen_at`` keeps updating.
+
+    Sentiment is unscored until the Groq batch runs (usually within
+    seconds of the pull). When the Groq quota is exhausted or the
+    adapter is disabled, rows stay ``unscored`` and the UI shows them
+    behind an "unscored" badge so the operator knows the data is real
+    but unjudged.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_url = models.URLField(max_length=2000, unique=True)
+    source_domain = models.CharField(max_length=255, db_index=True)
+    source_title = models.CharField(max_length=512, blank=True, default="")
+    snippet = models.TextField(blank=True, default="")
+    # Brand variant the snippet matched on (regex-classified at write time).
+    brand_variant = models.CharField(
+        max_length=16,
+        choices=BrandVariant.choices,
+        default=BrandVariant.NEW,
+        db_index=True,
+    )
+    # Editorial / forum / review / aggregator — drives the tier donut.
+    source_tier = models.CharField(
+        max_length=16,
+        choices=MentionSourceTier.choices,
+        default=MentionSourceTier.OTHER,
+        db_index=True,
+    )
+    sentiment = models.CharField(
+        max_length=16,
+        choices=MentionSentiment.choices,
+        default=MentionSentiment.UNSCORED,
+        db_index=True,
+    )
+    sentiment_confidence = models.FloatField(default=0.0)
+    # True once a second-pass page fetch confirms the brand was actually
+    # wrapped in an <a href> on the page. Set by page_fetch.py adapter.
+    is_linked = models.BooleanField(default=False, db_index=True)
+    published_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+    discovered_via = models.CharField(
+        max_length=16,
+        choices=MentionDiscoveredVia.choices,
+        default=MentionDiscoveredVia.MANUAL,
+    )
+
+    # ── Deep-mention fields (filled by page_fetch.py second pass) ──
+    #
+    # body_excerpt: the actual paragraph from the page containing the
+    # brand mention, ~2000 chars centered on the match. More
+    # informative than the SERP snippet (which is Google's truncated
+    # description). Empty when the page fetch failed or hasn't run.
+    body_excerpt = models.TextField(blank=True, default="")
+
+    # When is_linked=True, the anchor text(s) used to link to bajaj.
+    # Multiple if the page has more than one link to us. Useful to
+    # measure brand-name distribution ("Bajaj Allianz Life" vs new).
+    anchor_texts = models.JSONField(default=list, blank=True)
+
+    # Schema.org JSON-LD extracted from the page: Article, NewsArticle,
+    # or Review entities. Lets us pull author + publisher entities
+    # without re-parsing on every read.
+    structured_data = models.JSONField(default=dict, blank=True)
+
+    # Author + publisher entity strings — extracted from schema.org
+    # markup or HTML meta tags. publisher_name often differs from
+    # source_domain (e.g. domain=livemint.com, publisher="HT Media").
+    author = models.CharField(max_length=255, blank=True, default="")
+    publisher = models.CharField(max_length=255, blank=True, default="")
+
+    # Competitor brands mentioned in the SAME page as Bajaj. Tells us
+    # whether the mention is solo or part of a comparative article.
+    # Comparative context is more valuable for SEO/AI-search signals.
+    co_mentioned_brands = models.JSONField(default=list, blank=True)
+
+    # Topical classification — is this mention in a finance/insurance
+    # context (high-value) or random (low-value)? Lightweight LLM
+    # judgement made once at write time.
+    is_topical = models.BooleanField(default=True, db_index=True)
+    topical_category = models.CharField(
+        max_length=64, blank=True, default="",
+    )
+
+    # Page language — drives multi-lingual SEO tracking (Bajaj has
+    # Hindi pages, competitors often don't).
+    language = models.CharField(max_length=8, blank=True, default="")
+    country = models.CharField(max_length=8, blank=True, default="")
+
+    # Review-site numeric rating (e.g. 3.5 out of 5) when extractable
+    # from schema.org Review markup. NULL for non-review sources.
+    rating_value = models.FloatField(null=True, blank=True)
+    rating_max = models.FloatField(null=True, blank=True)
+
+    # Whether the page_fetch second pass has actually run on this row.
+    # Lets the orchestrator skip already-enriched rows on re-runs.
+    page_fetched_at = models.DateTimeField(null=True, blank=True)
+
+    # Raw payload from the source adapter — useful for debugging and
+    # for adding new fields without a migration. Per-adapter shape.
+    raw_payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-last_seen_at",)
+        indexes = [
+            models.Index(fields=["-last_seen_at"]),
+            models.Index(fields=["source_tier", "-last_seen_at"]),
+            models.Index(fields=["sentiment", "-last_seen_at"]),
+            models.Index(fields=["brand_variant", "-last_seen_at"]),
+            models.Index(fields=["source_domain", "-last_seen_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source_domain} — {self.brand_variant} ({self.sentiment})"
+

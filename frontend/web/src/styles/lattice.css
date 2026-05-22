@@ -3379,3 +3379,169 @@ select.seo-input {
 .seo-page a, .seo-card a { text-decoration: none; }
 .seo-page a:hover, .seo-card a:hover { color: var(--accent); }
 
+/* ── Brand Mentions page additions ──────────────────────────────────────── */
+
+/* Two cards side-by-side at desktop, stacks at mobile. */
+.seo-cards-row {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 880px) {
+  .seo-cards-row { grid-template-columns: 1fr 1fr; }
+}
+
+/* Inline buttons used on the page header — primary = Refresh, outline
+   = pagination. Bajaj blue, flat, no gradients. */
+.seo-btn-primary,
+.seo-btn-outline {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.seo-btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+  border: 1px solid var(--accent);
+}
+.seo-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.seo-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.seo-btn-outline {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+}
+.seo-btn-outline:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.seo-btn-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Info banner — successful refresh confirmation. */
+.seo-info {
+  border-radius: 8px;
+  border: 1px solid rgba(0, 114, 206, 0.30);
+  background: var(--accent-soft);
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 12.5px;
+}
+
+/* Mention feed — vertical stack of cards, each is a clickable link
+   that opens the source URL in a new tab. */
+.seo-mention-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.seo-mention-card {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+}
+.seo-mention-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 14px rgba(0, 114, 206, 0.10);
+  transform: translateY(-1px);
+}
+.seo-mention-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.seo-mention-domain {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+}
+.seo-mention-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+  line-height: 1.35;
+}
+.seo-mention-snippet {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+.seo-mention-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* Byline / publisher / author line on the mention card. */
+.seo-mention-byline {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Anchor-text inline list. Shown only when the page actually links
+   to bajajlifeinsurance.com — useful for SEO outreach assessment. */
+.seo-mention-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.seo-mention-anchors-label {
+  font-weight: 500;
+  color: var(--text-2);
+}
+.seo-mention-anchor {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-style: italic;
+  font-size: 11px;
+}
+.seo-mention-anchor-more { font-style: normal; opacity: 0.7; }
+
+/* Competitor co-mention badges row — when an article mentions Bajaj
+   alongside HDFC Life / ICICI / etc. Important comparative-context
+   signal for SEO + AI search. */
+.seo-mention-comentions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.seo-mention-comentions-label {
+  font-weight: 500;
+  color: var(--text-3);
+}
+

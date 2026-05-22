@@ -5,6 +5,8 @@ from .views import (
     SEORunViewSet,
     adobe_dashboard,
     adobe_seo_join,
+    brand_mentions_dashboard,
+    brand_mentions_refresh,
     chat_stream,
     competitor_dashboard,
     competitor_detail_view,
@@ -37,6 +39,15 @@ urlpatterns = [
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
     path("adobe/", adobe_dashboard, name="adobe-dashboard"),
     path("adobe/seo-join/", adobe_seo_join, name="adobe-seo-join"),
+    # Brand mentions — third-party sites talking about Bajaj.
+    # Pulls from RSS + SerpAPI daily (+ CC monthly in v2). Same
+    # vendor-pattern as Adobe/Meta-Ads — adapter → view → page.
+    path("brand-mentions/", brand_mentions_dashboard, name="brand-mentions"),
+    path(
+        "brand-mentions/refresh/",
+        brand_mentions_refresh,
+        name="brand-mentions-refresh",
+    ),
     # Meta Ad Library — competitor ad intel via Apify scraper.
     # Surfaces in the existing Competitor section (CompetitorDetailPage)
     # and the CompetitorsPage overview — NOT in the Data Sources rail.
