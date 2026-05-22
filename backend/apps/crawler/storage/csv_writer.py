@@ -75,6 +75,18 @@ PHASE_A_FIELDS = [
     "image_oversized_count", "image_broken_count", "image_audit_extra",
 ]
 
+# ── Phase B — Hreflang + schema.org JSON-LD ──────────────────────
+# JSON-typed columns (hreflang_entries, jsonld_blocks etc.) are stored
+# as JSON strings in CSV; Postgres dual-write parses them back via
+# _row_json. Booleans pass through _row_bool.
+PHASE_B_FIELDS = [
+    "hreflang_count", "hreflang_entries", "hreflang_has_x_default",
+    "hreflang_invalid_codes", "hreflang_self_reference",
+    "jsonld_count", "jsonld_types", "jsonld_blocks",
+    "jsonld_invalid_count", "jsonld_missing_required",
+    "jsonld_rich_result_eligible", "microdata_count", "rdfa_count",
+]
+
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
@@ -85,6 +97,8 @@ RESULTS_FIELDS = [
     *PSI_FIELDS,
     # Phase A — Screaming Frog parity columns.
     *PHASE_A_FIELDS,
+    # Phase B — hreflang + schema.org JSON-LD.
+    *PHASE_B_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -479,6 +493,21 @@ def _dual_write_pageresult(row: dict) -> None:
                 "image_oversized_count": _i(row.get("image_oversized_count")),
                 "image_broken_count": _i(row.get("image_broken_count")),
                 "image_audit_extra": _row_json(row.get("image_audit_extra"), default={}),
+                # ── Phase B — hreflang ──
+                "hreflang_count": _i(row.get("hreflang_count")),
+                "hreflang_entries": _row_json(row.get("hreflang_entries"), default=[]),
+                "hreflang_has_x_default": _row_bool(row.get("hreflang_has_x_default")),
+                "hreflang_invalid_codes": _row_json(row.get("hreflang_invalid_codes"), default=[]),
+                "hreflang_self_reference": _row_bool(row.get("hreflang_self_reference")),
+                # ── Phase B — schema.org JSON-LD ──
+                "jsonld_count": _i(row.get("jsonld_count")),
+                "jsonld_types": _row_json(row.get("jsonld_types"), default=[]),
+                "jsonld_blocks": _row_json(row.get("jsonld_blocks"), default=[]),
+                "jsonld_invalid_count": _i(row.get("jsonld_invalid_count")),
+                "jsonld_missing_required": _row_json(row.get("jsonld_missing_required"), default=[]),
+                "jsonld_rich_result_eligible": _row_json(row.get("jsonld_rich_result_eligible"), default=[]),
+                "microdata_count": _i(row.get("microdata_count")),
+                "rdfa_count": _i(row.get("rdfa_count")),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

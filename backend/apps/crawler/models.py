@@ -269,6 +269,27 @@ class CrawlerPageResult(models.Model):
     image_broken_count = models.IntegerField(default=0)
     image_audit_extra = models.JSONField(default=dict, blank=True)
 
+    # ── Phase B.1 — Hreflang ──────────────────────────────────────
+    # Per-page hreflang signals; cross-page return-tag + 404 + noindex
+    # validation happens at audit time by joining rows on absolute URL.
+    hreflang_count = models.IntegerField(default=0)
+    hreflang_entries = models.JSONField(default=list, blank=True)
+    hreflang_has_x_default = models.BooleanField(default=False)
+    hreflang_invalid_codes = models.JSONField(default=list, blank=True)
+    hreflang_self_reference = models.BooleanField(default=False)
+
+    # ── Phase B.2 — Schema.org structured data ────────────────────
+    # JSON-LD is the primary signal; microdata/RDFa counts surface
+    # legacy-markup migrations the page hasn't done yet.
+    jsonld_count = models.IntegerField(default=0)
+    jsonld_types = models.JSONField(default=list, blank=True)
+    jsonld_blocks = models.JSONField(default=list, blank=True)
+    jsonld_invalid_count = models.IntegerField(default=0)
+    jsonld_missing_required = models.JSONField(default=list, blank=True)
+    jsonld_rich_result_eligible = models.JSONField(default=list, blank=True)
+    microdata_count = models.IntegerField(default=0)
+    rdfa_count = models.IntegerField(default=0)
+
     # Free-form bag for additive future fields without a migration
     extra = models.JSONField(default=dict, blank=True)
     # Bookkeeping

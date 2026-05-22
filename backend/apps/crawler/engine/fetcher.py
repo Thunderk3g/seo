@@ -242,6 +242,16 @@ def _fetch_once(
             except Exception as exc:  # noqa: BLE001 — never break the crawl
                 log.info("phase-a helpers failed on %s: %s", url, exc)
 
+            # ── Phase B — hreflang + schema.org ──────────────────
+            try:
+                from ..audits import sf_parity_phase_b as _pb
+                result.update(_pb.hreflang_signals_from(
+                    body_text, resp.headers, str(resp.url),
+                ))
+                result.update(_pb.jsonld_signals_from(body_text))
+            except Exception as exc:  # noqa: BLE001
+                log.info("phase-b helpers failed on %s: %s", url, exc)
+
             return result, parsed["links"], False, None
 
         if resp.status_code == 404:
