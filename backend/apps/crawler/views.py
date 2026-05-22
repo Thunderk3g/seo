@@ -910,6 +910,40 @@ def compliance_view(_request):
     return Response(build_compliance_payload())
 
 
+def comprehensive_report_view(request):
+    """GET /api/v1/crawler/report/comprehensive.xlsx — multi-sheet
+    XLSX bundling Phase A-D audit data: Executive Summary,
+    Compliance Overview, WCAG Findings, Privacy & Cookies, Security
+    Headers, Structured Data, Hreflang Matrix, Technical SEO,
+    Content Audit, Page Inventory, Detector Catalog.
+
+    Query params:
+      * sections — comma-separated subset of ALL_SECTIONS to emit.
+        Defaults to all when absent.
+    """
+    from .storage.comprehensive_report import (
+        ALL_SECTIONS, build_comprehensive_report,
+    )
+
+    requested = (request.GET.get("sections") or "").strip()
+    sections = None
+    if requested:
+        sections = {s.strip() for s in requested.split(",") if s.strip()}
+        sections = sections & set(ALL_SECTIONS)
+        if not sections:
+            sections = set(ALL_SECTIONS)
+
+    out_path = build_comprehensive_report(sections=sections)
+    return FileResponse(
+        open(out_path, "rb"),
+        as_attachment=True,
+        filename="bajaj_seo_compliance_report.xlsx",
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
+
+
 def compliance_csv_view(_request):
     """GET /api/v1/crawler/compliance.csv — same data flattened to
     one row per (rule, URL) so it can be opened in Excel and shared
