@@ -208,6 +208,40 @@ def _fetch_once(
             result["title"] = parsed["title"]
             result["word_count"] = parsed["word_count"]
             result["console_errors"] = parsed["console_errors"]
+
+            # ── Phase A — SF parity signals ──────────────────────
+            # All free signals derived from the response we already
+            # have. No additional HTTP round-trips except image-size
+            # checks which defer to a separate worker pool.
+            try:
+                from ..audits import sf_parity_helpers as _pa
+                result.update(_pa.security_headers_from(resp.headers))
+                result.update(_pa.redirect_chain_from_requests(resp))
+                # Meta-description extraction lives in parser; pull
+                # it from the parsed dict when available.
+                meta_desc = parsed.get("meta_description", "") or ""
+                result.update(_pa.pixel_widths_from(
+                    parsed["title"], meta_desc,
+                ))
+                result["meta_description"] = meta_desc
+                result.update(_pa.canonical_signals_from(
+                    body_text, resp.headers, str(resp.url),
+                ))
+                mixed, insecure = _pa.mixed_content_flags(body_text, str(resp.url))
+                result["has_mixed_content"] = mixed
+                result["has_insecure_form"] = insecure
+                img_audit = _pa.image_audit_from(body_text, str(resp.url))
+                # Flatten aggregate counts onto the row; per-image
+                # detail stays in image_audit_extra (JSONB).
+                result["image_count"] = img_audit["image_count"]
+                result["image_missing_alt"] = img_audit["image_missing_alt"]
+                result["image_empty_alt"] = img_audit["image_empty_alt"]
+                result["image_oversized_count"] = img_audit["image_oversized_count"]
+                result["image_broken_count"] = img_audit["image_broken_count"]
+                result["image_audit_extra"] = img_audit["image_audit_extra"]
+            except Exception as exc:  # noqa: BLE001 — never break the crawl
+                log.info("phase-a helpers failed on %s: %s", url, exc)
+
             return result, parsed["links"], False, None
 
         if resp.status_code == 404:

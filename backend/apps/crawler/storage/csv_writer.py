@@ -53,26 +53,38 @@ PSI_FIELDS = [
     f"{strat}_{sfx}" for strat in PSI_STRATEGIES for sfx in _PSI_SUFFIXES
 ]
 
+# ── Phase A — Screaming Frog parity columns ──────────────────────
+# Stamped onto every result row by the fetcher's call into
+# `audits.sf_parity_helpers`. JSON-typed columns (redirect_chain,
+# image_audit_extra) are stored as JSON strings in CSV; Postgres
+# dual-write converts them via json.loads.
+PHASE_A_FIELDS = [
+    # Security headers (6 captured + 2 derived flags).
+    "hsts", "csp", "x_frame_options", "x_content_type_options",
+    "referrer_policy", "permissions_policy",
+    "has_mixed_content", "has_insecure_form",
+    # Redirect chain.
+    "redirect_hops", "redirect_chain", "redirect_final_url", "redirect_loop",
+    # Title + meta pixel widths (and meta description text).
+    "meta_description", "title_pixel_width", "meta_description_pixel_width",
+    # Canonical signals (HTML vs HTTP-header + flags).
+    "canonical_html", "canonical_http", "canonical_mismatch",
+    "multiple_canonicals", "canonical_chain_length", "canonical_to_noindex",
+    # Image audit aggregates (per-image detail goes in extra JSONB).
+    "image_count", "image_missing_alt", "image_empty_alt",
+    "image_oversized_count", "image_broken_count", "image_audit_extra",
+]
+
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
     *_ENRICH_FIELDS,
     # PSI / Core Web Vitals — LEGACY headline columns (mobile-only).
-    # Kept for backward compat with operators / spreadsheets that read
-    # ``pagespeed_score`` directly. These mirror the values in
-    # ``mobile_*`` for the same row. Field (CrUX p75) preferred, lab
-    # fallback.
     "pagespeed_score", "lcp_ms", "cls", "inp_ms",
     # Full dual-strategy CWV (Mobile + Desktop, lab + field metrics).
-    # Populated by the end-of-crawl PSI phase via
-    # ``_merge_into_results_csv``. Empty when:
-    #   - the URL wasn't in the PSI subset (non-200, skipped, capped),
-    #   - PSI_ENABLED=false or the service-account file is missing,
-    #   - this strategy errored (network / quota / unsupported).
-    # Lab metrics (TBT, Speed Index) are present even on URLs with no
-    # CrUX data; field metrics (INP, *_category, has_field_data) only
-    # populate when the URL has 28-day real-user data in CrUX.
     *PSI_FIELDS,
+    # Phase A — Screaming Frog parity columns.
+    *PHASE_A_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -349,6 +361,31 @@ def _dual_write_pageresult(row: dict) -> None:
             except (TypeError, ValueError):
                 return None
 
+        def _row_bool(v) -> bool:
+            """Coerce CSV string ('True'/'False'/'1') OR native bool
+            from Scrapy/legacy engine into a Python bool."""
+            if isinstance(v, bool):
+                return v
+            s = str(v or "").strip().lower()
+            return s in ("1", "true", "yes", "t", "y")
+
+        def _row_json(v, *, default=None):
+            """Phase A JSONField values may arrive as native Python
+            (Scrapy spider) or as JSON-encoded strings (CSV path).
+            Return the parsed structure; ``default`` (empty list or
+            dict) on parse failure."""
+            if default is None:
+                default = []
+            if v in (None, ""):
+                return default
+            if isinstance(v, (list, dict)):
+                return v
+            try:
+                import json as _json
+                return _json.loads(str(v))
+            except (ValueError, TypeError):
+                return default
+
         # Phase 3e: Scrapy spider passes Playwright metadata as
         # native types (bool / int / None), not CSV strings. Coerce
         # defensively for both shapes.
@@ -415,6 +452,33 @@ def _dual_write_pageresult(row: dict) -> None:
                 "static_word_count": _opt_i(row.get("static_word_count")),
                 "rendered_word_count": _opt_i(row.get("rendered_word_count")),
                 "playwright_used": playwright_used,
+                # ── Phase A — Screaming Frog parity ──────────────
+                "hsts": (row.get("hsts") or "")[:512],
+                "csp": (row.get("csp") or ""),
+                "x_frame_options": (row.get("x_frame_options") or "")[:128],
+                "x_content_type_options": (row.get("x_content_type_options") or "")[:64],
+                "referrer_policy": (row.get("referrer_policy") or "")[:128],
+                "permissions_policy": (row.get("permissions_policy") or ""),
+                "has_mixed_content": _row_bool(row.get("has_mixed_content")),
+                "has_insecure_form": _row_bool(row.get("has_insecure_form")),
+                "redirect_hops": _i(row.get("redirect_hops")),
+                "redirect_chain": _row_json(row.get("redirect_chain")),
+                "redirect_final_url": (row.get("redirect_final_url") or "")[:2048],
+                "redirect_loop": _row_bool(row.get("redirect_loop")),
+                "title_pixel_width": _i(row.get("title_pixel_width")),
+                "meta_description_pixel_width": _i(row.get("meta_description_pixel_width")),
+                "canonical_html": (row.get("canonical_html") or "")[:2048],
+                "canonical_http": (row.get("canonical_http") or "")[:2048],
+                "canonical_mismatch": _row_bool(row.get("canonical_mismatch")),
+                "multiple_canonicals": _row_bool(row.get("multiple_canonicals")),
+                "canonical_chain_length": _i(row.get("canonical_chain_length")),
+                "canonical_to_noindex": _row_bool(row.get("canonical_to_noindex")),
+                "image_count": _i(row.get("image_count")),
+                "image_missing_alt": _i(row.get("image_missing_alt")),
+                "image_empty_alt": _i(row.get("image_empty_alt")),
+                "image_oversized_count": _i(row.get("image_oversized_count")),
+                "image_broken_count": _i(row.get("image_broken_count")),
+                "image_audit_extra": _row_json(row.get("image_audit_extra"), default={}),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

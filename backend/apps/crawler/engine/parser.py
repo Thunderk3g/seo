@@ -101,10 +101,25 @@ def _collect_links(soup: BeautifulSoup, base_url: str) -> list[str]:
 
 
 def parse_page(html: str, base_url: str) -> dict:
-    """Return dict with title, word_count, links, console_errors."""
+    """Return dict with title, word_count, links, console_errors,
+    meta_description.
+
+    meta_description is extracted in addition to title because Phase A
+    SF-parity needs it for pixel-width detection. Empty string when no
+    `<meta name="description">` tag is present, which itself is a
+    SEO miss the downstream detectors flag.
+    """
+    import re as _re
     soup = BeautifulSoup(html, "html.parser")
     title_tag = soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else ""
+
+    meta_desc_tag = soup.find(
+        "meta", attrs={"name": _re.compile(r"^description$", _re.I)},
+    )
+    meta_description = ""
+    if meta_desc_tag and meta_desc_tag.get("content"):
+        meta_description = str(meta_desc_tag["content"]).strip()
 
     links = _collect_links(soup, base_url)
 
@@ -117,6 +132,7 @@ def parse_page(html: str, base_url: str) -> dict:
 
     return {
         "title": title,
+        "meta_description": meta_description,
         "word_count": word_count,
         "links": links,
         "console_errors": console_errors,

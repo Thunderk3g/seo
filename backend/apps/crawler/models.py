@@ -215,6 +215,60 @@ class CrawlerPageResult(models.Model):
     static_word_count = models.IntegerField(null=True, blank=True)
     rendered_word_count = models.IntegerField(null=True, blank=True)
     playwright_used = models.BooleanField(default=False)
+
+    # ── Phase A.1 — Security headers ──────────────────────────────
+    # Captured from HTTP response headers on every successful fetch.
+    # Empty string = header absent (which is the SEO problem).
+    hsts = models.CharField(max_length=512, blank=True, default="")
+    csp = models.TextField(blank=True, default="")
+    x_frame_options = models.CharField(max_length=128, blank=True, default="")
+    x_content_type_options = models.CharField(max_length=64, blank=True, default="")
+    referrer_policy = models.CharField(max_length=128, blank=True, default="")
+    permissions_policy = models.TextField(blank=True, default="")
+    # Aggregate flag: true if the page has at least one form posting over
+    # HTTP (insecure-form audit) or any mixed-content asset loaded.
+    has_mixed_content = models.BooleanField(default=False)
+    has_insecure_form = models.BooleanField(default=False)
+
+    # ── Phase A.2 — Redirect chain ────────────────────────────────
+    # Number of hops from initial URL to final URL (0 = no redirect).
+    redirect_hops = models.IntegerField(default=0)
+    # Chain as a JSON list of {url, status, type}. type ∈ {http, hsts,
+    # js, meta, server} — most are http; the others come from JS
+    # render-delta or HSTS upgrade detection.
+    redirect_chain = models.JSONField(default=list, blank=True)
+    # Final URL (after all redirects) — may differ from `final_url`
+    # for URLs that 200'd directly.
+    redirect_final_url = models.URLField(max_length=2048, blank=True, default="")
+    redirect_loop = models.BooleanField(default=False)
+
+    # ── Phase A.3 — Title + meta pixel widths ─────────────────────
+    # Computed at parse time from Google's snippet font metrics
+    # (Arial 20px desktop, 18px mobile). Stored as integer px.
+    title_pixel_width = models.IntegerField(default=0)
+    meta_description_pixel_width = models.IntegerField(default=0)
+
+    # ── Phase A.4 — Canonical chain ──────────────────────────────
+    # Canonical URL extracted from HTML <link rel="canonical"> and/or
+    # HTTP Link header. Distinct field from final_url which is the
+    # post-redirect URL.
+    canonical_html = models.URLField(max_length=2048, blank=True, default="")
+    canonical_http = models.URLField(max_length=2048, blank=True, default="")
+    canonical_mismatch = models.BooleanField(default=False)  # HTML vs HTTP
+    multiple_canonicals = models.BooleanField(default=False)
+    canonical_chain_length = models.IntegerField(default=0)
+    canonical_to_noindex = models.BooleanField(default=False)
+
+    # ── Phase A.5 — Image audit ───────────────────────────────────
+    # Aggregates per page. Detail (per-image list) lives in `extra`
+    # to keep the row width manageable.
+    image_count = models.IntegerField(default=0)
+    image_missing_alt = models.IntegerField(default=0)
+    image_empty_alt = models.IntegerField(default=0)
+    image_oversized_count = models.IntegerField(default=0)  # > 100 KB
+    image_broken_count = models.IntegerField(default=0)
+    image_audit_extra = models.JSONField(default=dict, blank=True)
+
     # Free-form bag for additive future fields without a migration
     extra = models.JSONField(default=dict, blank=True)
     # Bookkeeping
