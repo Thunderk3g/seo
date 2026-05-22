@@ -32,6 +32,7 @@ const SENTIMENT_LABEL: Record<string, string> = {
 };
 
 const TIER_LABEL: Record<string, string> = {
+  owned: 'Owned property',
   news_tier_1: 'News (tier 1)',
   news_tier_2: 'News (tier 2)',
   forum: 'Forum / community',
@@ -566,5 +567,8 @@ function VariantBadge({ variant }: { variant: string }) {
 }
 
 function TierBadge({ tier }: { tier: string }) {
-  return <span className="seo-badge">{TIER_LABEL[tier] || tier}</span>;
+  // Owned-property mentions get a muted style so the operator can
+  // tell them apart from real third-party signals at a glance.
+  const cls = tier === 'owned' ? 'seo-badge seo-badge-warn' : 'seo-badge';
+  return <span className={cls}>{TIER_LABEL[tier] || tier}</span>;
 }

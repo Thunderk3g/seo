@@ -107,19 +107,36 @@ def fetch_serpapi_mentions(
         )
         return []
 
-    # Build the query — primary brand token + negative `-site:` for
-    # every Bajaj-family domain so Google never returns our own
-    # properties in the result set. The configured excluded_domains
-    # list drives this so the SERP query stays in sync with the
-    # downstream filter.
-    primary = (cfg.get("brand_tokens_new") or ["Bajaj Life Insurance"])[0]
-    own_domains = cfg.get("excluded_domains") or ["bajajlifeinsurance.com"]
-    # Cap to top-10 most relevant own-domains to keep the query
-    # length reasonable. Google enforces ~32 word query limits.
-    site_excludes = " ".join(
-        f"-site:{d}" for d in own_domains[:10] if d
-    )
-    query = f'"{primary}" {site_excludes}'.strip()
+    # Daily-rotating raw query — same shape Google + AI bots use when
+    # they research the brand. NO `-site:` exclusions: we want to see
+    # the full page mix Google surfaces, including our own properties
+    # (those get tier='owned' downstream so the UI can filter).
+    #
+    # 7-pattern rotation gives weekly variety on a 1-call/day budget:
+    #   0: new brand (default — what someone Googling our name sees)
+    #   1: legacy brand (rebrand stickiness check)
+    #   2: review intent (catches mouthshut/trustpilot/consumeraffairs)
+    #   3: comparison intent (vs HDFC/ICICI articles)
+    #   4: news intent (recent coverage)
+    #   5: complaint / claim intent (negative-sentiment surface)
+    #   6: best-of intent (aggregator + comparison editorial)
+    from datetime import datetime, timezone as tz
+    new_tok = (cfg.get("brand_tokens_new") or ["Bajaj Life Insurance"])[0]
+    old_tok = (cfg.get("brand_tokens_old") or ["Bajaj Allianz Life"])[0]
+
+    QUERY_ROTATION = [
+        f'"{new_tok}"',
+        f'"{old_tok}"',
+        f'"{new_tok}" review',
+        f'"{new_tok}" vs',
+        f'"{new_tok}" news',
+        f'"{new_tok}" complaint OR claim',
+        f'best life insurance India "Bajaj"',
+    ]
+    day_of_year = datetime.now(tz.utc).timetuple().tm_yday
+    query = QUERY_ROTATION[day_of_year % len(QUERY_ROTATION)].strip()
+    log.info("serpapi: today=%d/%d query=%r",
+             day_of_year % len(QUERY_ROTATION), len(QUERY_ROTATION), query)
 
     try:
         from ..serp_api import SerpAPIAdapter

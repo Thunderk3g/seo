@@ -111,23 +111,36 @@ def domain_of(url: str) -> str:
 
 def classify_source_tier(url_or_domain: str) -> str:
     """Match the URL's host against the settings.BRAND_MENTIONS tier
-    domain lists. Substring match so e.g. ``moneycontrol.com/forum``
-    in the forum list also catches plain ``moneycontrol.com`` only
-    if it's in the news list (longest match wins via list order)."""
+    domain lists.
+
+    Owned properties (Bajaj family sites, our own social pages,
+    our own app-store listings) are tagged as ``OWNED`` rather than
+    excluded — operators need to see the FULL set of pages Google
+    surfaces for the brand query, including our own. The dashboard
+    can filter ``OWNED`` out client-side.
+
+    For non-owned URLs the function falls through to the news /
+    forum / review / aggregator / regulatory / blog tiers based on
+    the env-driven mapping. Anything unmatched is ``OTHER``.
+    """
     if not url_or_domain:
         return MentionSourceTier.OTHER
     if "://" in url_or_domain:
         host = domain_of(url_or_domain)
+        url = url_or_domain
     else:
         host = url_or_domain.lower().lstrip("www.")
+        url = ""
     if not host:
         return MentionSourceTier.OTHER
 
+    # Own-property check first — overrides every other tier.
+    if is_own_property(url, host):
+        return MentionSourceTier.OWNED
+
     cfg = getattr(settings, "BRAND_MENTIONS", None) or {}
     tiers = cfg.get("tier_domains") or {}
-    # Order matters — earlier tiers win on ambiguous matches. We
-    # check news → regulatory → forum → review → aggregator → blog
-    # which matches the importance order in the dashboard.
+    # Order matters — earlier tiers win on ambiguous matches.
     tier_order = [
         ("news_tier_1", MentionSourceTier.NEWS_TIER_1),
         ("news_tier_2", MentionSourceTier.NEWS_TIER_2),
