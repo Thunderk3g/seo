@@ -20,6 +20,23 @@ services:
     image: redis:7-alpine
     ports: ["6379:6379"]
 
+  # ── LanguageTool grammar + style checker (40 languages) ───────────────────
+  # Self-hosted Docker image — no subscription, runs entirely in our VPC.
+  # The crawler hits http://languagetool:8010/v2/check with body text per
+  # page; LT returns rich grammar/style/spelling findings. Backend opts in
+  # via CRAWLER_LANGUAGETOOL_URL in .env (default: empty → falls back to
+  # pyspellchecker, the existing Phase C.4 implementation).
+  #
+  # Memory: ~1.5-2 GB resident. CPU: bursts during analysis, idle between.
+  # Port 8010 internal; expose 8011 on host only for ad-hoc curl testing.
+  languagetool:
+    image: erikvl87/languagetool:latest
+    environment:
+      Java_Xms: "512m"
+      Java_Xmx: "1500m"
+    ports: ["8011:8010"]
+    restart: unless-stopped
+
   backend:
     build: { context: ./backend }
     command: >

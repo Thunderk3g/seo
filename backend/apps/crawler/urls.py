@@ -39,6 +39,9 @@ urlpatterns = [
     # Compliance dashboard — WCAG / GDPR / OWASP aggregated view.
     path("compliance", views.compliance_view, name="compliance"),
     path("compliance.csv", views.compliance_csv_view, name="compliance-csv"),
+    # Comprehensive XLSX report — 11 sheets covering Phase A-D data.
+    path("report/comprehensive.xlsx", views.comprehensive_report_view,
+         name="report-comprehensive"),
 
     # Page Explorer — Ahrefs-style sortable/filterable URL inventory.
     # Phase 2: reads CSV via in-process mtime cache. Phase 3 will swap

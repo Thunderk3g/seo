@@ -103,6 +103,15 @@ PHASE_C_FIELDS = [
     "readable_sentence_count", "spelling_error_count", "spelling_errors",
 ]
 
+# ── Phase E — LanguageTool grammar + AXE color contrast ──────────
+PHASE_E_FIELDS = [
+    "grammar_error_count", "grammar_errors", "grammar_categories",
+    "grammar_lang_detected", "grammar_tool_used",
+    "color_contrast_violations_count", "color_contrast_violations",
+    "axe_tool_used",
+]
+
+
 # ── Phase D — cookies + AMP + accessibility ──────────────────────
 PHASE_D_FIELDS = [
     # D.1 cookies
@@ -135,6 +144,8 @@ RESULTS_FIELDS = [
     *PHASE_C_FIELDS,
     # Phase D — cookies + AMP + accessibility.
     *PHASE_D_FIELDS,
+    # Phase E — LanguageTool grammar + AXE color contrast.
+    *PHASE_E_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -592,6 +603,16 @@ def _dual_write_pageresult(row: dict) -> None:
                 "links_generic_text": _i(row.get("links_generic_text")),
                 "invalid_aria_roles": _row_json(row.get("invalid_aria_roles"), default=[]),
                 "has_skip_link": _row_bool(row.get("has_skip_link")),
+                # ── Phase E LanguageTool grammar ──
+                "grammar_error_count": _i(row.get("grammar_error_count")),
+                "grammar_errors": _row_json(row.get("grammar_errors"), default=[]),
+                "grammar_categories": _row_json(row.get("grammar_categories"), default={}),
+                "grammar_lang_detected": (row.get("grammar_lang_detected") or "")[:16],
+                "grammar_tool_used": (row.get("grammar_tool_used") or "")[:24],
+                # ── Phase E AXE color contrast ──
+                "color_contrast_violations_count": _i(row.get("color_contrast_violations_count")),
+                "color_contrast_violations": _row_json(row.get("color_contrast_violations"), default=[]),
+                "axe_tool_used": (row.get("axe_tool_used") or "")[:24],
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

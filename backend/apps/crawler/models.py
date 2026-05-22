@@ -349,6 +349,18 @@ class CrawlerPageResult(models.Model):
     invalid_aria_roles = models.JSONField(default=list, blank=True)
     has_skip_link = models.BooleanField(default=False)
 
+    # ── Phase E — LanguageTool grammar ────────────────────────────
+    grammar_error_count = models.IntegerField(default=0)
+    grammar_errors = models.JSONField(default=list, blank=True)
+    grammar_categories = models.JSONField(default=dict, blank=True)
+    grammar_lang_detected = models.CharField(max_length=16, blank=True, default="")
+    grammar_tool_used = models.CharField(max_length=24, blank=True, default="")
+
+    # ── Phase E — AXE color contrast ──────────────────────────────
+    color_contrast_violations_count = models.IntegerField(default=0)
+    color_contrast_violations = models.JSONField(default=list, blank=True)
+    axe_tool_used = models.CharField(max_length=24, blank=True, default="")
+
     # Free-form bag for additive future fields without a migration
     extra = models.JSONField(default=dict, blank=True)
     # Bookkeeping

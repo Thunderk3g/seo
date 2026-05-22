@@ -17,6 +17,7 @@ import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
 import IssuesPage from './crawler/pages/IssuesPage';
 import CompliancePage from './crawler/pages/CompliancePage';
+import ReportsPage from './pages/ReportsPage';
 import PageExplorerPage from './crawler/pages/PageExplorerPage';
 import HealthDashboard from './crawler/pages/HealthDashboard';
 import TrendsPage from './crawler/pages/TrendsPage';
@@ -65,6 +66,8 @@ export default function App() {
             <Route path="/crawler/issues/:slug" component={IssuesPage} />
             {/* Compliance — WCAG / GDPR / OWASP manager-facing report. */}
             <Route path="/crawler/compliance" component={CompliancePage} />
+            {/* Manager-facing XLSX report builder. */}
+            <Route path="/reports" component={ReportsPage} />
             {/* Phase 2 — Ahrefs-style Page Explorer with sortable/
                 filterable URL inventory over the latest crawl. */}
             <Route path="/crawler/pages" component={PageExplorerPage} />

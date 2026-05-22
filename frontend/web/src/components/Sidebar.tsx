@@ -24,6 +24,7 @@ interface NavItem {
 
 const PRIMARY_NAV: NavItem[] = [
   { id: 'chat', label: 'Assistant', icon: 'analytics', path: '/' },
+  { id: 'reports', label: 'Reports', icon: 'pages', path: '/reports' },
 ];
 
 const DATA_SOURCE_NAV: NavItem[] = [

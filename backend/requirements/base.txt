@@ -82,3 +82,6 @@ pypdf>=4.0
 # pyspellchecker provides the small offline dictionary the readability
 # detector keys off. Pure-Python, no external services, ~1MB dict.
 pyspellchecker>=0.8
+
+# Phase E — vendored axe-core for offline accessibility checks.
+axe-core-python>=0.1.0
