@@ -245,6 +245,239 @@ def adobe_dashboard(request: Request):
 
 
 @api_view(["GET"])
+def brand_mentions_dashboard(request: Request):
+    """Brand-mention monitoring dashboard payload.
+
+    Returns the aggregates + recent feed the BrandMonitorPage renders:
+      * KPI strip (total, this-week, % positive, % old-brand, % AI-bot-visible)
+      * Sentiment trend (last 90 days, daily bucket)
+      * Source-tier donut counts
+      * Brand-variant rebrand stickiness (old vs new vs parent over time)
+      * Top mentioning domains
+      * Recent mentions feed (paginated, filterable)
+
+    Query params:
+      * ``sentiment`` (optional) — filter the recent feed by sentiment
+      * ``tier`` (optional) — filter by source_tier
+      * ``variant`` (optional) — filter by brand_variant
+      * ``q`` (optional) — substring search over title + snippet + domain
+      * ``page`` / ``page_size`` — pagination of the recent feed
+    """
+    from collections import defaultdict
+    from datetime import datetime, timedelta, timezone as tz
+    from .models import (
+        BrandMention,
+        BrandVariant,
+        MentionSentiment,
+        MentionSourceTier,
+    )
+
+    now = datetime.now(tz.utc)
+    cutoff_90 = now - timedelta(days=90)
+    cutoff_7 = now - timedelta(days=7)
+
+    qs = BrandMention.objects.all()
+    total = qs.count()
+    if total == 0:
+        return Response({
+            "available": True,
+            "empty": True,
+            "message": (
+                "No brand mentions captured yet. Run "
+                "`python manage.py pull_brand_mentions` or click "
+                "Refresh now."
+            ),
+            "totals": {},
+            "sentiment_trend": [],
+            "tier_breakdown": [],
+            "variant_breakdown": [],
+            "top_domains": [],
+            "mentions": [],
+        })
+
+    # KPI totals.
+    last_week = qs.filter(last_seen_at__gte=cutoff_7).count()
+    by_sentiment = {
+        s: qs.filter(sentiment=s).count() for s in MentionSentiment.values
+    }
+    total_scored = sum(
+        by_sentiment.get(s, 0)
+        for s in (MentionSentiment.POSITIVE, MentionSentiment.NEUTRAL,
+                  MentionSentiment.NEGATIVE)
+    ) or 1
+    pct_positive = round(
+        100.0 * by_sentiment.get(MentionSentiment.POSITIVE, 0) / total_scored, 1,
+    )
+    pct_negative = round(
+        100.0 * by_sentiment.get(MentionSentiment.NEGATIVE, 0) / total_scored, 1,
+    )
+    pct_old_brand = round(
+        100.0 * qs.filter(brand_variant=BrandVariant.OLD).count() / total, 1,
+    )
+    ai_visible_tiers = (
+        MentionSourceTier.NEWS_TIER_1, MentionSourceTier.NEWS_TIER_2,
+        MentionSourceTier.FORUM, MentionSourceTier.REVIEW,
+    )
+    pct_ai_visible = round(
+        100.0 * qs.filter(source_tier__in=ai_visible_tiers).count() / total, 1,
+    )
+
+    # 90-day sentiment trend (daily buckets).
+    trend_qs = qs.filter(last_seen_at__gte=cutoff_90).values(
+        "sentiment", "last_seen_at",
+    )
+    bucket: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"positive": 0, "neutral": 0, "negative": 0, "unscored": 0}
+    )
+    for row in trend_qs:
+        d = row["last_seen_at"].date().isoformat()
+        s = row["sentiment"] or "unscored"
+        if s in bucket[d]:
+            bucket[d][s] += 1
+    sentiment_trend = [
+        {"date": d, **counts}
+        for d, counts in sorted(bucket.items())
+    ]
+
+    # Tier breakdown.
+    tier_breakdown = [
+        {"tier": t, "count": qs.filter(source_tier=t).count()}
+        for t in MentionSourceTier.values
+    ]
+    tier_breakdown = [t for t in tier_breakdown if t["count"] > 0]
+    tier_breakdown.sort(key=lambda x: -x["count"])
+
+    # Variant breakdown.
+    variant_breakdown = [
+        {"variant": v, "count": qs.filter(brand_variant=v).count()}
+        for v in BrandVariant.values
+    ]
+    variant_breakdown = [v for v in variant_breakdown if v["count"] > 0]
+
+    # Top mentioning domains.
+    from django.db.models import Count
+    top_domains = list(
+        qs.values("source_domain")
+        .annotate(count=Count("id"))
+        .order_by("-count")[:20]
+    )
+
+    # Recent feed — filterable.
+    feed_qs = qs
+    sentiment_filter = (request.query_params.get("sentiment") or "").strip()
+    if sentiment_filter:
+        feed_qs = feed_qs.filter(sentiment=sentiment_filter)
+    tier_filter = (request.query_params.get("tier") or "").strip()
+    if tier_filter:
+        feed_qs = feed_qs.filter(source_tier=tier_filter)
+    variant_filter = (request.query_params.get("variant") or "").strip()
+    if variant_filter:
+        feed_qs = feed_qs.filter(brand_variant=variant_filter)
+    q = (request.query_params.get("q") or "").strip()
+    if q:
+        from django.db.models import Q
+        feed_qs = feed_qs.filter(
+            Q(source_title__icontains=q)
+            | Q(snippet__icontains=q)
+            | Q(source_domain__icontains=q)
+        )
+
+    try:
+        page = max(0, int(request.query_params.get("page") or 0))
+        page_size = max(1, min(100, int(request.query_params.get("page_size") or 50)))
+    except ValueError:
+        page, page_size = 0, 50
+    start = page * page_size
+    feed_total = feed_qs.count()
+    rows = list(feed_qs.order_by("-last_seen_at")[start:start + page_size])
+    mentions = [
+        {
+            "id": str(r.id),
+            "source_url": r.source_url,
+            "source_domain": r.source_domain,
+            "source_title": r.source_title,
+            "snippet": r.snippet,
+            "body_excerpt": r.body_excerpt or "",
+            "brand_variant": r.brand_variant,
+            "source_tier": r.source_tier,
+            "sentiment": r.sentiment,
+            "sentiment_confidence": round(r.sentiment_confidence or 0, 2),
+            "is_linked": r.is_linked,
+            "anchor_texts": r.anchor_texts or [],
+            "author": r.author or "",
+            "publisher": r.publisher or "",
+            "co_mentioned_brands": r.co_mentioned_brands or [],
+            "language": r.language or "",
+            "rating_value": r.rating_value,
+            "rating_max": r.rating_max,
+            "page_fetched": bool(r.page_fetched_at),
+            "discovered_via": r.discovered_via,
+            "published_at": r.published_at.isoformat() if r.published_at else None,
+            "first_seen_at": r.first_seen_at.isoformat(),
+            "last_seen_at": r.last_seen_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+    return Response({
+        "available": True,
+        "empty": False,
+        "totals": {
+            "total": total,
+            "last_week": last_week,
+            "pct_positive": pct_positive,
+            "pct_negative": pct_negative,
+            "pct_old_brand": pct_old_brand,
+            "pct_ai_visible_sources": pct_ai_visible,
+            "by_sentiment": {
+                k: by_sentiment.get(k, 0)
+                for k in MentionSentiment.values
+            },
+        },
+        "sentiment_trend": sentiment_trend,
+        "tier_breakdown": tier_breakdown,
+        "variant_breakdown": variant_breakdown,
+        "top_domains": top_domains,
+        "feed_total": feed_total,
+        "mentions": mentions,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+@api_view(["POST"])
+def brand_mentions_refresh(_request: Request):
+    """Manual refresh trigger — kicks off ``run_brand_mentions_pull``
+    synchronously (it's fast; ~30 s typical). Returns the same summary
+    shape the daily job logs.
+
+    For the production deploy we'd wrap this in a Celery delay() so
+    the request returns immediately, but in dev this is fine.
+    """
+    from .adapters.brand_mentions import run_brand_mentions_pull
+
+    try:
+        result = run_brand_mentions_pull()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("brand-mentions refresh failed: %s", exc)
+        return Response({"ok": False, "error": str(exc)}, status=500)
+    return Response({
+        "ok": True,
+        "total_fetched": result.total_fetched,
+        "total_new": result.total_new,
+        "total_updated": result.total_updated,
+        "sentiment_scored": result.sentiment_scored,
+        "started_at": result.started_at,
+        "finished_at": result.finished_at,
+        "sources": [
+            {"source": s.source, "fetched": s.fetched, "new": s.new,
+             "updated": s.updated, "error": s.error}
+            for s in result.sources
+        ],
+    })
+
+
+@api_view(["GET"])
 def meta_ads_dashboard(request: Request):
     """Meta Ad Library data (competitor ads via Apify).
 
