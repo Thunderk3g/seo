@@ -897,6 +897,30 @@ def issue_detail_view(_request, slug: str):
     })
 
 
+# ── Compliance dashboard (WCAG / GDPR / OWASP) ─────────────────────────────
+
+
+@api_view(["GET"])
+def compliance_view(_request):
+    """GET /api/v1/crawler/compliance — manager-facing compliance
+    report aggregating WCAG accessibility, GDPR/DPDPA cookie, and
+    OWASP security-header detectors with per-URL evidence.
+    """
+    from .compliance import build_compliance_payload
+    return Response(build_compliance_payload())
+
+
+def compliance_csv_view(_request):
+    """GET /api/v1/crawler/compliance.csv — same data flattened to
+    one row per (rule, URL) so it can be opened in Excel and shared
+    with the engineering team for remediation."""
+    from .compliance import build_compliance_csv
+    body = build_compliance_csv()
+    resp = StreamingHttpResponse(iter([body]), content_type="text/csv; charset=utf-8")
+    resp["Content-Disposition"] = 'attachment; filename="compliance_report.csv"'
+    return resp
+
+
 # ── Phase 6 — GEO suite (llms.txt + IndexNow + AI-bot logs + backlinks) ─────
 
 

@@ -16,6 +16,7 @@ import CrawlerLogs from './crawler/pages/CrawlerLogs';
 import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
 import IssuesPage from './crawler/pages/IssuesPage';
+import CompliancePage from './crawler/pages/CompliancePage';
 import PageExplorerPage from './crawler/pages/PageExplorerPage';
 import HealthDashboard from './crawler/pages/HealthDashboard';
 import TrendsPage from './crawler/pages/TrendsPage';
@@ -62,6 +63,8 @@ export default function App() {
             {/* Phase 1 — audit engine: typed issues inbox + Health Score. */}
             <Route path="/crawler/issues" component={IssuesPage} />
             <Route path="/crawler/issues/:slug" component={IssuesPage} />
+            {/* Compliance — WCAG / GDPR / OWASP manager-facing report. */}
+            <Route path="/crawler/compliance" component={CompliancePage} />
             {/* Phase 2 — Ahrefs-style Page Explorer with sortable/
                 filterable URL inventory over the latest crawl. */}
             <Route path="/crawler/pages" component={PageExplorerPage} />
