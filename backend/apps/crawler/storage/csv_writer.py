@@ -87,6 +87,22 @@ PHASE_B_FIELDS = [
     "jsonld_rich_result_eligible", "microdata_count", "rdfa_count",
 ]
 
+# ── Phase C — render-delta, PDF, custom extractors, readability ──
+PHASE_C_FIELDS = [
+    # C.1 JS render-delta
+    "js_rendered", "content_delta_ratio",
+    "link_delta_ratio", "jsonld_delta_ratio",
+    # C.2 PDF metadata
+    "pdf_title", "pdf_author", "pdf_subject", "pdf_page_count",
+    "pdf_language", "pdf_has_text_layer", "pdf_is_encrypted",
+    "pdf_byte_size",
+    # C.3 Custom extractors (JSON dict keyed by extractor name)
+    "custom_extracted",
+    # C.4 Readability + spelling
+    "flesch_score", "grade_level", "readable_word_count",
+    "readable_sentence_count", "spelling_error_count", "spelling_errors",
+]
+
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
@@ -99,6 +115,8 @@ RESULTS_FIELDS = [
     *PHASE_A_FIELDS,
     # Phase B — hreflang + schema.org JSON-LD.
     *PHASE_B_FIELDS,
+    # Phase C — render-delta, PDF, extractors, readability.
+    *PHASE_C_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -508,6 +526,29 @@ def _dual_write_pageresult(row: dict) -> None:
                 "jsonld_rich_result_eligible": _row_json(row.get("jsonld_rich_result_eligible"), default=[]),
                 "microdata_count": _i(row.get("microdata_count")),
                 "rdfa_count": _i(row.get("rdfa_count")),
+                # ── Phase C.1 JS render-delta ──
+                "js_rendered": _row_bool(row.get("js_rendered")),
+                "content_delta_ratio": _opt_f(row.get("content_delta_ratio")) or 0.0,
+                "link_delta_ratio": _opt_f(row.get("link_delta_ratio")) or 0.0,
+                "jsonld_delta_ratio": _opt_f(row.get("jsonld_delta_ratio")) or 0.0,
+                # ── Phase C.2 PDF ──
+                "pdf_title": (row.get("pdf_title") or "")[:512],
+                "pdf_author": (row.get("pdf_author") or "")[:256],
+                "pdf_subject": (row.get("pdf_subject") or "")[:512],
+                "pdf_page_count": _i(row.get("pdf_page_count")),
+                "pdf_language": (row.get("pdf_language") or "")[:32],
+                "pdf_has_text_layer": _row_bool(row.get("pdf_has_text_layer")),
+                "pdf_is_encrypted": _row_bool(row.get("pdf_is_encrypted")),
+                "pdf_byte_size": _i(row.get("pdf_byte_size")),
+                # ── Phase C.3 Custom extractors ──
+                "custom_extracted": _row_json(row.get("custom_extracted"), default={}),
+                # ── Phase C.4 Readability + spelling ──
+                "flesch_score": _opt_f(row.get("flesch_score")) or 0.0,
+                "grade_level": _opt_f(row.get("grade_level")) or 0.0,
+                "readable_word_count": _i(row.get("readable_word_count")),
+                "readable_sentence_count": _i(row.get("readable_sentence_count")),
+                "spelling_error_count": _i(row.get("spelling_error_count")),
+                "spelling_errors": _row_json(row.get("spelling_errors"), default=[]),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

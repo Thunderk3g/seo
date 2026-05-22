@@ -73,6 +73,29 @@ def new_session() -> requests.Session:
     return s
 
 
+# Custom extractors are loaded once per crawl process and reused for
+# every page. The cache is intentionally module-level — a new Python
+# process (the next crawl run) gets a fresh load. Within a single run,
+# mid-crawl edits to CustomExtractor rows are NOT picked up, so the
+# crawl's extractor set is stable for the whole run.
+_CUSTOM_EXTRACTOR_CACHE: list[dict] | None = None
+
+
+def _load_custom_extractors_cached() -> list[dict]:
+    global _CUSTOM_EXTRACTOR_CACHE
+    if _CUSTOM_EXTRACTOR_CACHE is not None:
+        return _CUSTOM_EXTRACTOR_CACHE
+    try:
+        from ..models import CustomExtractor
+        _CUSTOM_EXTRACTOR_CACHE = [
+            e.as_dict() for e in CustomExtractor.objects.filter(is_active=True)
+        ]
+    except Exception as exc:  # noqa: BLE001 — Django not booted in tests
+        log.info("custom extractor load skipped: %s", exc)
+        _CUSTOM_EXTRACTOR_CACHE = []
+    return _CUSTOM_EXTRACTOR_CACHE
+
+
 def _empty_result(url: str) -> dict:
     return {
         "url": url, "final_url": url, "status_code": 0, "status": "pending",
@@ -154,9 +177,22 @@ def _fetch_once(
             if "html" not in ctype and "xml" not in ctype:
                 # PDF / image / other binary — we have the metadata we need
                 # from the headers; close without reading the body to avoid
-                # downloading multi-MB files. word_count stays 0 (no body
-                # parsed); the operator distinguishes binary URLs via the
-                # content_type column ("application/pdf" etc).
+                # downloading multi-MB files. PDFs get a metadata extract
+                # because the SF-parity detectors want title / page count /
+                # encrypted / text-layer signals.
+                if "pdf" in ctype:
+                    try:
+                        from ..audits import sf_parity_phase_c as _pc
+                        # Cap PDF body read at 25 MB — anything larger is
+                        # almost certainly not optimised for indexing.
+                        pdf_bytes = b""
+                        for chunk in resp.iter_content(chunk_size=64 * 1024):
+                            pdf_bytes += chunk
+                            if len(pdf_bytes) > 25_000_000:
+                                break
+                        result.update(_pc.pdf_metadata_from(pdf_bytes))
+                    except Exception as exc:  # noqa: BLE001
+                        log.info("pdf metadata failed on %s: %s", url, exc)
                 resp.close()
                 return result, [], False, None
             # HTML/XML body read. settings.max_body_bytes == 0 means
@@ -251,6 +287,41 @@ def _fetch_once(
                 result.update(_pb.jsonld_signals_from(body_text))
             except Exception as exc:  # noqa: BLE001
                 log.info("phase-b helpers failed on %s: %s", url, exc)
+
+            # ── Phase C — readability + custom extractors ────────
+            # JS render-delta only meaningful on Scrapy-pipeline rows
+            # (the Playwright gate doesn't apply to the legacy fetcher);
+            # we still stamp js_rendered=False so detectors short-circuit
+            # cleanly.
+            try:
+                from ..audits import sf_parity_phase_c as _pc
+                # Strip tags to get visible text for Flesch + spell-check.
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(body_text, "html.parser")
+                for el in soup(["script", "style", "noscript", "template"]):
+                    el.decompose()
+                visible = soup.get_text(separator=" ", strip=True)
+                # Spell-check off by default in CI — env-controlled.
+                import os as _os
+                spell_on = _os.environ.get(
+                    "CRAWLER_SPELLCHECK", "true",
+                ).lower() in ("1", "true", "yes", "on")
+                result.update(_pc.readability_signals_from(
+                    visible, spell_check=spell_on,
+                ))
+                # Custom extractors — loaded once per crawl by the
+                # engine startup hook. Read from a module-level cache
+                # if present; otherwise skip.
+                extractors = _load_custom_extractors_cached()
+                if extractors:
+                    result["custom_extracted"] = _pc.custom_extractors_run(
+                        body_text, extractors,
+                    )
+                # Legacy fetcher never goes through Playwright — stamp
+                # zeros so Postgres dual-write doesn't see NULLs.
+                result.update(_pc.render_delta_from(None, None))
+            except Exception as exc:  # noqa: BLE001
+                log.info("phase-c helpers failed on %s: %s", url, exc)
 
             return result, parsed["links"], False, None
 

@@ -290,6 +290,37 @@ class CrawlerPageResult(models.Model):
     microdata_count = models.IntegerField(default=0)
     rdfa_count = models.IntegerField(default=0)
 
+    # ── Phase C.1 — JS render-delta ───────────────────────────────
+    # static_word_count + rendered_word_count are stamped in Phase 3e
+    # already (legacy columns); these add ratio + booleans the
+    # detector layer keys off.
+    js_rendered = models.BooleanField(default=False)
+    content_delta_ratio = models.FloatField(default=0.0)
+    link_delta_ratio = models.FloatField(default=0.0)
+    jsonld_delta_ratio = models.FloatField(default=0.0)
+
+    # ── Phase C.2 — PDF metadata ──────────────────────────────────
+    pdf_title = models.CharField(max_length=512, blank=True, default="")
+    pdf_author = models.CharField(max_length=256, blank=True, default="")
+    pdf_subject = models.CharField(max_length=512, blank=True, default="")
+    pdf_page_count = models.IntegerField(default=0)
+    pdf_language = models.CharField(max_length=32, blank=True, default="")
+    pdf_has_text_layer = models.BooleanField(default=False)
+    pdf_is_encrypted = models.BooleanField(default=False)
+    pdf_byte_size = models.BigIntegerField(default=0)
+
+    # ── Phase C.3 — Custom XPath / CSS extractors ─────────────────
+    # Result of user-defined extractors. Keys match CustomExtractor.name.
+    custom_extracted = models.JSONField(default=dict, blank=True)
+
+    # ── Phase C.4 — Readability + spelling ────────────────────────
+    flesch_score = models.FloatField(default=0.0)
+    grade_level = models.FloatField(default=0.0)
+    readable_word_count = models.IntegerField(default=0)
+    readable_sentence_count = models.IntegerField(default=0)
+    spelling_error_count = models.IntegerField(default=0)
+    spelling_errors = models.JSONField(default=list, blank=True)
+
     # Free-form bag for additive future fields without a migration
     extra = models.JSONField(default=dict, blank=True)
     # Bookkeeping
@@ -539,3 +570,40 @@ class Backlink(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_domain} -> {self.target_url}"
+
+
+class CustomExtractor(models.Model):
+    """User-defined XPath / CSS extractor — Screaming Frog parity.
+
+    Each row is one extractor that the fetcher applies to every page
+    during the crawl, storing the matched value in
+    ``CrawlerPageResult.custom_extracted`` under the extractor's
+    ``name`` key. Active extractors are pulled at the start of each
+    crawl run; mid-crawl edits do not affect rows already written.
+    """
+
+    EXTRACTOR_TYPES = (("css", "CSS selector"), ("xpath", "XPath"))
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.SlugField(max_length=64, unique=True)
+    label = models.CharField(max_length=128, blank=True, default="")
+    selector_type = models.CharField(max_length=8, choices=EXTRACTOR_TYPES, default="css")
+    selector = models.CharField(max_length=1024)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [models.Index(fields=["is_active", "name"])]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.selector_type})"
+
+    def as_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "type": self.selector_type,
+            "selector": self.selector,
+        }
