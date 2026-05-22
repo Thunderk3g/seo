@@ -315,6 +315,15 @@ def _fetch_once(
                 result.update(_pc.readability_signals_from(
                     visible, spell_check=spell_on,
                 ))
+                # Phase E — LanguageTool grammar. When the LT service
+                # is configured + reachable it adds grammar_* fields;
+                # otherwise it returns zeros and the legacy
+                # pyspellchecker output stays as the only language signal.
+                try:
+                    from ..audits.language_tool import grammar_check
+                    result.update(grammar_check(visible))
+                except Exception as gtexc:  # noqa: BLE001
+                    log.info("LT grammar check failed on %s: %s", url, gtexc)
                 # Custom extractors — loaded once per crawl by the
                 # engine startup hook. Read from a module-level cache
                 # if present; otherwise skip.

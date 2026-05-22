@@ -61,6 +61,16 @@ _RULE_REFS: dict[str, list[dict]] = {
         {"standard": "WCAG 2.1", "ref": "4.1.2", "level": "A",
          "name": "Name, Role, Value"},
     ],
+    # Phase E — AXE color contrast (computed, not heuristic).
+    "color_contrast_failures": [
+        {"standard": "WCAG 2.1", "ref": "1.4.3", "level": "AA",
+         "name": "Contrast (Minimum)"},
+    ],
+    # Phase E — LanguageTool grammar / typos.
+    "grammar_errors_high": [
+        {"standard": "Bajaj editorial", "ref": "Brand voice",
+         "name": "Grammar quality"},
+    ],
     # Existing image-alt detector (Phase A.5) is also WCAG-mapped.
     "images_missing_alt": [
         {"standard": "WCAG 2.1", "ref": "1.1.1", "level": "A",
@@ -130,6 +140,8 @@ _SECTIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "a11y_link_generic_text",
         "a11y_invalid_aria_role",
         "images_missing_alt",
+        # Phase E — AXE browser-computed color contrast.
+        "color_contrast_failures",
     )),
     ("privacy", "Privacy & Cookies (GDPR / DPDPA)", (
         "cookie_insecure",
@@ -161,6 +173,12 @@ _EVIDENCE_FIELDS: dict[str, tuple[str, str]] = {
     "a11y_link_generic_text": ("links_generic_text", "generic-text links"),
     "a11y_invalid_aria_role": ("invalid_aria_roles", "invalid ARIA roles"),
     "images_missing_alt": ("image_missing_alt", "images missing alt"),
+    "color_contrast_failures": (
+        "color_contrast_violations_count", "color-contrast WCAG failures",
+    ),
+    "grammar_errors_high": (
+        "grammar_error_count", "grammar / typo findings",
+    ),
     "cookie_insecure": ("cookies_insecure_count", "cookies without Secure flag"),
     "cookie_no_samesite": ("cookies_no_samesite_count", "cookies without SameSite"),
     "cookie_no_httponly_session": (

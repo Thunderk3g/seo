@@ -788,6 +788,8 @@ from . import detectors_phase_b as _phase_b  # noqa: E402
 from . import detectors_phase_c as _phase_c  # noqa: E402
 # Phase D — cookies + AMP + accessibility (16 new detectors).
 from . import detectors_phase_d as _phase_d  # noqa: E402
+# Phase E — gap closers: LanguageTool grammar + AXE color contrast (3 new).
+from . import detectors_phase_e as _phase_e  # noqa: E402
 
 ALL_ISSUES = (
     ALL_ISSUES
@@ -797,6 +799,7 @@ ALL_ISSUES = (
     + _phase_b.PHASE_B_ISSUES
     + _phase_c.PHASE_C_ISSUES
     + _phase_d.PHASE_D_ISSUES
+    + _phase_e.PHASE_E_ISSUES
 )
 
 ISSUES_BY_SLUG: dict[str, IssueDef] = {i.slug: i for i in ALL_ISSUES}
