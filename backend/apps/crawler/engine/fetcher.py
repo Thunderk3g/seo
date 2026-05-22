@@ -70,6 +70,12 @@ def new_session() -> requests.Session:
         requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
             requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
         )
+    # Phase D.4 — optional forms-based auth. No-op when env not set.
+    try:
+        from .auth_helpers import apply_forms_auth
+        apply_forms_auth(s)
+    except Exception as exc:  # noqa: BLE001 — auth failure must not break crawl
+        log.warning("forms auth bootstrap raised: %s", exc)
     return s
 
 
@@ -322,6 +328,17 @@ def _fetch_once(
                 result.update(_pc.render_delta_from(None, None))
             except Exception as exc:  # noqa: BLE001
                 log.info("phase-c helpers failed on %s: %s", url, exc)
+
+            # ── Phase D — cookies + AMP + accessibility ──────────
+            try:
+                from ..audits import sf_parity_phase_d as _pd
+                result.update(_pd.cookie_signals_from(
+                    resp.headers, str(resp.url), body_text,
+                ))
+                result.update(_pd.amp_signals_from(body_text, str(resp.url)))
+                result.update(_pd.accessibility_signals_from(body_text))
+            except Exception as exc:  # noqa: BLE001
+                log.info("phase-d helpers failed on %s: %s", url, exc)
 
             return result, parsed["links"], False, None
 

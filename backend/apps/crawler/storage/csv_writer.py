@@ -103,6 +103,22 @@ PHASE_C_FIELDS = [
     "readable_sentence_count", "spelling_error_count", "spelling_errors",
 ]
 
+# ── Phase D — cookies + AMP + accessibility ──────────────────────
+PHASE_D_FIELDS = [
+    # D.1 cookies
+    "cookie_count", "cookies", "cookies_insecure_count",
+    "cookies_no_samesite_count", "cookies_no_httponly_session_count",
+    "cookies_third_party_count", "cookies_tracker_count",
+    "has_consent_banner",
+    # D.2 AMP
+    "is_amp_page", "has_amp_alternate", "amp_alternate_url",
+    "amp_canonical_target", "amp_required_missing", "amp_invalid",
+    # D.3 accessibility
+    "html_lang", "h1_count", "heading_skip_count",
+    "form_inputs_no_label", "links_no_text", "links_generic_text",
+    "invalid_aria_roles", "has_skip_link",
+]
+
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
@@ -117,6 +133,8 @@ RESULTS_FIELDS = [
     *PHASE_B_FIELDS,
     # Phase C — render-delta, PDF, extractors, readability.
     *PHASE_C_FIELDS,
+    # Phase D — cookies + AMP + accessibility.
+    *PHASE_D_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -549,6 +567,31 @@ def _dual_write_pageresult(row: dict) -> None:
                 "readable_sentence_count": _i(row.get("readable_sentence_count")),
                 "spelling_error_count": _i(row.get("spelling_error_count")),
                 "spelling_errors": _row_json(row.get("spelling_errors"), default=[]),
+                # ── Phase D.1 cookies ──
+                "cookie_count": _i(row.get("cookie_count")),
+                "cookies": _row_json(row.get("cookies"), default=[]),
+                "cookies_insecure_count": _i(row.get("cookies_insecure_count")),
+                "cookies_no_samesite_count": _i(row.get("cookies_no_samesite_count")),
+                "cookies_no_httponly_session_count": _i(row.get("cookies_no_httponly_session_count")),
+                "cookies_third_party_count": _i(row.get("cookies_third_party_count")),
+                "cookies_tracker_count": _i(row.get("cookies_tracker_count")),
+                "has_consent_banner": _row_bool(row.get("has_consent_banner")),
+                # ── Phase D.2 AMP ──
+                "is_amp_page": _row_bool(row.get("is_amp_page")),
+                "has_amp_alternate": _row_bool(row.get("has_amp_alternate")),
+                "amp_alternate_url": (row.get("amp_alternate_url") or "")[:2048],
+                "amp_canonical_target": (row.get("amp_canonical_target") or "")[:2048],
+                "amp_required_missing": _row_json(row.get("amp_required_missing"), default=[]),
+                "amp_invalid": _row_bool(row.get("amp_invalid")),
+                # ── Phase D.3 accessibility ──
+                "html_lang": (row.get("html_lang") or "")[:16],
+                "h1_count": _i(row.get("h1_count")),
+                "heading_skip_count": _i(row.get("heading_skip_count")),
+                "form_inputs_no_label": _i(row.get("form_inputs_no_label")),
+                "links_no_text": _i(row.get("links_no_text")),
+                "links_generic_text": _i(row.get("links_generic_text")),
+                "invalid_aria_roles": _row_json(row.get("invalid_aria_roles"), default=[]),
+                "has_skip_link": _row_bool(row.get("has_skip_link")),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

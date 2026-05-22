@@ -321,6 +321,34 @@ class CrawlerPageResult(models.Model):
     spelling_error_count = models.IntegerField(default=0)
     spelling_errors = models.JSONField(default=list, blank=True)
 
+    # ── Phase D.1 — Cookies + privacy ─────────────────────────────
+    cookie_count = models.IntegerField(default=0)
+    cookies = models.JSONField(default=list, blank=True)
+    cookies_insecure_count = models.IntegerField(default=0)
+    cookies_no_samesite_count = models.IntegerField(default=0)
+    cookies_no_httponly_session_count = models.IntegerField(default=0)
+    cookies_third_party_count = models.IntegerField(default=0)
+    cookies_tracker_count = models.IntegerField(default=0)
+    has_consent_banner = models.BooleanField(default=False)
+
+    # ── Phase D.2 — AMP ───────────────────────────────────────────
+    is_amp_page = models.BooleanField(default=False)
+    has_amp_alternate = models.BooleanField(default=False)
+    amp_alternate_url = models.URLField(max_length=2048, blank=True, default="")
+    amp_canonical_target = models.URLField(max_length=2048, blank=True, default="")
+    amp_required_missing = models.JSONField(default=list, blank=True)
+    amp_invalid = models.BooleanField(default=False)
+
+    # ── Phase D.3 — Accessibility-lite WCAG checks ────────────────
+    html_lang = models.CharField(max_length=16, blank=True, default="")
+    h1_count = models.IntegerField(default=0)
+    heading_skip_count = models.IntegerField(default=0)
+    form_inputs_no_label = models.IntegerField(default=0)
+    links_no_text = models.IntegerField(default=0)
+    links_generic_text = models.IntegerField(default=0)
+    invalid_aria_roles = models.JSONField(default=list, blank=True)
+    has_skip_link = models.BooleanField(default=False)
+
     # Free-form bag for additive future fields without a migration
     extra = models.JSONField(default=dict, blank=True)
     # Bookkeeping
