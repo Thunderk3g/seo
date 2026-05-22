@@ -529,6 +529,7 @@ class MentionSourceTier(models.TextChoices):
     authority; review/forum carry sentiment weight; aggregator signals
     funnel demand."""
 
+    OWNED = "owned", "Owned property (Bajaj family)"
     NEWS_TIER_1 = "news_tier_1", "News (tier 1)"
     NEWS_TIER_2 = "news_tier_2", "News (tier 2)"
     FORUM = "forum", "Forum / community"

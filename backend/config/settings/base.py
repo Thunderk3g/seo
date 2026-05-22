@@ -285,6 +285,26 @@ APIFY = {
 # ─────────────────────────────────────────────────────────────
 # Brand Mentions / Visibility — free-first off-site monitoring.
 # ─────────────────────────────────────────────────────────────
+
+
+def _parse_tier_domains(raw: str) -> dict:
+    """Parse the env-driven tier mapping.
+
+    Format: ``"tier_key:domain1,domain2;tier_key:domain3,...;..."``
+    Tiers separated by ``;``, key from values by ``:``, values by ``,``.
+    Returns an empty dict when env is unset — the adapter still works,
+    every mention just ends up in tier ``other``.
+    """
+    out: dict[str, list[str]] = {}
+    for chunk in (raw or "").split(";"):
+        if ":" not in chunk:
+            continue
+        key, vals = chunk.split(":", 1)
+        key = key.strip().lower()
+        if not key:
+            continue
+        out[key] = [v.strip().lower() for v in vals.split(",") if v.strip()]
+    return out
 # Pulls from 4 sources and writes to seo_ai_brandmention:
 #   1. RSS feeds (Indian biz publications) — free, daily, no key
 #   2. Reddit public JSON (no auth) — free, daily, may be Cisco-blocked
@@ -311,13 +331,14 @@ BRAND_MENTIONS = {
     # Indian biz publication RSS — chosen for broad financial-services
     # coverage. Adding feeds is safe; removing requires a re-run to
     # purge stale rows by source_domain.
+    # RSS feed URLs are loaded from env so operators can edit without
+    # touching code or settings. Set BRAND_MENTIONS_RSS_FEEDS in .env
+    # as a comma-separated list. Empty by default; adapter logs once
+    # and skips RSS when not configured.
     "rss_feeds": [
-        "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-        "https://www.livemint.com/rss/companies",
-        "https://www.moneycontrol.com/rss/business.xml",
-        "https://www.business-standard.com/rss/companies-101.rss",
-        "https://www.financialexpress.com/feed/",
-        "https://www.etbfsi.com/rss/topstories",
+        u.strip() for u in os.environ.get(
+            "BRAND_MENTIONS_RSS_FEEDS", "",
+        ).split(",") if u.strip()
     ],
     "reddit_enabled": os.environ.get(
         "BRAND_MENTIONS_REDDIT_ENABLED", "true",
@@ -335,101 +356,32 @@ BRAND_MENTIONS = {
         "BRAND_MENTIONS_GROQ_ENABLED", "true",
     ).strip().lower() in ("1", "true", "yes", "on"),
     "ssl_verify": os.environ.get("BRAND_MENTIONS_SSL_VERIFY", "false").strip(),
-    # Exclusions — we want third-party mentions, NOT our own family
-    # of properties. Three layers:
-    #
-    # 1. excluded_domains: substring match against source_domain.
-    #    Any Bajaj-group corporate site goes here. Subdomains
-    #    collapse via the substring match (e.g. "bajajlife.com"
-    #    catches "la.bajajlife.com" too).
-    # 2. excluded_url_patterns: regex match against the full URL.
-    #    Catches app-store listings of *our* app on third-party
-    #    platforms (Play Store / App Store / etc.).
+    # Exclusions are env-driven so operators can edit the list
+    # without code changes.
+    #   BRAND_MENTIONS_EXCLUDED_DOMAINS=foo.com,bar.in,...
+    #   BRAND_MENTIONS_EXCLUDED_URL_PATTERNS=regex1|||regex2|||...
+    # Triple-pipe is the separator for the regex list because commas
+    # and pipes are legitimate inside regex patterns. Domain list uses
+    # simple comma-separated. Empty defaults — the adapter still works
+    # but no own-property filtering happens until env is set.
     "excluded_domains": [
-        # Direct brand domains
-        "bajajlifeinsurance.com",
-        "bajajlife.com",
-        "bajajlife.in",
-        "bajajallianzlife.com",          # legacy
-        "bajajallianzgi.co.in",          # GI sibling
-        "bajajallianz.com",
-        # Parent group + sibling companies
-        "bajajfinserv.in",
-        "bajajfinservhealth.in",
-        "bajajauto.com",
-        "bajajelectricals.com",
-        "bajaj-electricals.com",
-        "bajajhfl.com",                  # housing finance
-        "bajajamc.com",                  # asset management
-        "bajajbroking.com",
-        "bajajinsurance.com",
-        "bajajgroup.company",
-        "bajajcapital.com",
-        "bajaj.com",
+        d.strip().lower() for d in os.environ.get(
+            "BRAND_MENTIONS_EXCLUDED_DOMAINS", "",
+        ).split(",") if d.strip()
     ],
     "excluded_url_patterns": [
-        # Our own app on third-party stores.
-        r"play\.google\.com/store/apps/details\?id=com\.bajaj",
-        r"apps\.apple\.com/.+/app/bajaj",
-        r"apps\.apple\.com/.+/id\d+\?.*bajaj",
-        # Our own social-media presence on third-party platforms.
-        r"linkedin\.com/(company|in)/(bajaj-?allianz|bajaj-?life)",
-        r"(?:www\.)?facebook\.com/(?:pg/)?(BajajAllianzLife|BajajLifeInsurance|bajajlife)",
-        r"(?:www\.)?instagram\.com/(bajajallianzlife|bajajlifeinsurance|bajaj_?life)",
-        r"(?:www\.)?(?:twitter|x)\.com/(BajajAllianzLife|BajajLife)",
-        r"(?:www\.)?youtube\.com/(c|@|user|channel)/.*[Bb]ajaj(?:[Aa]llianz|[Ll]ife)",
-        # Wikipedia entry for our own company.
-        r"wikipedia\.org/wiki/Bajaj_Allianz_Life",
-        r"wikipedia\.org/wiki/Bajaj_Life",
-        # Crunchbase / Tracxn / ZaubaCorp listings of our company.
-        r"crunchbase\.com/organization/bajaj-?allianz-?life",
-        r"tracxn\.com/.+bajaj-?(?:allianz|life)",
-        r"zaubacorp\.com/.+bajaj",
-        # Glassdoor / Ambition Box / Naukri profile of our company.
-        r"glassdoor\.co\.in/.+Bajaj-?Allianz-?Life",
-        r"ambitionbox\.com/.+bajaj-?(?:allianz|life)",
+        p.strip() for p in os.environ.get(
+            "BRAND_MENTIONS_EXCLUDED_URL_PATTERNS", "",
+        ).split("|||") if p.strip()
     ],
-    # Source-tier classification — drives the UI's tier donut + filters.
-    # Domains matched as substring of source_domain (lowercased,
-    # www-stripped).
-    "tier_domains": {
-        "news_tier_1": [
-            "economictimes.indiatimes.com", "livemint.com", "moneycontrol.com",
-            "business-standard.com", "financialexpress.com", "etbfsi.com",
-            "thehindubusinessline.com", "bloombergquint.com", "reuters.com",
-            "bloomberg.com", "ft.com", "wsj.com",
-        ],
-        "news_tier_2": [
-            "indiatoday.in", "ndtv.com", "news18.com", "hindustantimes.com",
-            "thehindu.com", "indianexpress.com", "outlookmoney.com",
-            "thequint.com", "thewire.in", "scroll.in",
-        ],
-        "forum": [
-            "reddit.com", "quora.com", "moneycontrol.com/forum",
-            "investmentadvisorforums", "linkedin.com",
-        ],
-        "review": [
-            "mouthshut.com", "trustpilot.com", "consumeraffairs.com",
-            "complaintsboard.com", "sitejabber.com",
-        ],
-        "aggregator": [
-            "policybazaar.com", "coverfox.com", "joinditto.in",
-            "policyx.com", "acko.com", "ditto.com",
-            "compareplans.com", "insurancedekho.com",
-            # Partner banks + financial-service distributors that list
-            # Bajaj as one of multiple insurer products on their site.
-            # These pages place Bajaj in direct comparative context
-            # with peers — high-value for SEO authority signals.
-            "axisbank.com", "axis.bank.in", "hdfcbank.com",
-            "icicibank.com", "kotak.com", "sbi.co.in",
-            "yesbank.in", "indusind.com", "idfcfirstbank.com",
-            "paisabazaar.com", "bankbazaar.com",
-        ],
-        "regulatory": [
-            "irdai.gov.in", "bimabharosa.gov.in", "rbi.org.in",
-            "sebi.gov.in",
-        ],
-    },
+    # Source-tier classification is env-driven. Format:
+    #   BRAND_MENTIONS_TIER_DOMAINS="tier1:domain1,domain2;forum:reddit.com,quora.com;..."
+    # Each tier separated by `;`, key from values by `:`, values by `,`.
+    # Empty → every mention ends up in tier "other" (still works, just
+    # less granular). Recommended to populate via .env on first install.
+    "tier_domains": _parse_tier_domains(
+        os.environ.get("BRAND_MENTIONS_TIER_DOMAINS", "")
+    ),
 }
 
 # ─────────────────────────────────────────────────────────────

@@ -113,22 +113,21 @@ def run_brand_mentions_pull(
     # Wired but the live pull is the same 16-hour batch as the
     # backlinks adapter — to be enabled in a follow-up.
 
-    # ── Filter out our own properties ──────────────────────────────
-    # Strip anything pointing at a Bajaj-family domain, our own social
-    # pages on third-party platforms, our own app store listings.
-    pre_filter = len(raw_records)
-    raw_records = [
-        r for r in raw_records
-        if not is_own_property(
+    # ── Own-property tagging (NOT filtering) ───────────────────────
+    # Mentions on Bajaj-family domains / our own social / app store
+    # listings get tier='owned' downstream via classify_source_tier.
+    # We keep them so the dashboard reflects the FULL set of pages
+    # Google + AI bots surface for the brand query — operators filter
+    # owned out client-side.
+    own_count = sum(
+        1 for r in raw_records
+        if is_own_property(
             r.get("source_url") or "", r.get("source_domain") or "",
         )
-    ]
-    result.total_excluded_own_property = pre_filter - len(raw_records)
-    if result.total_excluded_own_property:
-        log.info(
-            "orchestrator: filtered %d own-property mentions",
-            result.total_excluded_own_property,
-        )
+    )
+    result.total_excluded_own_property = own_count  # tagged, not removed
+    if own_count:
+        log.info("orchestrator: tagged %d owned-property mentions", own_count)
 
     # ── De-dupe within this run ────────────────────────────────────
     by_url: dict[str, dict] = {}
@@ -144,9 +143,9 @@ def run_brand_mentions_pull(
         else:
             by_url[u] = rec
 
-    result.total_fetched = pre_filter
+    result.total_fetched = len(raw_records)
     log.info(
-        "orchestrator: fetched=%d excluded_own=%d unique=%d sources=%s",
+        "orchestrator: fetched=%d owned=%d unique=%d sources=%s",
         result.total_fetched, result.total_excluded_own_property,
         len(by_url), [s.source for s in result.sources],
     )
