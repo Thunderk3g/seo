@@ -215,6 +215,140 @@ class CrawlerPageResult(models.Model):
     static_word_count = models.IntegerField(null=True, blank=True)
     rendered_word_count = models.IntegerField(null=True, blank=True)
     playwright_used = models.BooleanField(default=False)
+
+    # ── Phase A.1 — Security headers ──────────────────────────────
+    # Captured from HTTP response headers on every successful fetch.
+    # Empty string = header absent (which is the SEO problem).
+    hsts = models.CharField(max_length=512, blank=True, default="")
+    csp = models.TextField(blank=True, default="")
+    x_frame_options = models.CharField(max_length=128, blank=True, default="")
+    x_content_type_options = models.CharField(max_length=64, blank=True, default="")
+    referrer_policy = models.CharField(max_length=128, blank=True, default="")
+    permissions_policy = models.TextField(blank=True, default="")
+    # Aggregate flag: true if the page has at least one form posting over
+    # HTTP (insecure-form audit) or any mixed-content asset loaded.
+    has_mixed_content = models.BooleanField(default=False)
+    has_insecure_form = models.BooleanField(default=False)
+
+    # ── Phase A.2 — Redirect chain ────────────────────────────────
+    # Number of hops from initial URL to final URL (0 = no redirect).
+    redirect_hops = models.IntegerField(default=0)
+    # Chain as a JSON list of {url, status, type}. type ∈ {http, hsts,
+    # js, meta, server} — most are http; the others come from JS
+    # render-delta or HSTS upgrade detection.
+    redirect_chain = models.JSONField(default=list, blank=True)
+    # Final URL (after all redirects) — may differ from `final_url`
+    # for URLs that 200'd directly.
+    redirect_final_url = models.URLField(max_length=2048, blank=True, default="")
+    redirect_loop = models.BooleanField(default=False)
+
+    # ── Phase A.3 — Title + meta pixel widths ─────────────────────
+    # Computed at parse time from Google's snippet font metrics
+    # (Arial 20px desktop, 18px mobile). Stored as integer px.
+    title_pixel_width = models.IntegerField(default=0)
+    meta_description_pixel_width = models.IntegerField(default=0)
+
+    # ── Phase A.4 — Canonical chain ──────────────────────────────
+    # Canonical URL extracted from HTML <link rel="canonical"> and/or
+    # HTTP Link header. Distinct field from final_url which is the
+    # post-redirect URL.
+    canonical_html = models.URLField(max_length=2048, blank=True, default="")
+    canonical_http = models.URLField(max_length=2048, blank=True, default="")
+    canonical_mismatch = models.BooleanField(default=False)  # HTML vs HTTP
+    multiple_canonicals = models.BooleanField(default=False)
+    canonical_chain_length = models.IntegerField(default=0)
+    canonical_to_noindex = models.BooleanField(default=False)
+
+    # ── Phase A.5 — Image audit ───────────────────────────────────
+    # Aggregates per page. Detail (per-image list) lives in `extra`
+    # to keep the row width manageable.
+    image_count = models.IntegerField(default=0)
+    image_missing_alt = models.IntegerField(default=0)
+    image_empty_alt = models.IntegerField(default=0)
+    image_oversized_count = models.IntegerField(default=0)  # > 100 KB
+    image_broken_count = models.IntegerField(default=0)
+    image_audit_extra = models.JSONField(default=dict, blank=True)
+
+    # ── Phase B.1 — Hreflang ──────────────────────────────────────
+    # Per-page hreflang signals; cross-page return-tag + 404 + noindex
+    # validation happens at audit time by joining rows on absolute URL.
+    hreflang_count = models.IntegerField(default=0)
+    hreflang_entries = models.JSONField(default=list, blank=True)
+    hreflang_has_x_default = models.BooleanField(default=False)
+    hreflang_invalid_codes = models.JSONField(default=list, blank=True)
+    hreflang_self_reference = models.BooleanField(default=False)
+
+    # ── Phase B.2 — Schema.org structured data ────────────────────
+    # JSON-LD is the primary signal; microdata/RDFa counts surface
+    # legacy-markup migrations the page hasn't done yet.
+    jsonld_count = models.IntegerField(default=0)
+    jsonld_types = models.JSONField(default=list, blank=True)
+    jsonld_blocks = models.JSONField(default=list, blank=True)
+    jsonld_invalid_count = models.IntegerField(default=0)
+    jsonld_missing_required = models.JSONField(default=list, blank=True)
+    jsonld_rich_result_eligible = models.JSONField(default=list, blank=True)
+    microdata_count = models.IntegerField(default=0)
+    rdfa_count = models.IntegerField(default=0)
+
+    # ── Phase C.1 — JS render-delta ───────────────────────────────
+    # static_word_count + rendered_word_count are stamped in Phase 3e
+    # already (legacy columns); these add ratio + booleans the
+    # detector layer keys off.
+    js_rendered = models.BooleanField(default=False)
+    content_delta_ratio = models.FloatField(default=0.0)
+    link_delta_ratio = models.FloatField(default=0.0)
+    jsonld_delta_ratio = models.FloatField(default=0.0)
+
+    # ── Phase C.2 — PDF metadata ──────────────────────────────────
+    pdf_title = models.CharField(max_length=512, blank=True, default="")
+    pdf_author = models.CharField(max_length=256, blank=True, default="")
+    pdf_subject = models.CharField(max_length=512, blank=True, default="")
+    pdf_page_count = models.IntegerField(default=0)
+    pdf_language = models.CharField(max_length=32, blank=True, default="")
+    pdf_has_text_layer = models.BooleanField(default=False)
+    pdf_is_encrypted = models.BooleanField(default=False)
+    pdf_byte_size = models.BigIntegerField(default=0)
+
+    # ── Phase C.3 — Custom XPath / CSS extractors ─────────────────
+    # Result of user-defined extractors. Keys match CustomExtractor.name.
+    custom_extracted = models.JSONField(default=dict, blank=True)
+
+    # ── Phase C.4 — Readability + spelling ────────────────────────
+    flesch_score = models.FloatField(default=0.0)
+    grade_level = models.FloatField(default=0.0)
+    readable_word_count = models.IntegerField(default=0)
+    readable_sentence_count = models.IntegerField(default=0)
+    spelling_error_count = models.IntegerField(default=0)
+    spelling_errors = models.JSONField(default=list, blank=True)
+
+    # ── Phase D.1 — Cookies + privacy ─────────────────────────────
+    cookie_count = models.IntegerField(default=0)
+    cookies = models.JSONField(default=list, blank=True)
+    cookies_insecure_count = models.IntegerField(default=0)
+    cookies_no_samesite_count = models.IntegerField(default=0)
+    cookies_no_httponly_session_count = models.IntegerField(default=0)
+    cookies_third_party_count = models.IntegerField(default=0)
+    cookies_tracker_count = models.IntegerField(default=0)
+    has_consent_banner = models.BooleanField(default=False)
+
+    # ── Phase D.2 — AMP ───────────────────────────────────────────
+    is_amp_page = models.BooleanField(default=False)
+    has_amp_alternate = models.BooleanField(default=False)
+    amp_alternate_url = models.URLField(max_length=2048, blank=True, default="")
+    amp_canonical_target = models.URLField(max_length=2048, blank=True, default="")
+    amp_required_missing = models.JSONField(default=list, blank=True)
+    amp_invalid = models.BooleanField(default=False)
+
+    # ── Phase D.3 — Accessibility-lite WCAG checks ────────────────
+    html_lang = models.CharField(max_length=16, blank=True, default="")
+    h1_count = models.IntegerField(default=0)
+    heading_skip_count = models.IntegerField(default=0)
+    form_inputs_no_label = models.IntegerField(default=0)
+    links_no_text = models.IntegerField(default=0)
+    links_generic_text = models.IntegerField(default=0)
+    invalid_aria_roles = models.JSONField(default=list, blank=True)
+    has_skip_link = models.BooleanField(default=False)
+
     # Free-form bag for additive future fields without a migration
     extra = models.JSONField(default=dict, blank=True)
     # Bookkeeping
@@ -464,3 +598,40 @@ class Backlink(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_domain} -> {self.target_url}"
+
+
+class CustomExtractor(models.Model):
+    """User-defined XPath / CSS extractor — Screaming Frog parity.
+
+    Each row is one extractor that the fetcher applies to every page
+    during the crawl, storing the matched value in
+    ``CrawlerPageResult.custom_extracted`` under the extractor's
+    ``name`` key. Active extractors are pulled at the start of each
+    crawl run; mid-crawl edits do not affect rows already written.
+    """
+
+    EXTRACTOR_TYPES = (("css", "CSS selector"), ("xpath", "XPath"))
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.SlugField(max_length=64, unique=True)
+    label = models.CharField(max_length=128, blank=True, default="")
+    selector_type = models.CharField(max_length=8, choices=EXTRACTOR_TYPES, default="css")
+    selector = models.CharField(max_length=1024)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [models.Index(fields=["is_active", "name"])]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.selector_type})"
+
+    def as_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "type": self.selector_type,
+            "selector": self.selector,
+        }

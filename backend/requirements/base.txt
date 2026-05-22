@@ -74,3 +74,11 @@ networkx>=3.0
 # same algorithm internally). datasketch's MinHashLSH is the de-facto
 # Python implementation — 90% Jaccard threshold matches SF's default.
 datasketch>=1.6
+
+# ── Phase C SF parity dependencies ───────────────────────────────
+# pypdf parses PDF metadata + text layer for the PDF-audit detectors
+# (pdf_missing_title, pdf_scanned_no_text, pdf_encrypted). Pure-Python.
+pypdf>=4.0
+# pyspellchecker provides the small offline dictionary the readability
+# detector keys off. Pure-Python, no external services, ~1MB dict.
+pyspellchecker>=0.8

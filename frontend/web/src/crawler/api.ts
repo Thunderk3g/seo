@@ -435,6 +435,49 @@ export const crawlerApi = {
       started_at: string;
     }>(`/issues/${encodeURIComponent(slug)}`),
 
+  // Compliance dashboard — WCAG / GDPR / OWASP aggregated payload.
+  // Designed for the manager-facing report; per-URL evidence comes
+  // pre-populated so the front-end stays presentational only.
+  compliance: () =>
+    request<{
+      started_at: string;
+      summary: {
+        total_violations: number;
+        unique_rules_failed: number;
+        pages_audited: number;
+        pages_with_any_violation: number;
+        by_severity: { error: number; warning: number; notice: number };
+        by_section: Record<string, number>;
+      };
+      sections: Array<{
+        key: string;
+        title: string;
+        total_violations: number;
+        rules: Array<{
+          slug: string;
+          title: string;
+          severity: 'error' | 'warning' | 'notice';
+          category: string;
+          why: string;
+          how_to_fix: string;
+          references: Array<{
+            standard: string;
+            ref: string;
+            level?: string;
+            name: string;
+          }>;
+          count: number;
+          affected_urls: Array<{
+            url: string;
+            title: string;
+            subdomain: string;
+            page_type: string;
+            evidence: string;
+          }>;
+        }>;
+      }>;
+    }>('/compliance'),
+
   // Phase 2 — Page Explorer (Ahrefs-style sortable/filterable URL
   // inventory). Server-side sort + filter; pass query params 1:1.
   pages: (params: {

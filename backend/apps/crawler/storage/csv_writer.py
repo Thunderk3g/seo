@@ -53,26 +53,88 @@ PSI_FIELDS = [
     f"{strat}_{sfx}" for strat in PSI_STRATEGIES for sfx in _PSI_SUFFIXES
 ]
 
+# ── Phase A — Screaming Frog parity columns ──────────────────────
+# Stamped onto every result row by the fetcher's call into
+# `audits.sf_parity_helpers`. JSON-typed columns (redirect_chain,
+# image_audit_extra) are stored as JSON strings in CSV; Postgres
+# dual-write converts them via json.loads.
+PHASE_A_FIELDS = [
+    # Security headers (6 captured + 2 derived flags).
+    "hsts", "csp", "x_frame_options", "x_content_type_options",
+    "referrer_policy", "permissions_policy",
+    "has_mixed_content", "has_insecure_form",
+    # Redirect chain.
+    "redirect_hops", "redirect_chain", "redirect_final_url", "redirect_loop",
+    # Title + meta pixel widths (and meta description text).
+    "meta_description", "title_pixel_width", "meta_description_pixel_width",
+    # Canonical signals (HTML vs HTTP-header + flags).
+    "canonical_html", "canonical_http", "canonical_mismatch",
+    "multiple_canonicals", "canonical_chain_length", "canonical_to_noindex",
+    # Image audit aggregates (per-image detail goes in extra JSONB).
+    "image_count", "image_missing_alt", "image_empty_alt",
+    "image_oversized_count", "image_broken_count", "image_audit_extra",
+]
+
+# ── Phase B — Hreflang + schema.org JSON-LD ──────────────────────
+# JSON-typed columns (hreflang_entries, jsonld_blocks etc.) are stored
+# as JSON strings in CSV; Postgres dual-write parses them back via
+# _row_json. Booleans pass through _row_bool.
+PHASE_B_FIELDS = [
+    "hreflang_count", "hreflang_entries", "hreflang_has_x_default",
+    "hreflang_invalid_codes", "hreflang_self_reference",
+    "jsonld_count", "jsonld_types", "jsonld_blocks",
+    "jsonld_invalid_count", "jsonld_missing_required",
+    "jsonld_rich_result_eligible", "microdata_count", "rdfa_count",
+]
+
+# ── Phase C — render-delta, PDF, custom extractors, readability ──
+PHASE_C_FIELDS = [
+    # C.1 JS render-delta
+    "js_rendered", "content_delta_ratio",
+    "link_delta_ratio", "jsonld_delta_ratio",
+    # C.2 PDF metadata
+    "pdf_title", "pdf_author", "pdf_subject", "pdf_page_count",
+    "pdf_language", "pdf_has_text_layer", "pdf_is_encrypted",
+    "pdf_byte_size",
+    # C.3 Custom extractors (JSON dict keyed by extractor name)
+    "custom_extracted",
+    # C.4 Readability + spelling
+    "flesch_score", "grade_level", "readable_word_count",
+    "readable_sentence_count", "spelling_error_count", "spelling_errors",
+]
+
+# ── Phase D — cookies + AMP + accessibility ──────────────────────
+PHASE_D_FIELDS = [
+    # D.1 cookies
+    "cookie_count", "cookies", "cookies_insecure_count",
+    "cookies_no_samesite_count", "cookies_no_httponly_session_count",
+    "cookies_third_party_count", "cookies_tracker_count",
+    "has_consent_banner",
+    # D.2 AMP
+    "is_amp_page", "has_amp_alternate", "amp_alternate_url",
+    "amp_canonical_target", "amp_required_missing", "amp_invalid",
+    # D.3 accessibility
+    "html_lang", "h1_count", "heading_skip_count",
+    "form_inputs_no_label", "links_no_text", "links_generic_text",
+    "invalid_aria_roles", "has_skip_link",
+]
+
 RESULTS_FIELDS = [
     "url", "status_code", "status", "title", "word_count",
     "response_time_ms", "content_type", "error_type", "error_message",
     *_ENRICH_FIELDS,
     # PSI / Core Web Vitals — LEGACY headline columns (mobile-only).
-    # Kept for backward compat with operators / spreadsheets that read
-    # ``pagespeed_score`` directly. These mirror the values in
-    # ``mobile_*`` for the same row. Field (CrUX p75) preferred, lab
-    # fallback.
     "pagespeed_score", "lcp_ms", "cls", "inp_ms",
     # Full dual-strategy CWV (Mobile + Desktop, lab + field metrics).
-    # Populated by the end-of-crawl PSI phase via
-    # ``_merge_into_results_csv``. Empty when:
-    #   - the URL wasn't in the PSI subset (non-200, skipped, capped),
-    #   - PSI_ENABLED=false or the service-account file is missing,
-    #   - this strategy errored (network / quota / unsupported).
-    # Lab metrics (TBT, Speed Index) are present even on URLs with no
-    # CrUX data; field metrics (INP, *_category, has_field_data) only
-    # populate when the URL has 28-day real-user data in CrUX.
     *PSI_FIELDS,
+    # Phase A — Screaming Frog parity columns.
+    *PHASE_A_FIELDS,
+    # Phase B — hreflang + schema.org JSON-LD.
+    *PHASE_B_FIELDS,
+    # Phase C — render-delta, PDF, extractors, readability.
+    *PHASE_C_FIELDS,
+    # Phase D — cookies + AMP + accessibility.
+    *PHASE_D_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -349,6 +411,31 @@ def _dual_write_pageresult(row: dict) -> None:
             except (TypeError, ValueError):
                 return None
 
+        def _row_bool(v) -> bool:
+            """Coerce CSV string ('True'/'False'/'1') OR native bool
+            from Scrapy/legacy engine into a Python bool."""
+            if isinstance(v, bool):
+                return v
+            s = str(v or "").strip().lower()
+            return s in ("1", "true", "yes", "t", "y")
+
+        def _row_json(v, *, default=None):
+            """Phase A JSONField values may arrive as native Python
+            (Scrapy spider) or as JSON-encoded strings (CSV path).
+            Return the parsed structure; ``default`` (empty list or
+            dict) on parse failure."""
+            if default is None:
+                default = []
+            if v in (None, ""):
+                return default
+            if isinstance(v, (list, dict)):
+                return v
+            try:
+                import json as _json
+                return _json.loads(str(v))
+            except (ValueError, TypeError):
+                return default
+
         # Phase 3e: Scrapy spider passes Playwright metadata as
         # native types (bool / int / None), not CSV strings. Coerce
         # defensively for both shapes.
@@ -415,6 +502,96 @@ def _dual_write_pageresult(row: dict) -> None:
                 "static_word_count": _opt_i(row.get("static_word_count")),
                 "rendered_word_count": _opt_i(row.get("rendered_word_count")),
                 "playwright_used": playwright_used,
+                # ── Phase A — Screaming Frog parity ──────────────
+                "hsts": (row.get("hsts") or "")[:512],
+                "csp": (row.get("csp") or ""),
+                "x_frame_options": (row.get("x_frame_options") or "")[:128],
+                "x_content_type_options": (row.get("x_content_type_options") or "")[:64],
+                "referrer_policy": (row.get("referrer_policy") or "")[:128],
+                "permissions_policy": (row.get("permissions_policy") or ""),
+                "has_mixed_content": _row_bool(row.get("has_mixed_content")),
+                "has_insecure_form": _row_bool(row.get("has_insecure_form")),
+                "redirect_hops": _i(row.get("redirect_hops")),
+                "redirect_chain": _row_json(row.get("redirect_chain")),
+                "redirect_final_url": (row.get("redirect_final_url") or "")[:2048],
+                "redirect_loop": _row_bool(row.get("redirect_loop")),
+                "title_pixel_width": _i(row.get("title_pixel_width")),
+                "meta_description_pixel_width": _i(row.get("meta_description_pixel_width")),
+                "canonical_html": (row.get("canonical_html") or "")[:2048],
+                "canonical_http": (row.get("canonical_http") or "")[:2048],
+                "canonical_mismatch": _row_bool(row.get("canonical_mismatch")),
+                "multiple_canonicals": _row_bool(row.get("multiple_canonicals")),
+                "canonical_chain_length": _i(row.get("canonical_chain_length")),
+                "canonical_to_noindex": _row_bool(row.get("canonical_to_noindex")),
+                "image_count": _i(row.get("image_count")),
+                "image_missing_alt": _i(row.get("image_missing_alt")),
+                "image_empty_alt": _i(row.get("image_empty_alt")),
+                "image_oversized_count": _i(row.get("image_oversized_count")),
+                "image_broken_count": _i(row.get("image_broken_count")),
+                "image_audit_extra": _row_json(row.get("image_audit_extra"), default={}),
+                # ── Phase B — hreflang ──
+                "hreflang_count": _i(row.get("hreflang_count")),
+                "hreflang_entries": _row_json(row.get("hreflang_entries"), default=[]),
+                "hreflang_has_x_default": _row_bool(row.get("hreflang_has_x_default")),
+                "hreflang_invalid_codes": _row_json(row.get("hreflang_invalid_codes"), default=[]),
+                "hreflang_self_reference": _row_bool(row.get("hreflang_self_reference")),
+                # ── Phase B — schema.org JSON-LD ──
+                "jsonld_count": _i(row.get("jsonld_count")),
+                "jsonld_types": _row_json(row.get("jsonld_types"), default=[]),
+                "jsonld_blocks": _row_json(row.get("jsonld_blocks"), default=[]),
+                "jsonld_invalid_count": _i(row.get("jsonld_invalid_count")),
+                "jsonld_missing_required": _row_json(row.get("jsonld_missing_required"), default=[]),
+                "jsonld_rich_result_eligible": _row_json(row.get("jsonld_rich_result_eligible"), default=[]),
+                "microdata_count": _i(row.get("microdata_count")),
+                "rdfa_count": _i(row.get("rdfa_count")),
+                # ── Phase C.1 JS render-delta ──
+                "js_rendered": _row_bool(row.get("js_rendered")),
+                "content_delta_ratio": _opt_f(row.get("content_delta_ratio")) or 0.0,
+                "link_delta_ratio": _opt_f(row.get("link_delta_ratio")) or 0.0,
+                "jsonld_delta_ratio": _opt_f(row.get("jsonld_delta_ratio")) or 0.0,
+                # ── Phase C.2 PDF ──
+                "pdf_title": (row.get("pdf_title") or "")[:512],
+                "pdf_author": (row.get("pdf_author") or "")[:256],
+                "pdf_subject": (row.get("pdf_subject") or "")[:512],
+                "pdf_page_count": _i(row.get("pdf_page_count")),
+                "pdf_language": (row.get("pdf_language") or "")[:32],
+                "pdf_has_text_layer": _row_bool(row.get("pdf_has_text_layer")),
+                "pdf_is_encrypted": _row_bool(row.get("pdf_is_encrypted")),
+                "pdf_byte_size": _i(row.get("pdf_byte_size")),
+                # ── Phase C.3 Custom extractors ──
+                "custom_extracted": _row_json(row.get("custom_extracted"), default={}),
+                # ── Phase C.4 Readability + spelling ──
+                "flesch_score": _opt_f(row.get("flesch_score")) or 0.0,
+                "grade_level": _opt_f(row.get("grade_level")) or 0.0,
+                "readable_word_count": _i(row.get("readable_word_count")),
+                "readable_sentence_count": _i(row.get("readable_sentence_count")),
+                "spelling_error_count": _i(row.get("spelling_error_count")),
+                "spelling_errors": _row_json(row.get("spelling_errors"), default=[]),
+                # ── Phase D.1 cookies ──
+                "cookie_count": _i(row.get("cookie_count")),
+                "cookies": _row_json(row.get("cookies"), default=[]),
+                "cookies_insecure_count": _i(row.get("cookies_insecure_count")),
+                "cookies_no_samesite_count": _i(row.get("cookies_no_samesite_count")),
+                "cookies_no_httponly_session_count": _i(row.get("cookies_no_httponly_session_count")),
+                "cookies_third_party_count": _i(row.get("cookies_third_party_count")),
+                "cookies_tracker_count": _i(row.get("cookies_tracker_count")),
+                "has_consent_banner": _row_bool(row.get("has_consent_banner")),
+                # ── Phase D.2 AMP ──
+                "is_amp_page": _row_bool(row.get("is_amp_page")),
+                "has_amp_alternate": _row_bool(row.get("has_amp_alternate")),
+                "amp_alternate_url": (row.get("amp_alternate_url") or "")[:2048],
+                "amp_canonical_target": (row.get("amp_canonical_target") or "")[:2048],
+                "amp_required_missing": _row_json(row.get("amp_required_missing"), default=[]),
+                "amp_invalid": _row_bool(row.get("amp_invalid")),
+                # ── Phase D.3 accessibility ──
+                "html_lang": (row.get("html_lang") or "")[:16],
+                "h1_count": _i(row.get("h1_count")),
+                "heading_skip_count": _i(row.get("heading_skip_count")),
+                "form_inputs_no_label": _i(row.get("form_inputs_no_label")),
+                "links_no_text": _i(row.get("links_no_text")),
+                "links_generic_text": _i(row.get("links_generic_text")),
+                "invalid_aria_roles": _row_json(row.get("invalid_aria_roles"), default=[]),
+                "has_skip_link": _row_bool(row.get("has_skip_link")),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

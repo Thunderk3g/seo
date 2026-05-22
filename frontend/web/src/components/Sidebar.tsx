@@ -42,6 +42,7 @@ const CRAWLER_NAV: NavItem[] = [
   { id: 'crawler-dash', label: 'Crawler Dashboard', icon: 'globe', path: '/crawler' },
   { id: 'crawler-health', label: 'Health Overview', icon: 'analytics', path: '/health' },
   { id: 'crawler-issues', label: 'Issues', icon: 'issues', path: '/crawler/issues' },
+  { id: 'crawler-compliance', label: 'Compliance', icon: 'issues', path: '/crawler/compliance' },
   { id: 'crawler-pages', label: 'Page Explorer', icon: 'pages', path: '/crawler/pages' },
   { id: 'crawler-trends', label: 'Trends', icon: 'analytics', path: '/trends' },
   { id: 'crawler-compare', label: 'Compare Crawls', icon: 'visualizations', path: '/compare' },

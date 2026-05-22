@@ -36,6 +36,9 @@ urlpatterns = [
     ),
     path("issues", views.issues_view, name="issues"),
     path("issues/<str:slug>", views.issue_detail_view, name="issue-detail"),
+    # Compliance dashboard — WCAG / GDPR / OWASP aggregated view.
+    path("compliance", views.compliance_view, name="compliance"),
+    path("compliance.csv", views.compliance_csv_view, name="compliance-csv"),
 
     # Page Explorer — Ahrefs-style sortable/filterable URL inventory.
     # Phase 2: reads CSV via in-process mtime cache. Phase 3 will swap

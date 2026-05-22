@@ -778,7 +778,25 @@ ALL_ISSUES: tuple[IssueDef, ...] = (
 from . import detectors_phase4 as _phase4  # noqa: E402
 # Phase 6 GEO suite additions — llms.txt + citation density.
 from . import detectors_geo as _geo  # noqa: E402
+# Phase A — Screaming Frog parity (22 new detectors: security
+# headers, redirect chains, pixel widths, canonical chain, images).
+from . import detectors_phase_a as _phase_a  # noqa: E402
+# Phase B — hreflang matrix + schema.org JSON-LD (14 new detectors).
+from . import detectors_phase_b as _phase_b  # noqa: E402
+# Phase C — JS render-delta, PDF metadata, custom extractors,
+# readability + spelling (14 new detectors).
+from . import detectors_phase_c as _phase_c  # noqa: E402
+# Phase D — cookies + AMP + accessibility (16 new detectors).
+from . import detectors_phase_d as _phase_d  # noqa: E402
 
-ALL_ISSUES = ALL_ISSUES + _phase4.PHASE_4_ISSUES + _geo.GEO_ISSUES
+ALL_ISSUES = (
+    ALL_ISSUES
+    + _phase4.PHASE_4_ISSUES
+    + _geo.GEO_ISSUES
+    + _phase_a.PHASE_A_ISSUES
+    + _phase_b.PHASE_B_ISSUES
+    + _phase_c.PHASE_C_ISSUES
+    + _phase_d.PHASE_D_ISSUES
+)
 
 ISSUES_BY_SLUG: dict[str, IssueDef] = {i.slug: i for i in ALL_ISSUES}
