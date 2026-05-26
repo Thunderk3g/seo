@@ -147,6 +147,123 @@ class DeviceRow:
 
 
 @dataclass
+class SiteSectionRow:
+    """Roll-up of pages into a named section (Products / Blog / etc)."""
+    section: str
+    page_views: int
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class ExitPageRow:
+    """Pages where visits end."""
+    page: str
+    exits: int
+    exit_rate: float
+    item_id: str = ""
+
+
+@dataclass
+class InternalSearchRow:
+    """What users typed into our on-site search."""
+    term: str
+    instances: int
+    item_id: str = ""
+
+
+@dataclass
+class HourRow:
+    """Hour of day (0-23) usage profile."""
+    hour: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class WeekdayRow:
+    """Day of week (Mon-Sun) usage profile."""
+    weekday: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class LangRow:
+    """Language preference detected from browser."""
+    language: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class BrowserRow:
+    """Browser breakdown — full name (Chrome 124) when available."""
+    browser: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class OSRow:
+    os_name: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class ResolutionRow:
+    resolution: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class ReferrerDomainRow:
+    domain: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class SearchEngineRow:
+    engine: str
+    visits: int
+    share_pct: float
+
+
+@dataclass
+class NotFoundRow:
+    """URLs that returned 404 / page-not-found according to Adobe's
+    page-not-found tracking."""
+    url: str
+    instances: int
+
+
+@dataclass
+class LeadEventRow:
+    """One distinct value of the configured lead-hash eVar with hit
+    counts. Without knowing the exact custom event ID for "lead
+    submitted", we surface the dimension itself so the operator can see
+    which hashes showed up in the window."""
+    hash_value: str
+    occurrences: int
+
+
+@dataclass
+class CatalogueItem:
+    """Slim view of a segment or calculated metric from the workspace
+    catalogue. Used to populate dropdowns in the UI — the operator can
+    later apply these to any report."""
+    id: str
+    name: str
+    description: str = ""
+    owner: str = ""
+    type: str = ""
+    is_calculated: bool = False
+
+
+@dataclass
 class AdobeDashboard:
     """End-to-end dashboard payload — what the UI needs in one round trip."""
     available: bool
@@ -165,6 +282,36 @@ class AdobeDashboard:
     dimension_count: int = 0
     metric_count: int = 0
     error: str = ""
+    # ── Tier 1-3 expansion (audience, engagement, behaviour, time,
+    # tech, geo-depth, conversion, catalogue). Every field maps to one
+    # report — the dashboard composer pulls each with cache fallback.
+    visitors_summary: dict = field(default_factory=dict)
+    site_sections: list[SiteSectionRow] = field(default_factory=list)
+    exit_pages: list[ExitPageRow] = field(default_factory=list)
+    internal_searches: list[InternalSearchRow] = field(default_factory=list)
+    page_not_found: list[NotFoundRow] = field(default_factory=list)
+    hours: list[HourRow] = field(default_factory=list)
+    weekdays: list[WeekdayRow] = field(default_factory=list)
+    yoy_daily_trend: list[DailyPoint] = field(default_factory=list)
+    regions: list[GeoRow] = field(default_factory=list)
+    cities: list[GeoRow] = field(default_factory=list)
+    languages: list[LangRow] = field(default_factory=list)
+    browsers: list[BrowserRow] = field(default_factory=list)
+    operating_systems: list[OSRow] = field(default_factory=list)
+    resolutions: list[ResolutionRow] = field(default_factory=list)
+    channel_detail: list[ChannelRow] = field(default_factory=list)
+    referrer_domains: list[ReferrerDomainRow] = field(default_factory=list)
+    search_engines: list[SearchEngineRow] = field(default_factory=list)
+    lead_events: list[LeadEventRow] = field(default_factory=list)
+    segments: list[CatalogueItem] = field(default_factory=list)
+    calculated_metrics: list[CatalogueItem] = field(default_factory=list)
+    # Per-section freshness map. Keys match the JSON payload keys; values
+    # are "live" / "cached" / "missing". When a section is cached, the
+    # corresponding *_age_sec entry carries the cache age so the UI can
+    # render "data from 14h ago" banners.
+    data_freshness: dict = field(default_factory=dict)
+    data_age_sec: dict = field(default_factory=dict)
+    cached_sections_on_disk: dict = field(default_factory=dict)
 
 
 # ── auth ──────────────────────────────────────────────────────────────
@@ -348,11 +495,20 @@ class AdobeAnalyticsAdapter:
             raise AdobeAnalyticsError(
                 f"POST {path} network failure: {exc}",
             ) from exc
-        if resp.status_code != 200:
+        # Adobe 2.0 sometimes returns 206 Partial Content with a valid
+        # JSON body when some requested metrics aren't available for the
+        # suite (it strips them and returns whatever IS available). Treat
+        # that as success — the parser will see fewer columns and adapt.
+        if resp.status_code not in (200, 206):
             raise AdobeAnalyticsError(
                 f"POST {path} → HTTP {resp.status_code}",
                 status_code=resp.status_code,
                 body=_truncate(resp.text, 500),
+            )
+        if resp.status_code == 206:
+            logger.info(
+                "adobe POST %s returned 206 — partial response (some "
+                "metrics/dimensions stripped by the server)", path,
             )
         try:
             return resp.json()
@@ -627,6 +783,531 @@ class AdobeAnalyticsAdapter:
             r.share_pct = round(100.0 * r.visits / total, 2)
         return rows
 
+    # ── Tier 1-3 additions ───────────────────────────────────────────
+    # Generic dimensional/metric pulls. Each method matches one Adobe
+    # report so the dashboard composer can wrap it with cache fallback
+    # via apps.seo_ai.adapters.adobe_cache.try_or_cache.
+
+    def visitors_summary(self, *, lookback_days: int = 7) -> dict:
+        """Audience-volume rollup — visitors, unique visitors,
+        avg time-on-site, pages-per-visit, bounce rate, exit count.
+
+        Returns a flat dict so the UI can render it as a single KPI
+        strip without parsing nested rows.
+        """
+        data = self._report(
+            dimension="variables/daterangeday",
+            metrics=[
+                "metrics/visitors",
+                "metrics/uniquevisitors",
+                "metrics/averagetimespentonsite",
+                "metrics/pagesperVisit",
+                "metrics/bouncerate",
+                "metrics/exits",
+            ],
+            lookback_days=lookback_days,
+            limit=lookback_days + 1,
+        )
+        totals = (data.get("summaryData") or {}).get("totals") or []
+        # totals is a list aligned with the metrics array. Some Adobe
+        # rollups return averages, some sums — we just surface the value
+        # and let the UI label it.
+        return {
+            "visitors": int(totals[0] or 0) if len(totals) > 0 else 0,
+            "unique_visitors": int(totals[1] or 0) if len(totals) > 1 else 0,
+            "avg_time_on_site_sec": round(float(totals[2] or 0), 2) if len(totals) > 2 else 0.0,
+            "pages_per_visit": round(float(totals[3] or 0), 2) if len(totals) > 3 else 0.0,
+            "bounce_rate": round(float(totals[4] or 0), 4) if len(totals) > 4 else 0.0,
+            "exits": int(totals[5] or 0) if len(totals) > 5 else 0,
+        }
+
+    def site_sections(
+        self, *, lookback_days: int = 7, limit: int = 15,
+    ) -> list[SiteSectionRow]:
+        """Roll-up of pages into named sections (Products / Blog /
+        Calculators / About). Depends on a Launch rule setting
+        ``variables/sitesection`` — falls back to empty if not
+        instrumented."""
+        try:
+            data = self._report(
+                dimension="variables/sitesection",
+                metrics=["metrics/pageviews", "metrics/visits"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("site_sections report failed: %s", exc)
+            return []
+        rows: list[SiteSectionRow] = []
+        for r in (data.get("rows") or []):
+            d = r.get("data") or []
+            try:
+                pv = int(d[0] or 0) if len(d) > 0 else 0
+                vt = int(d[1] or 0) if len(d) > 1 else 0
+            except (TypeError, ValueError):
+                pv, vt = 0, 0
+            rows.append(SiteSectionRow(
+                section=str(r.get("value") or "Unknown"),
+                page_views=pv,
+                visits=vt,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
+    def exit_pages(
+        self, *, lookback_days: int = 7, limit: int = 25,
+    ) -> list[ExitPageRow]:
+        """Pages where visits ended. Funnel-leak diagnostic."""
+        try:
+            data = self._report(
+                dimension="variables/exitpage",
+                metrics=["metrics/exits", "metrics/exitrate"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("exit_pages report failed: %s", exc)
+            return []
+        rows: list[ExitPageRow] = []
+        for r in (data.get("rows") or []):
+            d = r.get("data") or []
+            try:
+                exits = int(d[0] or 0) if len(d) > 0 else 0
+                rate = float(d[1] or 0.0) if len(d) > 1 else 0.0
+            except (TypeError, ValueError):
+                exits, rate = 0, 0.0
+            rows.append(ExitPageRow(
+                page=str(r.get("value") or ""),
+                exits=exits,
+                exit_rate=round(rate, 4),
+                item_id=str(r.get("itemId") or ""),
+            ))
+        return rows
+
+    def internal_searches(
+        self, *, lookback_days: int = 7, limit: int = 30,
+    ) -> list[InternalSearchRow]:
+        """Top on-site search terms. Best content-gap signal Adobe gives
+        us — what users want that we apparently don't surface clearly.
+        Tries both ``internalsearch`` and ``internalsearchterms``
+        because the dimension name varies across implementations."""
+        for dim in ("variables/internalsearchterm", "variables/internalsearchterms"):
+            try:
+                data = self._report(
+                    dimension=dim,
+                    metrics=["metrics/searches"],
+                    lookback_days=lookback_days,
+                    limit=limit,
+                )
+            except AdobeAnalyticsError as exc:
+                logger.info("internal_searches[%s] failed: %s", dim, exc)
+                continue
+            rows: list[InternalSearchRow] = []
+            for r in (data.get("rows") or []):
+                try:
+                    n = int((r.get("data") or [0])[0] or 0)
+                except (TypeError, ValueError, IndexError):
+                    n = 0
+                rows.append(InternalSearchRow(
+                    term=str(r.get("value") or ""),
+                    instances=n,
+                    item_id=str(r.get("itemId") or ""),
+                ))
+            if rows:
+                return rows
+        return []
+
+    def page_not_found(
+        self, *, lookback_days: int = 7, limit: int = 25,
+    ) -> list[NotFoundRow]:
+        """Adobe's tracked 404 / page-not-found URLs."""
+        try:
+            data = self._report(
+                dimension="variables/pagesnotfound",
+                metrics=["metrics/pageviews"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("page_not_found report failed: %s", exc)
+            return []
+        rows: list[NotFoundRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                n = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                n = 0
+            rows.append(NotFoundRow(
+                url=str(r.get("value") or ""),
+                instances=n,
+            ))
+        return rows
+
+    def hour_of_day(
+        self, *, lookback_days: int = 7,
+    ) -> list[HourRow]:
+        """Hour-of-day visit distribution. ``variables/hour`` returns 0-23."""
+        try:
+            data = self._report(
+                dimension="variables/hour",
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=24,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("hour_of_day report failed: %s", exc)
+            return []
+        rows: list[HourRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                n = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                n = 0
+            rows.append(HourRow(
+                hour=str(r.get("value") or ""),
+                visits=n,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
+    def day_of_week(
+        self, *, lookback_days: int = 30,
+    ) -> list[WeekdayRow]:
+        """Mon-Sun visit distribution. Bigger lookback (30 days) by
+        default so each weekday gets ~4 data points."""
+        try:
+            data = self._report(
+                dimension="variables/dayofweek",
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=7,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("day_of_week report failed: %s", exc)
+            return []
+        rows: list[WeekdayRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                n = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                n = 0
+            rows.append(WeekdayRow(
+                weekday=str(r.get("value") or ""),
+                visits=n,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
+    def year_over_year_trend(
+        self, *, lookback_days: int = 30,
+    ) -> list[DailyPoint]:
+        """Daily series for the SAME window one year prior. The frontend
+        overlays this on the current ``daily_trend`` for a YoY chart."""
+        today = datetime.now(timezone.utc).date()
+        # Anchor a year ago, then walk back lookback_days. Adobe's date
+        # math wants explicit ISO timestamps.
+        end = today.replace(year=today.year - 1).isoformat() + "T00:00:00.000"
+        start = (
+            (today.replace(year=today.year - 1)) - timedelta(days=lookback_days)
+        ).isoformat() + "T00:00:00.000"
+        payload = {
+            "rsid": self.rsid,
+            "globalFilters": [
+                {"type": "dateRange", "dateRange": f"{start}/{end}"},
+            ],
+            "metricContainer": {
+                "metrics": [
+                    {"columnId": "0", "id": "metrics/pageviews"},
+                    {"columnId": "1", "id": "metrics/visits"},
+                ],
+            },
+            "dimension": "variables/daterangeday",
+            "settings": {
+                "countRepeatInstances": True,
+                "limit": lookback_days + 1,
+                "page": 0,
+                "nonesBehavior": "exclude-nones",
+            },
+        }
+        data = self._post("/reports", payload)
+        out: list[DailyPoint] = []
+        for r in (data.get("rows") or []):
+            value = str(r.get("value") or "")
+            iso = _coerce_iso_date(value, r.get("itemId"))
+            try:
+                pv = int((r.get("data") or [0, 0])[0] or 0)
+                vt = int((r.get("data") or [0, 0])[1] or 0)
+            except (TypeError, ValueError, IndexError):
+                pv, vt = 0, 0
+            out.append(DailyPoint(date=iso or value, page_views=pv, visits=vt))
+        out.sort(key=lambda d: d.date)
+        return out
+
+    def regions(
+        self, *, lookback_days: int = 7, limit: int = 30,
+    ) -> list[GeoRow]:
+        """Top state/region by visits. India-focused — picks up
+        Maharashtra / Karnataka / Delhi / etc."""
+        return self._dim_with_share(
+            "variables/georegion", lookback_days=lookback_days, limit=limit,
+        )
+
+    def cities(
+        self, *, lookback_days: int = 7, limit: int = 30,
+    ) -> list[GeoRow]:
+        """Top city by visits."""
+        return self._dim_with_share(
+            "variables/geocity", lookback_days=lookback_days, limit=limit,
+        )
+
+    def languages(
+        self, *, lookback_days: int = 7, limit: int = 15,
+    ) -> list[LangRow]:
+        rows = self._dim_with_share(
+            "variables/language", lookback_days=lookback_days, limit=limit,
+        )
+        return [LangRow(language=r.label, visits=r.visits, share_pct=r.share_pct) for r in rows]
+
+    def browsers(
+        self, *, lookback_days: int = 7, limit: int = 15,
+    ) -> list[BrowserRow]:
+        rows = self._dim_with_share(
+            "variables/browser", lookback_days=lookback_days, limit=limit,
+        )
+        return [BrowserRow(browser=r.label, visits=r.visits, share_pct=r.share_pct) for r in rows]
+
+    def operating_systems(
+        self, *, lookback_days: int = 7, limit: int = 15,
+    ) -> list[OSRow]:
+        rows = self._dim_with_share(
+            "variables/operatingsystem", lookback_days=lookback_days, limit=limit,
+        )
+        return [OSRow(os_name=r.label, visits=r.visits, share_pct=r.share_pct) for r in rows]
+
+    def resolutions(
+        self, *, lookback_days: int = 7, limit: int = 15,
+    ) -> list[ResolutionRow]:
+        rows = self._dim_with_share(
+            "variables/monitorresolution", lookback_days=lookback_days, limit=limit,
+        )
+        return [ResolutionRow(resolution=r.label, visits=r.visits, share_pct=r.share_pct) for r in rows]
+
+    def channel_detail(
+        self, *, lookback_days: int = 7, limit: int = 25,
+    ) -> list[ChannelRow]:
+        """Sub-channel split — e.g. Organic → Google vs Bing."""
+        try:
+            data = self._report(
+                dimension="variables/marketingchanneldetail",
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("channel_detail report failed: %s", exc)
+            return []
+        rows: list[ChannelRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                visits = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                visits = 0
+            rows.append(ChannelRow(
+                channel=str(r.get("value") or "Unknown"),
+                visits=visits,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
+    def referrer_domains(
+        self, *, lookback_days: int = 7, limit: int = 25,
+    ) -> list[ReferrerDomainRow]:
+        try:
+            data = self._report(
+                dimension="variables/referringdomain",
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("referrer_domains report failed: %s", exc)
+            return []
+        rows: list[ReferrerDomainRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                visits = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                visits = 0
+            rows.append(ReferrerDomainRow(
+                domain=str(r.get("value") or "Unknown"),
+                visits=visits,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
+    def search_engines(
+        self, *, lookback_days: int = 7, limit: int = 10,
+    ) -> list[SearchEngineRow]:
+        try:
+            data = self._report(
+                dimension="variables/searchengine",
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("search_engines report failed: %s", exc)
+            return []
+        rows: list[SearchEngineRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                visits = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                visits = 0
+            rows.append(SearchEngineRow(
+                engine=str(r.get("value") or "Unknown"),
+                visits=visits,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
+    def lead_events(
+        self, *, lookback_days: int = 30, limit: int = 25,
+    ) -> list[LeadEventRow]:
+        """Distinct values of the configured lead-hash eVar. We don't
+        know the exact custom event ID for "lead submitted" — surface
+        the dimension itself so the operator sees which hashes appeared.
+
+        Enabled only when ``ADOBE_LEAD_HASH_EVAR`` env is set; otherwise
+        returns []. The env value can be either a bare evar number
+        ("evar5") or the full dimension path ("variables/evar5").
+        """
+        cfg = getattr(settings, "ADOBE_ANALYTICS", None) or {}
+        evar = (cfg.get("lead_hash_evar") or "").strip()
+        if not evar:
+            return []
+        if not evar.startswith("variables/"):
+            evar = f"variables/{evar}"
+        try:
+            data = self._report(
+                dimension=evar,
+                metrics=["metrics/occurrences"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("lead_events report failed: %s", exc)
+            return []
+        rows: list[LeadEventRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                n = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                n = 0
+            rows.append(LeadEventRow(
+                hash_value=str(r.get("value") or "")[:64],
+                occurrences=n,
+            ))
+        return rows
+
+    def list_segments(self, *, limit: int = 100) -> list[CatalogueItem]:
+        """List segments the operator can apply to any report. Read-only
+        view — applying them is a follow-up feature."""
+        try:
+            params = {"locale": "en_US", "limit": int(limit), "page": 0,
+                      "rsids": self.rsid}
+            data = self._get("/segments", params=params)
+        except AdobeAnalyticsError as exc:
+            logger.info("list_segments failed: %s", exc)
+            return []
+        out: list[CatalogueItem] = []
+        for seg in (data.get("content") if isinstance(data, dict) else data) or []:
+            out.append(CatalogueItem(
+                id=str(seg.get("id") or ""),
+                name=str(seg.get("name") or ""),
+                description=str(seg.get("description") or "")[:240],
+                owner=str((seg.get("owner") or {}).get("name") or seg.get("owner") or ""),
+                type=str(seg.get("type") or ""),
+                is_calculated=False,
+            ))
+        return out
+
+    def list_calculated_metrics(self, *, limit: int = 100) -> list[CatalogueItem]:
+        """List workspace calculated metrics so the UI can show what
+        derived KPIs are already maintained by the analytics team."""
+        try:
+            params = {"locale": "en_US", "limit": int(limit), "page": 0,
+                      "rsids": self.rsid}
+            data = self._get("/calculatedmetrics", params=params)
+        except AdobeAnalyticsError as exc:
+            logger.info("list_calculated_metrics failed: %s", exc)
+            return []
+        out: list[CatalogueItem] = []
+        for cm in (data.get("content") if isinstance(data, dict) else data) or []:
+            out.append(CatalogueItem(
+                id=str(cm.get("id") or ""),
+                name=str(cm.get("name") or ""),
+                description=str(cm.get("description") or "")[:240],
+                owner=str((cm.get("owner") or {}).get("name") or cm.get("owner") or ""),
+                type=str(cm.get("type") or ""),
+                is_calculated=True,
+            ))
+        return out
+
+    def _dim_with_share(
+        self,
+        dimension: str,
+        *,
+        lookback_days: int,
+        limit: int,
+    ) -> list[GeoRow]:
+        """Generic helper for "dimension → visits + share_pct" reports.
+        Returns GeoRow because the shape is identical to top_countries;
+        callers that need a different dataclass map the result."""
+        try:
+            data = self._report(
+                dimension=dimension,
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=limit,
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info("%s report failed: %s", dimension, exc)
+            return []
+        rows: list[GeoRow] = []
+        for r in (data.get("rows") or []):
+            try:
+                visits = int((r.get("data") or [0])[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                visits = 0
+            rows.append(GeoRow(
+                label=str(r.get("value") or "Unknown"),
+                visits=visits,
+                share_pct=0.0,
+            ))
+        total = sum(r.visits for r in rows) or 1
+        for r in rows:
+            r.share_pct = round(100.0 * r.visits / total, 2)
+        return rows
+
     def top_pages_with_visits(
         self, *, lookback_days: int = 30, limit: int = 100,
     ) -> list[dict]:
@@ -662,10 +1343,22 @@ class AdobeAnalyticsAdapter:
         lookback_days: int | None = None,
         limit: int | None = None,
     ) -> AdobeDashboard:
-        """One-shot dashboard payload — everything the AdobePage UI
-        renders. Catches per-call errors so a partial outage still
-        returns a usable response (rather than 500-ing the whole page).
+        """One-shot dashboard payload — every Tier-1/2/3 report in a
+        single round trip, each pull cached per-section to
+        ``<DATA_DIR>/_adobe_cache/<rsid>/``.
+
+        Failure semantics: if a section's live pull fails AND a cache
+        file exists, we return the cached payload tagged "cached".
+        If neither path yields data, the section is tagged "missing"
+        and renders empty. ``data_freshness`` carries the per-section
+        status so the UI can show "live" / "cached 14h ago" banners.
+
+        Cache writes happen on every successful pull — so even when
+        the token is alive today, tomorrow's outage still serves
+        usable data.
         """
+        from . import adobe_cache
+
         cfg = getattr(settings, "ADOBE_ANALYTICS", None) or {}
         if lookback_days is None:
             lookback_days = int(cfg.get("default_lookback_days", 7))
@@ -679,69 +1372,207 @@ class AdobeAnalyticsAdapter:
             lookback_days=lookback_days,
         )
 
-        try:
-            out.report_suite = self.report_suite()
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe report_suite failed: %s", exc)
-
-        try:
-            dims = self.dimensions(limit=500)
-            out.dimension_count = len(dims)
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe dimensions failed: %s", exc)
-
-        try:
-            mets = self.metrics(limit=500)
-            out.metric_count = len(mets)
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe metrics failed: %s", exc)
-
-        try:
-            rows, summary = self.top_pages(
+        # Each section is pulled with cache fallback. The first arg is
+        # the cache key (lookback embedded so different windows don't
+        # clobber each other).
+        def _go(key_suffix: str, fetch):
+            cache_key = f"{key_suffix}__{lookback_days}d"
+            data, status, age = adobe_cache.try_or_cache(
+                self.rsid, cache_key, fetch,
                 lookback_days=lookback_days, limit=limit,
             )
-            out.top_pages = rows
-            out.totals = summary
-        except AdobeAnalyticsError as exc:
-            logger.warning("adobe top_pages failed: %s", exc)
-            out.error = str(exc)
+            out.data_freshness[key_suffix] = status
+            if age is not None:
+                out.data_age_sec[key_suffix] = age
+            return data
 
-        # Time-series trend — separate lookback (30 days by default so the
-        # chart shows month-over-month context regardless of the top-pages
-        # window).
+        # ── Suite metadata + capability ──────────────────────────────
+        rs = _go("report_suite", self.report_suite)
+        if isinstance(rs, dict):
+            out.report_suite = ReportSuiteInfo(
+                rsid=rs.get("rsid", self.rsid),
+                name=rs.get("name", ""),
+                collection_item_type=rs.get("collection_item_type", ""),
+            )
+
+        dims = _go("dimensions", lambda: self.dimensions(limit=500)) or []
+        out.dimension_count = len(dims) if isinstance(dims, list) else 0
+
+        mets = _go("metrics", lambda: self.metrics(limit=500)) or []
+        out.metric_count = len(mets) if isinstance(mets, list) else 0
+
+        # ── Original Tier-1 ─────────────────────────────────────────
+        tp = _go(
+            "top_pages",
+            lambda: self.top_pages(lookback_days=lookback_days, limit=limit),
+        )
+        if isinstance(tp, list) and len(tp) == 2:
+            # ``try_or_cache`` flattens the live (rows, summary) tuple
+            # into a 2-element list; cache hits return the same shape.
+            rows, summary = tp
+            out.top_pages = [TopPageRow(**r) if isinstance(r, dict) else r for r in (rows or [])]
+            out.totals = summary or {}
+
         trend_days = max(lookback_days, 30)
-        try:
-            out.daily_trend = self.daily_trend(lookback_days=trend_days)
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe daily_trend failed: %s", exc)
+        dt = _go(
+            "daily_trend",
+            lambda: self.daily_trend(lookback_days=trend_days),
+        ) or []
+        out.daily_trend = [DailyPoint(**r) if isinstance(r, dict) else r for r in dt]
 
-        try:
-            out.channels = self.marketing_channels(
-                lookback_days=lookback_days, limit=12,
-            )
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe marketing_channels failed: %s", exc)
+        ch = _go(
+            "channels",
+            lambda: self.marketing_channels(lookback_days=lookback_days, limit=12),
+        ) or []
+        out.channels = [ChannelRow(**r) if isinstance(r, dict) else r for r in ch]
 
-        try:
-            out.entry_pages = self.entry_pages(
-                lookback_days=lookback_days, limit=25,
-            )
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe entry_pages failed: %s", exc)
+        ep = _go(
+            "entry_pages",
+            lambda: self.entry_pages(lookback_days=lookback_days, limit=25),
+        ) or []
+        out.entry_pages = [EntryPageRow(**r) if isinstance(r, dict) else r for r in ep]
 
-        try:
-            out.countries = self.top_countries(
-                lookback_days=lookback_days, limit=12,
-            )
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe top_countries failed: %s", exc)
+        co = _go(
+            "countries",
+            lambda: self.top_countries(lookback_days=lookback_days, limit=12),
+        ) or []
+        out.countries = [GeoRow(**r) if isinstance(r, dict) else r for r in co]
 
-        try:
-            out.devices = self.device_split(
-                lookback_days=lookback_days, limit=8,
-            )
-        except AdobeAnalyticsError as exc:
-            logger.info("adobe device_split failed: %s", exc)
+        de = _go(
+            "devices",
+            lambda: self.device_split(lookback_days=lookback_days, limit=8),
+        ) or []
+        out.devices = [DeviceRow(**r) if isinstance(r, dict) else r for r in de]
+
+        # ── Tier 1 expansion: audience volume + engagement summary ──
+        vs = _go(
+            "visitors_summary",
+            lambda: self.visitors_summary(lookback_days=lookback_days),
+        ) or {}
+        out.visitors_summary = vs if isinstance(vs, dict) else {}
+
+        ss = _go(
+            "site_sections",
+            lambda: self.site_sections(lookback_days=lookback_days, limit=15),
+        ) or []
+        out.site_sections = [
+            SiteSectionRow(**r) if isinstance(r, dict) else r for r in ss
+        ]
+
+        ex = _go(
+            "exit_pages",
+            lambda: self.exit_pages(lookback_days=lookback_days, limit=25),
+        ) or []
+        out.exit_pages = [ExitPageRow(**r) if isinstance(r, dict) else r for r in ex]
+
+        isr = _go(
+            "internal_searches",
+            lambda: self.internal_searches(lookback_days=lookback_days, limit=30),
+        ) or []
+        out.internal_searches = [InternalSearchRow(**r) if isinstance(r, dict) else r for r in isr]
+
+        nf = _go(
+            "page_not_found",
+            lambda: self.page_not_found(lookback_days=lookback_days, limit=25),
+        ) or []
+        out.page_not_found = [NotFoundRow(**r) if isinstance(r, dict) else r for r in nf]
+
+        # ── Time profile ────────────────────────────────────────────
+        hrs = _go(
+            "hours",
+            lambda: self.hour_of_day(lookback_days=lookback_days),
+        ) or []
+        out.hours = [HourRow(**r) if isinstance(r, dict) else r for r in hrs]
+
+        wdays = _go(
+            "weekdays",
+            lambda: self.day_of_week(lookback_days=max(lookback_days, 30)),
+        ) or []
+        out.weekdays = [WeekdayRow(**r) if isinstance(r, dict) else r for r in wdays]
+
+        yoy = _go(
+            "yoy_daily_trend",
+            lambda: self.year_over_year_trend(lookback_days=trend_days),
+        ) or []
+        out.yoy_daily_trend = [DailyPoint(**r) if isinstance(r, dict) else r for r in yoy]
+
+        # ── Geo depth ───────────────────────────────────────────────
+        rg = _go(
+            "regions",
+            lambda: self.regions(lookback_days=lookback_days, limit=30),
+        ) or []
+        out.regions = [GeoRow(**r) if isinstance(r, dict) else r for r in rg]
+
+        ct = _go(
+            "cities",
+            lambda: self.cities(lookback_days=lookback_days, limit=30),
+        ) or []
+        out.cities = [GeoRow(**r) if isinstance(r, dict) else r for r in ct]
+
+        lng = _go(
+            "languages",
+            lambda: self.languages(lookback_days=lookback_days, limit=15),
+        ) or []
+        out.languages = [LangRow(**r) if isinstance(r, dict) else r for r in lng]
+
+        # ── Tech depth ──────────────────────────────────────────────
+        br = _go(
+            "browsers",
+            lambda: self.browsers(lookback_days=lookback_days, limit=15),
+        ) or []
+        out.browsers = [BrowserRow(**r) if isinstance(r, dict) else r for r in br]
+
+        oss = _go(
+            "operating_systems",
+            lambda: self.operating_systems(lookback_days=lookback_days, limit=15),
+        ) or []
+        out.operating_systems = [OSRow(**r) if isinstance(r, dict) else r for r in oss]
+
+        res = _go(
+            "resolutions",
+            lambda: self.resolutions(lookback_days=lookback_days, limit=15),
+        ) or []
+        out.resolutions = [ResolutionRow(**r) if isinstance(r, dict) else r for r in res]
+
+        # ── Acquisition depth ───────────────────────────────────────
+        chd = _go(
+            "channel_detail",
+            lambda: self.channel_detail(lookback_days=lookback_days, limit=25),
+        ) or []
+        out.channel_detail = [ChannelRow(**r) if isinstance(r, dict) else r for r in chd]
+
+        rd = _go(
+            "referrer_domains",
+            lambda: self.referrer_domains(lookback_days=lookback_days, limit=25),
+        ) or []
+        out.referrer_domains = [ReferrerDomainRow(**r) if isinstance(r, dict) else r for r in rd]
+
+        se = _go(
+            "search_engines",
+            lambda: self.search_engines(lookback_days=lookback_days, limit=10),
+        ) or []
+        out.search_engines = [SearchEngineRow(**r) if isinstance(r, dict) else r for r in se]
+
+        # ── Conversion (lead-hash eVar from settings) ───────────────
+        le = _go(
+            "lead_events",
+            lambda: self.lead_events(lookback_days=max(lookback_days, 30), limit=25),
+        ) or []
+        out.lead_events = [LeadEventRow(**r) if isinstance(r, dict) else r for r in le]
+
+        # ── Workspace catalogue (segments + calculated metrics) ─────
+        sg = _go("segments", lambda: self.list_segments(limit=100)) or []
+        out.segments = [CatalogueItem(**r) if isinstance(r, dict) else r for r in sg]
+
+        cm = _go(
+            "calculated_metrics",
+            lambda: self.list_calculated_metrics(limit=100),
+        ) or []
+        out.calculated_metrics = [CatalogueItem(**r) if isinstance(r, dict) else r for r in cm]
+
+        # Cache audit — what sections survive on disk regardless of
+        # whether they were live this load.
+        out.cached_sections_on_disk = adobe_cache.cached_sections(self.rsid)
 
         return out
 
