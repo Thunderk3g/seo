@@ -124,10 +124,14 @@ class CompetitorPage:
     #                  partner-link analysis.
     # images:          every <img> with src + alt + dimensions for per-image
     #                  alt audit and design replication.
+    # videos:          every <video> tag + YouTube/Vimeo <iframe> embed.
+    #                  Each entry: {src, kind, poster, section, zone, width,
+    #                  height}. ``kind`` ∈ {native, youtube, vimeo, other}.
     headings: list[dict[str, Any]] = field(default_factory=list)
     internal_links: list[dict[str, Any]] = field(default_factory=list)
     external_links: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
+    videos: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── Internal-link kind classifier ─────────────────────────────────────
@@ -232,6 +236,7 @@ def _extract_structured(soup, page_host: str, base_url: str) -> dict[str, list]:
     internal_links: list[dict[str, Any]] = []
     external_links: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
+    videos: list[dict[str, Any]] = []
 
     current_section = ""   # nearest preceding heading text, drives "where"
 
@@ -289,12 +294,61 @@ def _extract_structured(soup, page_host: str, base_url: str) -> dict[str, list]:
                 "zone": _classify_zone(el),
                 "loading": (el.get("loading") or "").strip()[:16],
             })
+            continue
+
+        if name == "video":
+            # Native HTML5 <video>. ``src`` is either on the tag itself or
+            # on a child <source>; pick the first one we find.
+            src = (el.get("src") or "").strip()
+            if not src:
+                source = el.find("source")
+                if source is not None:
+                    src = (source.get("src") or "").strip()
+            if not src:
+                continue
+            videos.append({
+                "src": urljoin(base_url, src)[:1024],
+                "kind": "native",
+                "poster": (el.get("poster") or "").strip()[:1024],
+                "section": current_section,
+                "zone": _classify_zone(el),
+                "width": (el.get("width") or "").strip()[:8],
+                "height": (el.get("height") or "").strip()[:8],
+            })
+            continue
+
+        if name == "iframe":
+            # YouTube / Vimeo / Wistia embeds. Classify by hostname so
+            # the UI can render the right thumbnail / aspect ratio.
+            src = (el.get("src") or "").strip()
+            if not src:
+                continue
+            src_low = src.lower()
+            if "youtube.com/embed" in src_low or "youtube-nocookie.com" in src_low or "youtu.be" in src_low:
+                kind = "youtube"
+            elif "vimeo.com" in src_low or "player.vimeo.com" in src_low:
+                kind = "vimeo"
+            elif "wistia.com" in src_low or "wistia.net" in src_low:
+                kind = "wistia"
+            else:
+                # Skip non-video iframes (analytics, ads, maps, etc.).
+                continue
+            videos.append({
+                "src": urljoin(base_url, src)[:1024],
+                "kind": kind,
+                "poster": "",
+                "section": current_section,
+                "zone": _classify_zone(el),
+                "width": (el.get("width") or "").strip()[:8],
+                "height": (el.get("height") or "").strip()[:8],
+            })
 
     return {
         "headings": headings,
         "internal_links": internal_links,
         "external_links": external_links,
         "images": images,
+        "videos": videos,
     }
 
 

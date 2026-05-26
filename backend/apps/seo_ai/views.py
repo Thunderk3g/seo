@@ -1854,6 +1854,7 @@ def _full_page_from_result(p, snap) -> dict:
         "internal_links": p.internal_links_json or [],
         "external_links": p.external_links_json or [],
         "images": p.images_json or [],
+        "videos": getattr(p, "videos_json", None) or [],
         "run_id": str(snap.id),
         "run_started_at": (
             snap.started_at.isoformat() if snap.started_at else None
@@ -1863,66 +1864,90 @@ def _full_page_from_result(p, snap) -> dict:
 
 @api_view(["GET"])
 def competitor_crawls_list_view(_request):
-    """List every competitor domain we've crawled via the Phase G Scrapy
-    walk — one row per ``target_domain``, the most-recent complete snapshot
-    with rows winning.
+    """List every competitor domain we've crawled (or are currently
+    crawling) via the Phase G Scrapy walk. One row per ``target_domain``,
+    freshest snapshot wins regardless of completion state.
 
-    Returns the same per-domain summary shape that the click-through detail
-    page renders at the top of the list, so the frontend table can
-    populate KPI cells without a follow-up fetch per row. Click-through to
-    /competitors/<domain>/ continues to hit competitor_detail_view, which
-    sources from the same CrawlerPageResult rows.
+    Includes both ``status='running'`` and ``status='complete'`` so the
+    dashboard reflects live progress as pages stream in — the previous
+    behaviour required ``status='complete'`` and showed nothing during
+    active overnight crawls.
 
-    Does NOT include the in-house Bajaj crawl (kind=BAJAJ) — this is a
-    competitor-only surface.
+    Each row carries the *live* page count from CrawlerPageResult (not
+    just ``snap.pages_attempted`` which only updates when the spider
+    closes) so the operator sees real-time growth.
+
+    Does NOT include the in-house Bajaj crawl (kind=BAJAJ).
     """
-    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    from collections import defaultdict
 
-    # Postgres `DISTINCT ON (target_domain)` returns the first row per
-    # group given the order-by, so ordering by target_domain then
-    # -started_at gives us the freshest snapshot per domain.
-    snapshots = list(
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    from django.db.models import Count
+
+    from .models import CompetitorChangeEvent
+
+    # Latest snapshot per target_domain — running OR complete. Failed
+    # snapshots are excluded so a half-dead retry doesn't shadow a
+    # successful older crawl.
+    qs = (
         CrawlSnapshot.objects
-        .filter(
-            kind=CrawlSnapshot.Kind.COMPETITOR,
-            status=CrawlSnapshot.Status.COMPLETE,
-            pages_ok__gt=0,
-        )
-        .order_by("target_domain", "-started_at")
-        .distinct("target_domain")
+        .filter(kind=CrawlSnapshot.Kind.COMPETITOR)
+        .exclude(status=CrawlSnapshot.Status.FAILED)
+        .order_by("-started_at")
     )
 
-    items: list[dict] = []
-    for snap in snapshots:
-        if not (snap.target_domain or "").strip():
+    latest_by_domain: dict[str, CrawlSnapshot] = {}
+    for snap in qs:
+        td = (snap.target_domain or "").strip().lower()
+        if not td or td in latest_by_domain:
             continue
-        pages = list(CrawlerPageResult.objects.filter(snapshot=snap))
-        if not pages:
-            continue
-        profile = _profile_from_page_results(pages)
-        items.append({
-            "domain": snap.target_domain,
-            "run_id": str(snap.id),
-            "run_started_at": (
+        latest_by_domain[td] = snap
+
+    if not latest_by_domain:
+        return Response({"competitors": [], "count": 0})
+
+    snapshot_ids = [s.id for s in latest_by_domain.values()]
+
+    # Live page count per snapshot — updated row-by-row as the spider
+    # writes, so a running crawl ticks up in the UI poll.
+    page_counts = dict(
+        CrawlerPageResult.objects
+        .filter(snapshot_id__in=snapshot_ids)
+        .values_list("snapshot_id")
+        .annotate(n=Count("id"))
+    )
+
+    # Change-event totals per competitor (across snapshot history).
+    change_counts: dict[str, int] = defaultdict(int)
+    for row in (
+        CompetitorChangeEvent.objects
+        .filter(competitor_domain__in=list(latest_by_domain.keys()))
+        .values_list("competitor_domain")
+        .annotate(n=Count("id"))
+    ):
+        change_counts[row[0]] = row[1]
+
+    rows = []
+    for td, snap in sorted(latest_by_domain.items()):
+        rows.append({
+            "domain": td,
+            "snapshot_id": str(snap.id),
+            "status": snap.status,
+            "started_at": (
                 snap.started_at.isoformat() if snap.started_at else None
+            ),
+            "finished_at": (
+                snap.finished_at.isoformat()
+                if getattr(snap, "finished_at", None) else None
             ),
             "pages_attempted": snap.pages_attempted,
             "pages_ok": snap.pages_ok,
-            "profile_summary": profile,
+            "pages_in_db": page_counts.get(snap.id, 0),
+            "change_events": change_counts.get(td, 0),
+            "notes": (snap.notes or "")[:160],
         })
 
-    # Sort by run_started_at desc so the freshest crawls float to the top
-    # of the UI list regardless of alphabetic domain order.
-    items.sort(
-        key=lambda r: r.get("run_started_at") or "",
-        reverse=True,
-    )
-
-    return Response({
-        "available": True,
-        "count": len(items),
-        "items": items,
-    })
+    return Response({"competitors": rows, "count": len(rows)})
 
 
 @api_view(["GET"])

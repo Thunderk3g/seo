@@ -15,6 +15,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import CompetitorMetaAdsSection from '../components/competitors/CompetitorMetaAdsSection';
+import CompetitorContentMapSection from '../components/competitors/CompetitorContentMapSection';
 
 export default function CompetitorDetailPage() {
   const params = useParams<{ domain: string }>();
@@ -110,6 +111,11 @@ export default function CompetitorDetailPage() {
           pages={data.sample_pages}
         />
       </section>
+
+      {/* Per-competitor content map — own PageEmbedding rows + UMAP
+          projection, isolated from Bajaj's map. Renders page-type +
+          product breakdown derived from the embedded pages. */}
+      <CompetitorContentMapSection domain={data.domain} />
 
       {/* Meta Ad Library — competitor ad intel via Apify scraper. Caches
           on the backend for 24h so this doesn't burn Apify credit on

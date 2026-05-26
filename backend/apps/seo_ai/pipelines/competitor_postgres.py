@@ -193,6 +193,9 @@ class CompetitorDualWritePipeline:
                     "internal_links_json": item.get("internal_links") or [],
                     "external_links_json": item.get("external_links") or [],
                     "images_json": item.get("images") or [],
+                    # Phase 2A.5b — video parity (native <video> +
+                    # YouTube/Vimeo/Wistia <iframe> embeds).
+                    "videos_json": item.get("videos") or [],
                     # Audit-field parity — security headers + redirect
                     # chain + hreflang + JSON-LD blocks + readability
                     # captured by the Phase-I competitor spider so the

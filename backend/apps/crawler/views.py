@@ -943,20 +943,52 @@ def issue_detail_view(_request, slug: str):
 @api_view(["GET"])
 def content_map_3d_view(request):
     """GET /api/v1/crawler/content/map/3d
-    → 3D scatter points from the latest snapshot's PageEmbedding rows."""
+
+    Returns 3D scatter points from a snapshot's PageEmbedding rows. The
+    snapshot is selected by (in priority order):
+      1. ?snapshot=<uuid>  — exact match
+      2. ?domain=<host>    — latest non-empty COMPLETE competitor
+                             snapshot for that target_domain
+      3. (default)         — latest snapshot of any kind
+
+    Each competitor gets its own content map because every
+    PageEmbedding row carries snapshot_id; there's no cross-domain
+    bleed. Returns 404 only when no snapshot at all can be resolved.
+    """
+    from django.db.models import Count
+
     from .models import CrawlSnapshot
     from .content.projection import get_3d_points
 
-    snap_id = request.GET.get("snapshot", "")
-    snap = (
-        CrawlSnapshot.objects.filter(id=snap_id).first()
-        if snap_id else CrawlSnapshot.objects.order_by("-started_at").first()
-    )
+    snap_id = (request.GET.get("snapshot") or "").strip()
+    domain = (request.GET.get("domain") or "").strip().lower()
+    snap = None
+    if snap_id:
+        snap = CrawlSnapshot.objects.filter(id=snap_id).first()
+    elif domain:
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(
+                kind="competitor",
+                status="complete",
+                target_domain__iexact=domain,
+                n__gte=1,
+            )
+            .order_by("-started_at")
+            .first()
+        )
+    else:
+        snap = CrawlSnapshot.objects.order_by("-started_at").first()
     if snap is None:
-        return Response({"error": "no snapshot"}, status=404)
+        return Response(
+            {"error": "no snapshot", "domain": domain or None},
+            status=404,
+        )
     points = get_3d_points(snap)
     return Response({
         "snapshot_id": str(snap.id),
+        "snapshot_kind": snap.kind,
+        "snapshot_domain": snap.target_domain or "",
         "snapshot_date": snap.started_at.isoformat() if snap.started_at else "",
         "total": len(points),
         "points": points,

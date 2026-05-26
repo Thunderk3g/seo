@@ -166,6 +166,35 @@ def walk_competitor_task(
         max_pages=max_pages,
     )
     ok = sum(1 for p in pages if (p.status_code or 0) == 200)
+
+    # Chain follow-ups: find the just-created snapshot for this domain
+    # and kick off PSI enrichment + content-map refresh. Both are
+    # best-effort — failures here log but don't fail the crawl result.
+    follow_ups: dict[str, str] = {}
+    try:
+        from apps.crawler.models import CrawlSnapshot
+        snap = (
+            CrawlSnapshot.objects
+            .filter(kind="competitor", target_domain__iexact=domain)
+            .order_by("-started_at")
+            .first()
+        )
+        if snap is not None:
+            try:
+                psi_task = psi_enrich_snapshot_task.delay(str(snap.id))
+                follow_ups["psi_task"] = psi_task.id
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("psi follow-up enqueue failed: %s", exc)
+            try:
+                map_task = refresh_content_map_task.delay(
+                    competitor_domain=domain,
+                )
+                follow_ups["content_map_task"] = map_task.id
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("content-map follow-up enqueue failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("walk_competitor follow-up lookup failed: %s", exc)
+
     return {
         "ok": True,
         "domain": domain,
@@ -175,6 +204,7 @@ def walk_competitor_task(
         "ok_pages": ok,
         "max_depth": max_depth,
         "max_pages": max_pages,
+        "follow_ups": follow_ups,
     }
 
 
@@ -226,27 +256,148 @@ def walk_competitor_roster_task(
     name="seo_ai.refresh_content_map",
     bind=True,
     max_retries=0,
-    time_limit=30 * 60,
+    time_limit=2 * 60 * 60,  # 2h envelope — competitor refresh adds time
 )
-def refresh_content_map_task(self, *, snapshot_id: str = "") -> dict:
-    """Re-embed + re-project the latest Bajaj snapshot for the 3D map.
+def refresh_content_map_task(
+    self,
+    *,
+    snapshot_id: str = "",
+    include_competitors: bool = True,
+    competitor_domain: str = "",
+) -> dict:
+    """Re-embed + re-project snapshot(s) for the 3D content map.
 
-    Thin Celery wrapper around the ``refresh_content_map`` management
-    command. Scheduled to fire ~30 min after the daily Bajaj crawl so
-    fresh CrawlerPageResult rows land in PageEmbedding + UMAP coords
-    without manual intervention.
+    Defaults to refreshing the latest Bajaj snapshot AND every
+    competitor snapshot (one map per competitor). Pass
+    ``competitor_domain='hdfclife.com'`` to refresh just one.
+
+    Scheduled to fire ~30 min after the daily Bajaj crawl. Each
+    competitor's embeddings live under its own snapshot_id so per-
+    competitor content maps stay isolated.
     """
     from django.core.management import call_command
 
     args = []
     if snapshot_id:
         args.extend(["--snapshot", snapshot_id])
+    if competitor_domain:
+        args.extend(["--competitor-domain", competitor_domain])
+    elif include_competitors:
+        args.append("--include-competitors")
     try:
         call_command("refresh_content_map", *args)
-        return {"ok": True, "snapshot_id": snapshot_id or "latest"}
+        return {
+            "ok": True,
+            "snapshot_id": snapshot_id or "latest",
+            "competitor_domain": competitor_domain or None,
+            "include_competitors": include_competitors and not competitor_domain,
+        }
     except Exception as exc:  # noqa: BLE001
         logger.exception("refresh_content_map_task failed")
         return {"ok": False, "error": str(exc)}
+
+
+@shared_task(
+    name="seo_ai.psi_enrich_snapshot",
+    bind=True,
+    max_retries=0,
+    time_limit=2 * 60 * 60,
+)
+def psi_enrich_snapshot_task(
+    self,
+    snapshot_id: str,
+    *,
+    max_urls: int = 25,
+    strategies: tuple[str, ...] = ("mobile", "desktop"),
+) -> dict:
+    """Enrich every page in ``snapshot_id`` with Core Web Vitals via PSI.
+
+    Designed for the Scrapy-walked competitor flow which writes
+    structural data but skips CWV. Picks the top ``max_urls`` pages of
+    the snapshot (ordered by word_count desc — proxies "important"
+    pages) and calls PSI mobile + desktop for each, writing back to
+    CrawlerPageResult's mobile_* / desktop_* columns.
+
+    Best-effort: per-page PSI failures are logged and skipped; the task
+    never raises so it can be chained from walk_competitor_task without
+    breaking the crawl envelope.
+    """
+    from apps.crawler.models import CrawlerPageResult, CrawlSnapshot
+
+    from .adapters.cwv_psi import AdapterDisabledError, PSIAdapter
+
+    snap = CrawlSnapshot.objects.filter(id=snapshot_id).first()
+    if snap is None:
+        return {"ok": False, "error": "snapshot not found"}
+
+    try:
+        psi = PSIAdapter()
+    except AdapterDisabledError as exc:
+        logger.info("psi disabled: %s", exc)
+        return {"ok": False, "skipped": True, "reason": str(exc)}
+
+    pages = list(
+        CrawlerPageResult.objects.filter(
+            snapshot=snap, status_code="200",
+        )
+        .order_by("-word_count")[:max_urls]
+    )
+    enriched = errors = 0
+    for page in pages:
+        for strategy in strategies:
+            try:
+                record = psi.fetch(page.url, strategy=strategy)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "psi %s for %s failed: %s", strategy, page.url, exc,
+                )
+                errors += 1
+                continue
+            if record.error:
+                continue
+            prefix = "mobile_" if strategy == "mobile" else "desktop_"
+            for fld in (
+                "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+                "fcp_ms", "ttfb_ms", "tbt_ms", "si_ms",
+            ):
+                val = getattr(record, fld, None)
+                if val is not None:
+                    setattr(page, f"{prefix}{fld}", val)
+            for fld in ("lcp_category", "cls_category", "inp_category", "has_field_data"):
+                val = getattr(record, fld, None)
+                if val is not None:
+                    setattr(page, f"{prefix}{fld}", val)
+            # Legacy mirror columns (mobile-only)
+            if strategy == "mobile":
+                for fld in ("pagespeed_score", "lcp_ms", "cls", "inp_ms"):
+                    val = getattr(record, fld, None)
+                    if val is not None:
+                        setattr(page, fld, val)
+            enriched += 1
+        try:
+            page.save(update_fields=[
+                "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+                "mobile_pagespeed_score", "mobile_lcp_ms", "mobile_cls",
+                "mobile_inp_ms", "mobile_fcp_ms", "mobile_ttfb_ms",
+                "mobile_tbt_ms", "mobile_si_ms",
+                "mobile_lcp_category", "mobile_cls_category",
+                "mobile_inp_category", "mobile_has_field_data",
+                "desktop_pagespeed_score", "desktop_lcp_ms", "desktop_cls",
+                "desktop_inp_ms", "desktop_fcp_ms", "desktop_ttfb_ms",
+                "desktop_tbt_ms", "desktop_si_ms",
+                "desktop_lcp_category", "desktop_cls_category",
+                "desktop_inp_category", "desktop_has_field_data",
+            ])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("psi save for %s failed: %s", page.url, exc)
+    return {
+        "ok": True,
+        "snapshot_id": str(snap.id),
+        "domain": snap.target_domain,
+        "pages_attempted": len(pages),
+        "enriched_strategy_count": enriched,
+        "errors": errors,
+    }
 
 
 @shared_task(

@@ -542,7 +542,11 @@ SERP_API = {
     # SerpAPI call is billed the same whether we ask for 10 or 100 —
     # only the response payload grows. Defaults to 25 so each query
     # surfaces a broader competitor set in the report.
-    "results_per_query": int(os.environ.get("SERP_API_RESULTS_PER_QUERY", "25")),
+    # 30 by default so brands ranking around position 11-18 are still
+    # captured in a single SerpAPI call (Google's first page typically
+    # shows 10; positions 11-30 are page 2+). Cost is the same regardless
+    # — SerpAPI bills per search, not per result row.
+    "results_per_query": int(os.environ.get("SERP_API_RESULTS_PER_QUERY", "30")),
     "request_timeout_sec": int(
         os.environ.get("SERP_API_REQUEST_TIMEOUT_SEC", "30")
     ),

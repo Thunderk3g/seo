@@ -324,6 +324,10 @@ class CrawlerPageResult(models.Model):
     internal_links_json = models.JSONField(default=list, blank=True)
     external_links_json = models.JSONField(default=list, blank=True)
     images_json = models.JSONField(default=list, blank=True)
+    # videos: every <video> + YouTube/Vimeo <iframe> embed found on the
+    # page. Each entry: {src, kind (native|youtube|vimeo|other),
+    # poster, section, zone, width, height}.
+    videos_json = models.JSONField(default=list, blank=True)
 
     # ── Phase C.4 — Readability + spelling ────────────────────────
     flesch_score = models.FloatField(default=0.0)

@@ -84,6 +84,16 @@ export interface PageImage {
   loading: string;
 }
 
+export interface PageVideo {
+  src: string;
+  kind: 'native' | 'youtube' | 'vimeo' | 'wistia' | 'other';
+  poster: string;
+  section: string;
+  zone: string;
+  width: string;
+  height: string;
+}
+
 export interface CompetitorPageDetail {
   domain: string;
   url: string;
@@ -111,6 +121,7 @@ export interface CompetitorPageDetail {
   internal_links: PageLink[];
   external_links: PageLink[];
   images: PageImage[];
+  videos: PageVideo[];
   run_id: string;
   run_started_at: string | null;
 }
