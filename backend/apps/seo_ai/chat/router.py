@@ -30,7 +30,7 @@ from typing import Any, Iterator
 
 from ..llm import StreamChunk, get_provider
 from .system_prompt import SYSTEM_PROMPT
-from .tools import TOOL_HANDLERS, TOOL_SCHEMAS
+from .tools import CHAT_TOOL_SCHEMAS, TOOL_HANDLERS
 
 logger = logging.getLogger("seo.ai.chat.router")
 
@@ -131,7 +131,7 @@ class ChatRouter:
 
             for chunk in self.provider.stream_complete(
                 convo,
-                tools=TOOL_SCHEMAS,
+                tools=CHAT_TOOL_SCHEMAS,
                 tool_choice="auto",
             ):
                 if chunk.kind == "text":
