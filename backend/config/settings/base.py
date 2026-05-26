@@ -118,6 +118,12 @@ SEO_AI = {
     ),
     "max_findings_per_agent": int(os.environ.get("SEO_AI_MAX_FINDINGS_PER_AGENT", "20")),
     "budget_usd_per_run": float(os.environ.get("SEO_AI_BUDGET_USD_PER_RUN", "2.00")),
+    # competitor_dashboard cold-call (SEMrush + 500-page rival crawl) is
+    # 3–7 minutes; serve a cached payload for this many seconds before
+    # rebuilding. ?refresh=true on the view bypasses.
+    "competitor_dashboard_cache_ttl_sec": int(
+        os.environ.get("COMPETITOR_DASHBOARD_CACHE_TTL_SEC", str(7 * 24 * 60 * 60))
+    ),
 }
 
 LLM = {

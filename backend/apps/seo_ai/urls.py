@@ -10,6 +10,7 @@ from .views import (
     chat_stream,
     competitor_dashboard,
     competitor_changes,
+    competitor_crawls_list_view,
     competitor_detail_view,
     competitor_gap_detection,
     competitor_page_detail_view,
@@ -171,6 +172,15 @@ urlpatterns = [
         "competitor/history/",
         competitor_page_history,
         name="competitor-page-history",
+    ),
+    # Flat list of every competitor we've crawled (Phase G Scrapy walks).
+    # Must come BEFORE the <str:domain> catch-all below or Django will
+    # route /competitor/crawls/ into competitor_detail_view with
+    # domain="crawls".
+    path(
+        "competitor/crawls/",
+        competitor_crawls_list_view,
+        name="competitor-crawls-list",
     ),
     # Phase 2 — per-competitor landing + per-URL detail. Replaces the
     # inline DeepCrawlPanel "dropdown" view. URL segments are

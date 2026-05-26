@@ -29,6 +29,7 @@ import json
 import logging
 import re
 from dataclasses import asdict
+from pathlib import Path
 
 from django.http import StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -668,15 +669,38 @@ def sitemap_dashboard(_request: Request):
     )
 
 
+def _competitor_dashboard_cache_path(domain: str):
+    """File-cache location for the competitor_dashboard payload.
+
+    One JSON file per domain under settings.SEO_AI['data_dir'], inside a
+    dedicated _competitor_dashboard_cache/ subdir so it's easy to GC
+    independent of crawl outputs. Domain is slugified so colons / slashes
+    can't escape the cache root.
+    """
+    from django.conf import settings as _settings
+
+    safe = re.sub(r"[^a-z0-9._-]+", "_", (domain or "").strip().lower()) or "_"
+    cache_dir = Path(_settings.SEO_AI["data_dir"]) / "_competitor_dashboard_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{safe}.json"
+
+
 @api_view(["GET"])
 def competitor_dashboard(request: Request):
     """Competitor gap report for a domain — no LLM call, just the
     deterministic facts built by the same machinery the CompetitorAgent
-    uses. Heavy on first call (SEMrush + crawl); cached for 7 days
-    after that so subsequent loads are instant.
+    uses. Heavy on first call (SEMrush + 500-page rival crawl, 3-7 min);
+    cached to disk for SEO_AI['competitor_dashboard_cache_ttl_sec']
+    (default 7 days) so subsequent loads return in <100ms.
+
+    ``?refresh=true`` forces a rebuild even when cache is fresh.
     """
-    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    import time as _time
+
     from django.conf import settings as _settings
+
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    force_refresh = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
 
     if not _settings.SEMRUSH.get("api_key"):
         return Response(
@@ -687,35 +711,59 @@ def competitor_dashboard(request: Request):
             {"available": False, "error": "COMPETITOR_ENABLED=false"}
         )
 
+    # File-cache read-through. Stale or missing → fall through to rebuild.
+    cache_path = _competitor_dashboard_cache_path(domain)
+    ttl_sec = int(_settings.SEO_AI.get("competitor_dashboard_cache_ttl_sec", 7 * 86400))
+    if not force_refresh and cache_path.exists():
+        try:
+            age_sec = _time.time() - cache_path.stat().st_mtime
+            if age_sec < ttl_sec:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                cached["_cache"] = {
+                    "hit": True,
+                    "age_sec": int(age_sec),
+                    "ttl_sec": ttl_sec,
+                }
+                return Response(cached)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("competitor dashboard cache read failed: %s", exc)
+
     # Build a one-off SEORun-less context. CompetitorAgent.build_facts
     # only uses the run for logging system events; we side-step that
-    # by using a transient in-memory SEORun row (committed=False).
+    # by using a transient in-memory SEORun row.
     from .agents.competitor import CompetitorAgent
     from .models import SEORun
 
-    transient = SEORun(domain=domain, triggered_by="dashboard")
-    transient.id = None  # don't persist conversation logs for dashboard hits
-    # We need a saved SEORun for SEORunMessage FK; create + delete is
-    # cheaper than building a logging-shim.
-    transient.save()
+    transient: SEORun | None = None
     try:
+        transient = SEORun(domain=domain, triggered_by="dashboard")
+        transient.id = None
+        transient.save()
         agent = CompetitorAgent(run=transient, step_index_start=0)
         facts = agent.build_facts(domain=domain)
     except SemrushError as exc:
-        transient.delete()
+        if transient is not None and transient.pk:
+            transient.delete()
         return Response({"available": False, "error": str(exc)})
     except Exception as exc:  # noqa: BLE001 - surface to client
         logger.warning("competitor dashboard failed: %s", exc)
-        transient.delete()
+        if transient is not None and transient.pk:
+            transient.delete()
         return Response({"available": False, "error": str(exc)})
-    finally:
-        # Keep transient run as the audit log for this dashboard hit
-        # so users can replay; could be GC'd by a periodic job.
-        pass
+    # transient stays as audit log; periodic GC can prune later.
 
-    payload = facts.get("competitor", {})
+    payload = facts.get("competitor", {}) or {}
     payload["available"] = True
     payload["domain"] = domain
+
+    # Best-effort cache write. If write fails the response still returns;
+    # next request will just rebuild.
+    try:
+        cache_path.write_text(json.dumps(payload, default=str), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("competitor dashboard cache write failed: %s", exc)
+
+    payload["_cache"] = {"hit": False, "age_sec": 0, "ttl_sec": ttl_sec}
     return Response(payload)
 
 
@@ -1687,6 +1735,70 @@ def _full_page_from_result(p, snap) -> dict:
             snap.started_at.isoformat() if snap.started_at else None
         ),
     }
+
+
+@api_view(["GET"])
+def competitor_crawls_list_view(_request):
+    """List every competitor domain we've crawled via the Phase G Scrapy
+    walk — one row per ``target_domain``, the most-recent complete snapshot
+    with rows winning.
+
+    Returns the same per-domain summary shape that the click-through detail
+    page renders at the top of the list, so the frontend table can
+    populate KPI cells without a follow-up fetch per row. Click-through to
+    /competitors/<domain>/ continues to hit competitor_detail_view, which
+    sources from the same CrawlerPageResult rows.
+
+    Does NOT include the in-house Bajaj crawl (kind=BAJAJ) — this is a
+    competitor-only surface.
+    """
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    # Postgres `DISTINCT ON (target_domain)` returns the first row per
+    # group given the order-by, so ordering by target_domain then
+    # -started_at gives us the freshest snapshot per domain.
+    snapshots = list(
+        CrawlSnapshot.objects
+        .filter(
+            kind=CrawlSnapshot.Kind.COMPETITOR,
+            status=CrawlSnapshot.Status.COMPLETE,
+            pages_ok__gt=0,
+        )
+        .order_by("target_domain", "-started_at")
+        .distinct("target_domain")
+    )
+
+    items: list[dict] = []
+    for snap in snapshots:
+        if not (snap.target_domain or "").strip():
+            continue
+        pages = list(CrawlerPageResult.objects.filter(snapshot=snap))
+        if not pages:
+            continue
+        profile = _profile_from_page_results(pages)
+        items.append({
+            "domain": snap.target_domain,
+            "run_id": str(snap.id),
+            "run_started_at": (
+                snap.started_at.isoformat() if snap.started_at else None
+            ),
+            "pages_attempted": snap.pages_attempted,
+            "pages_ok": snap.pages_ok,
+            "profile_summary": profile,
+        })
+
+    # Sort by run_started_at desc so the freshest crawls float to the top
+    # of the UI list regardless of alphabetic domain order.
+    items.sort(
+        key=lambda r: r.get("run_started_at") or "",
+        reverse=True,
+    )
+
+    return Response({
+        "available": True,
+        "count": len(items),
+        "items": items,
+    })
 
 
 @api_view(["GET"])

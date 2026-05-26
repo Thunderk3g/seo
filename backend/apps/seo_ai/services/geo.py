@@ -265,7 +265,10 @@ def fetch_social_mentions(brand: str, *, per_site: int = 10) -> SocialMentions:
         entries = [
             {
                 "title": (row.title or "")[:200],
-                "link": row.link or "",
+                # OrganicRow's URL field is ``url``, not ``link`` — using
+                # ``link`` here was an AttributeError that 500-ed the
+                # entire /api/v1/seo/geo/score/?deep=true endpoint.
+                "link": row.url or "",
                 "snippet": (row.snippet or "")[:300],
             }
             for row in (sr.organic or [])[:per_site]
@@ -322,17 +325,20 @@ def fetch_youtube_presence(brand: str, *, num: int = 10) -> YouTubePresence:
     videos = [
         {
             "title": (r.title or "")[:200],
-            "link": r.link or "",
+            # OrganicRow exposes the URL as ``.url``, not ``.link`` —
+            # second occurrence of the same AttributeError as
+            # fetch_social_mentions above.
+            "link": r.url or "",
             "snippet": (r.snippet or "")[:300],
         }
         for r in (sr.organic or [])[:num]
-        if "/watch?" in (r.link or "") or "youtube.com/" in (r.link or "")
+        if "/watch?" in (r.url or "") or "youtube.com/" in (r.url or "")
     ]
     out.video_count = len(videos)
     out.videos = videos
     # Channel URL — first /channel/ or /@handle/ URL in results.
     for r in (sr.organic or []):
-        link = r.link or ""
+        link = r.url or ""
         if "/channel/" in link or "/@" in link:
             out.channel_url = link
             break
