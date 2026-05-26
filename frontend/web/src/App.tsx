@@ -9,6 +9,7 @@ import SemrushPage from './pages/SemrushPage';
 import AdobePage from './pages/AdobePage';
 import AdobeSeoJoinPage from './pages/AdobeSeoJoinPage';
 import BrandMonitorPage from './pages/BrandMonitorPage';
+import MetaAdsPage from './pages/MetaAdsPage';
 import SitemapContentPage from './pages/SitemapContentPage';
 import CompetitorsPage from './pages/CompetitorsPage';
 // Embedded Crawler Engine (v2) pages — see src/crawler/* and crawler-engine/.
@@ -54,6 +55,10 @@ export default function App() {
             <Route path="/adobe" component={AdobePage} />
             <Route path="/adobe/seo-join" component={AdobeSeoJoinPage} />
             <Route path="/brand-monitor" component={BrandMonitorPage} />
+            {/* Our own Bajaj Life Meta ads — isolated from competitor
+                sections so the ad-library detail page for any
+                competitor never bleeds Bajaj ads into a rival's slot. */}
+            <Route path="/meta-ads" component={MetaAdsPage} />
             <Route path="/sitemap" component={SitemapContentPage} />
             <Route path="/competitors" component={CompetitorsPage} />
             {/* Phase 2 — per-competitor + per-URL detail. Replaces

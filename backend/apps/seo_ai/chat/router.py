@@ -48,6 +48,35 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+# Per-tool-result character cap fed back to Groq. ~4000 chars ≈ ~1000
+# tokens which keeps a 5-tool-round turn comfortably under the
+# 6-8k TPM bucket on Groq's free tier. Tool results that exceed the
+# cap get serialised, then truncated with a trailing marker so the
+# model knows it was cut off and can re-ask with narrower params.
+_TOOL_RESULT_MAX_CHARS = 4000
+
+
+def _truncate_tool_result(result: Any) -> str:
+    """Stringify a tool result and cap it at ``_TOOL_RESULT_MAX_CHARS``.
+
+    Large data payloads (full GSC summary, brand-mention feed, etc.)
+    were blowing past Groq's TPM bucket and 413-ing the chat turn. We
+    keep the head of the payload and append an explicit "truncated"
+    marker so the model can decide to call the tool again with tighter
+    parameters (e.g. ``limit=20`` instead of the default 200).
+    """
+    raw = json.dumps(result, default=str)
+    if len(raw) <= _TOOL_RESULT_MAX_CHARS:
+        return raw
+    cut = raw[:_TOOL_RESULT_MAX_CHARS]
+    return (
+        cut
+        + f'\n\n…(result truncated at {_TOOL_RESULT_MAX_CHARS} chars of '
+          f'{len(raw)}; call the tool again with a smaller limit / '
+          f'tighter filter if you need the rest)'
+    )
+
+
 class ChatRouter:
     """Stateless per-turn handler. New instance per request."""
 
@@ -174,11 +203,19 @@ class ChatRouter:
 
                 # Feed the result back as a tool message for the next
                 # round. JSON-stringify per the OpenAI tool protocol.
+                # IMPORTANT: tool results from get_gsc_summary /
+                # get_competitor_gap / etc. can be 10-50 KB which puts
+                # the next round's prompt past Groq's free-tier 6-8k
+                # TPM bucket and triggers a 413. Truncate every tool
+                # payload to TOOL_RESULT_MAX_CHARS before appending —
+                # the model gets the headline numbers; if it needs the
+                # full payload it can call the tool again with a tighter
+                # query.
                 convo.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),
-                        "content": json.dumps(result, default=str),
+                        "content": _truncate_tool_result(result),
                     }
                 )
 

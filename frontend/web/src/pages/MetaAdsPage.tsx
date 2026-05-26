@@ -1,61 +1,56 @@
 /**
- * CompetitorMetaAdsSection — Meta Ad Library widget for one competitor.
+ * MetaAdsPage — Bajaj Life Insurance's OWN Meta ad library.
  *
- * Rendered inside CompetitorDetailPage below the "Sample pages" section.
- * Pulls from /api/v1/seo/meta-ads/?competitor=<name>. Backend caches
- * per-competitor responses on disk for 24h so re-renders are free.
+ * Separate surface from competitor pages. Bajaj ads pulled here in
+ * isolation so they don't get mixed into kotaklife.com / hdfclife.com /
+ * etc. detail pages (which used to happen because the backend's
+ * meta_ads_dashboard view prepends "Bajaj Life Insurance" when
+ * include_ours=true).
  *
- * Styling: clean Bajaj blue + white, premium card layout, no anchor
- * underlines anywhere, soft elevation on hover. Lives under .bajaj-ui
- * so shadcn primitives + Tailwind brand-* tokens apply.
+ * Calls /api/v1/seo/meta-ads/?competitor=Bajaj+Life+Insurance&include_ours=false
+ * — same backend, but explicitly asks for ONE entity, no Bajaj
+ * auto-prepend. Reuses the existing card / KPI / chip components for
+ * styling consistency.
  */
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   useMetaAds,
   type CompetitorAdsSummary,
   type MetaAd,
-} from '../../api/hooks/useMetaAds';
-import { Button } from '../ui/button';
+} from '../api/hooks/useMetaAds';
+import { Button } from '../components/ui/button';
 
-interface Props {
-  /** Competitor lookup term — domain or company name. */
-  competitor: string;
-  displayName?: string;
-}
+const OUR_BRAND = 'Bajaj Life Insurance';
+const COUNT_OPTIONS = [10, 25, 50, 100];
 
-export default function CompetitorMetaAdsSection({
-  competitor,
-  displayName,
-}: Props) {
-  const [count, setCount] = useState(25);
-  // includeOurs:false explicitly — competitor sections must NOT render
-  // Bajaj's own ads underneath a competitor's name (the backend
-  // defaulted to prepending Bajaj when include_ours wasn't set, which
-  // made kotaklife.com / hdfclife.com / etc. show Bajaj ads as their
-  // first result). Our own ads live on /meta-ads.
+export default function MetaAdsPage() {
+  const [count, setCount] = useState(50);
   const { data, isLoading, isError, error, refetch, isFetching } = useMetaAds(
-    [competitor],
+    [OUR_BRAND],
     { count, country: 'IN', includeOurs: false },
   );
 
-  // Belt-and-braces: filter the returned competitors to ONLY the one
-  // we asked for. Protects against any future backend change that
-  // re-introduces Bajaj into the response.
-  const summary = (data?.competitors ?? []).find(
-    (c) => (c.competitor || '').toLowerCase() === competitor.toLowerCase(),
-  ) ?? data?.competitors?.[0];
+  // Same belt-and-braces filter as the competitor section uses — if
+  // any future change re-introduces Bajaj into a non-Bajaj request, at
+  // least pick the right entry here too.
+  const summary =
+    (data?.competitors ?? []).find(
+      (c) => (c.competitor || '').toLowerCase() === OUR_BRAND.toLowerCase(),
+    ) ?? data?.competitors?.[0];
 
   return (
-    <section className="mt-10">
-      <SectionHeader
-        title="Meta Ad Library"
-        subtitle={
-          <>
-            Active and recent Facebook + Instagram ads for{' '}
-            <span className="font-medium text-brand-text">
-              {displayName || competitor}
-            </span>{' '}
-            · IN
+    <div className="bajaj-ui p-6">
+      <header className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <div className="text-xs text-brand-text-3">Data Sources / Meta Ads</div>
+          <h1 className="mt-1 text-2xl font-semibold text-brand-text">
+            Our Meta Ads
+          </h1>
+          <p className="mt-1 text-sm text-brand-text-3">
+            Live Facebook + Instagram ads under{' '}
+            <span className="font-medium text-brand-text">{OUR_BRAND}</span> in
+            the Indian Ad Library. Separate from each competitor's section
+            so the comparison stays clean.
             {data?.refreshed_at && (
               <>
                 {' '}· refreshed{' '}
@@ -67,35 +62,36 @@ export default function CompetitorMetaAdsSection({
                 })}
               </>
             )}
-          </>
-        }
-        controls={
-          <>
-            <select
-              className="h-8 rounded-md border border-brand-border bg-white px-3 text-xs font-medium text-brand-text outline-none transition-colors hover:border-brand-border-2 focus:border-brand-accent"
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
-            >
-              <option value={10}>Top 10</option>
-              <option value={25}>Top 25</option>
-              <option value={50}>Top 50</option>
-            </select>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => refetch()}
-              disabled={isFetching}
-              className="h-8"
-            >
-              {isFetching ? 'Refreshing…' : 'Refresh'}
-            </Button>
-          </>
-        }
-      />
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            className="h-8 rounded-md border border-brand-border bg-white px-3 text-xs font-medium text-brand-text outline-none transition-colors hover:border-brand-border-2 focus:border-brand-accent"
+            value={count}
+            onChange={(e) => setCount(Number(e.target.value))}
+          >
+            {COUNT_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                Top {n}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="h-8"
+          >
+            {isFetching ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </div>
+      </header>
 
       {isLoading && (
         <EmptyState>
-          Fetching Meta ads via Apify… first run may take ~30–60 seconds.
+          Fetching Bajaj Life ads via Apify… first run may take ~30–60
+          seconds.
         </EmptyState>
       )}
 
@@ -113,11 +109,7 @@ export default function CompetitorMetaAdsSection({
               <code className="rounded bg-brand-surface-2 px-1.5 py-0.5 text-[11px]">
                 APIFY_API_TOKEN
               </code>{' '}
-              to{' '}
-              <code className="rounded bg-brand-surface-2 px-1.5 py-0.5 text-[11px]">
-                .env
-              </code>{' '}
-              on the backend and reload.
+              to the backend <code>.env</code> and reload.
             </>
           ) : (
             <>The source could not be reached: {data.error}</>
@@ -127,45 +119,19 @@ export default function CompetitorMetaAdsSection({
 
       {summary?.error && (
         <EmptyState tone="warning">
-          Could not pull ads for this competitor: {summary.error}
+          Could not pull Bajaj ads: {summary.error}
         </EmptyState>
       )}
 
       {summary && !summary.error && summary.total_ads === 0 && (
         <EmptyState>
-          No active ads found for &ldquo;{competitor}&rdquo; in the Indian Ad
-          Library. Try the Refresh button or widen the count.
+          No active Bajaj ads found in the Indian Ad Library window.
+          {' '}This is unusual — try the Refresh button or check that the
+          Apify actor is configured with the right country.
         </EmptyState>
       )}
 
       {summary && summary.total_ads > 0 && <Body summary={summary} />}
-    </section>
-  );
-}
-
-// ── Section chrome ─────────────────────────────────────────────────────
-
-function SectionHeader({
-  title,
-  subtitle,
-  controls,
-}: {
-  title: string;
-  subtitle: React.ReactNode;
-  controls: React.ReactNode;
-}) {
-  return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3 border-b border-brand-border pb-3">
-      <div className="flex items-center gap-3">
-        <span className="block h-6 w-1 rounded-full bg-brand-accent" />
-        <div>
-          <h2 className="text-base font-semibold tracking-tight text-brand-text">
-            {title}
-          </h2>
-          <div className="mt-0.5 text-[12px] text-brand-text-3">{subtitle}</div>
-        </div>
-      </div>
-      <div className="flex items-center gap-2">{controls}</div>
     </div>
   );
 }
@@ -181,16 +147,14 @@ function EmptyState({
     tone === 'error'
       ? 'border-severity-error/40 bg-severity-error-soft text-severity-error'
       : tone === 'warning'
-      ? 'border-severity-warning/40 bg-severity-warning-soft text-brand-text'
-      : 'border-brand-border bg-white text-brand-text-3';
+        ? 'border-severity-warning/40 bg-severity-warning-soft text-brand-text'
+        : 'border-brand-border bg-white text-brand-text-3';
   return (
     <div className={`rounded-lg border px-5 py-6 text-sm ${cls}`}>
       {children}
     </div>
   );
 }
-
-// ── Body — KPI row + chip panels + ad gallery ──────────────────────────
 
 function Body({ summary }: { summary: CompetitorAdsSummary }) {
   return (
@@ -202,8 +166,6 @@ function Body({ summary }: { summary: CompetitorAdsSummary }) {
   );
 }
 
-// ── KPI row ────────────────────────────────────────────────────────────
-
 function KpiRow({ summary }: { summary: CompetitorAdsSummary }) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -213,11 +175,7 @@ function KpiRow({ summary }: { summary: CompetitorAdsSummary }) {
         label="New · 7 days"
         value={summary.new_ads_last_7d.toLocaleString()}
       />
-      <KpiCell
-        label="Facebook page"
-        value={summary.page_name || '—'}
-        truncate
-      />
+      <KpiCell label="Page" value={summary.page_name || '—'} truncate />
       <KpiCell
         label="Top CTA"
         value={summary.top_ctas?.[0]?.cta || '—'}
@@ -253,8 +211,6 @@ function KpiCell({
     </div>
   );
 }
-
-// ── Chips: themes / landing domains / CTAs ─────────────────────────────
 
 function ChipsRow({ summary }: { summary: CompetitorAdsSummary }) {
   return (
@@ -323,8 +279,6 @@ function ChipPanel({
   );
 }
 
-// ── Ad gallery ─────────────────────────────────────────────────────────
-
 function AdGallery({ ads }: { ads: MetaAd[] }) {
   return (
     <div>
@@ -346,28 +300,22 @@ function AdGallery({ ads }: { ads: MetaAd[] }) {
 function AdCard({ ad }: { ad: MetaAd }) {
   const card = ad.cards?.[0];
   const img = card?.image_url || ad.page_profile_picture_url;
-  const dateRange = useMemo(() => {
-    if (ad.start_date_iso && ad.end_date_iso) {
-      return `${ad.start_date_iso} → ${ad.end_date_iso}`;
-    }
-    if (ad.start_date_iso) {
-      return ad.is_active
-        ? `Running since ${ad.start_date_iso}`
-        : `From ${ad.start_date_iso}`;
-    }
-    return ad.is_active ? 'Currently active' : '';
-  }, [ad.start_date_iso, ad.end_date_iso, ad.is_active]);
-
-  // Each ad card is itself a click target — opens the Meta Ad Library
-  // detail page in a new tab, which is the canonical "view this ad"
-  // surface and lets the operator click through to the live post.
+  const dateRange =
+    ad.start_date_iso && ad.end_date_iso
+      ? `${ad.start_date_iso} → ${ad.end_date_iso}`
+      : ad.start_date_iso
+        ? ad.is_active
+          ? `Running since ${ad.start_date_iso}`
+          : `From ${ad.start_date_iso}`
+        : ad.is_active
+          ? 'Currently active'
+          : '';
   const detailHref = ad.ad_archive_id
     ? `https://www.facebook.com/ads/library/?id=${encodeURIComponent(ad.ad_archive_id)}`
     : null;
 
   const cardBody = (
     <div className="group flex h-full flex-col overflow-hidden rounded-xl border border-brand-border bg-white transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-accent hover:shadow-[0_10px_24px_-12px_rgba(0,114,206,0.25)]">
-      {/* Image */}
       <div className="relative aspect-[16/10] w-full overflow-hidden bg-brand-surface-2">
         {img ? (
           <img
@@ -391,10 +339,7 @@ function AdCard({ ad }: { ad: MetaAd }) {
           </span>
         )}
       </div>
-
-      {/* Body */}
       <div className="flex flex-1 flex-col gap-2.5 px-4 py-3">
-        {/* Header: page + date */}
         <div className="flex items-center gap-2">
           {ad.page_profile_picture_url && (
             <img
@@ -416,22 +361,16 @@ function AdCard({ ad }: { ad: MetaAd }) {
             </div>
           </div>
         </div>
-
-        {/* Headline */}
         {card?.title && (
           <div className="line-clamp-2 text-sm font-semibold leading-snug text-brand-text">
             {card.title}
           </div>
         )}
-
-        {/* Body */}
         {card?.body && (
           <p className="line-clamp-3 text-[12.5px] leading-snug text-brand-text-2">
             {card.body}
           </p>
         )}
-
-        {/* Landing URL */}
         {ad.primary_link_url && ad.primary_link_url.startsWith('http') && (
           <div
             className="truncate rounded-md bg-brand-surface-2 px-2 py-1 font-mono text-[10.5px] text-brand-text-3"
@@ -440,18 +379,23 @@ function AdCard({ ad }: { ad: MetaAd }) {
             {prettyUrl(ad.primary_link_url)}
           </div>
         )}
-
-        {/* Spacer pushes platform chips to the bottom */}
         <div className="flex-1" />
-
-        {/* Footer chips */}
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
           {ad.publisher_platforms?.map((p) => (
-            <PlatformChip
+            <span
               key={p}
-              platform={p}
-              adArchiveId={ad.ad_archive_id}
-            />
+              className="inline-flex items-center rounded-full border border-brand-border bg-white px-2 py-0.5 text-[10px] font-medium text-brand-text-2"
+            >
+              {p === 'FACEBOOK'
+                ? 'Facebook'
+                : p === 'INSTAGRAM'
+                  ? 'Instagram'
+                  : p === 'MESSENGER'
+                    ? 'Messenger'
+                    : p === 'AUDIENCE_NETWORK'
+                      ? 'Audience Net.'
+                      : p}
+            </span>
           ))}
           {ad.cta_text && (
             <span className="inline-flex items-center rounded-full bg-brand-accent px-2 py-0.5 text-[10px] font-semibold text-white">
@@ -476,48 +420,6 @@ function AdCard({ ad }: { ad: MetaAd }) {
     </a>
   );
 }
-
-// ── Platform chip — clickable, no underline ────────────────────────────
-
-const PLATFORM_LABELS: Record<string, string> = {
-  FACEBOOK: 'Facebook',
-  INSTAGRAM: 'Instagram',
-  MESSENGER: 'Messenger',
-  AUDIENCE_NETWORK: 'Audience Net.',
-  THREADS: 'Threads',
-  OCULUS: 'Oculus',
-  WHATSAPP: 'WhatsApp',
-};
-
-function PlatformChip({
-  platform,
-  adArchiveId,
-}: {
-  platform: string;
-  adArchiveId: string;
-}) {
-  const label = PLATFORM_LABELS[platform] || platform;
-  const href = adArchiveId
-    ? `https://www.facebook.com/ads/library/?id=${encodeURIComponent(adArchiveId)}`
-    : null;
-  const baseCls =
-    'inline-flex items-center rounded-full border border-brand-border bg-white px-2 py-0.5 text-[10px] font-medium text-brand-text-2';
-  if (!href) return <span className={baseCls}>{label}</span>;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => e.stopPropagation()}
-      title={`Open ${label} ad in Meta Ad Library`}
-      className={`${baseCls} no-underline transition-colors hover:border-brand-accent hover:bg-brand-accent-soft hover:text-brand-accent`}
-    >
-      {label}
-    </a>
-  );
-}
-
-// ── helpers ────────────────────────────────────────────────────────────
 
 function prettyUrl(url: string): string {
   try {

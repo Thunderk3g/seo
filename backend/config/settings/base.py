@@ -145,15 +145,17 @@ LLM = {
         "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "max_tokens": int(os.environ.get("GROQ_MAX_TOKENS", "4096")),
         "temperature": float(os.environ.get("GROQ_TEMPERATURE", "0.2")),
-        # 413 fallback chain. When the primary model returns
-        # "request too large" (TPM-per-key bucket is too small for
-        # this prompt), the provider transparently retries with the
-        # next model in this list — ordered smartest → highest-TPM.
-        # llama-3.3-70b-versatile ≈ 12k TPM, llama-3.1-8b-instant ≈ 30k.
-        # Comma-separated. Empty = no fallback (fail-fast on 413).
+        # 413 fallback chain — GPT-family only by default. Per operator
+        # direction: when the primary model 413s, downshift to the
+        # smaller GPT model rather than swapping over to Llama (which
+        # changes voice / style and has even smaller TPM buckets on
+        # free tier — landed us in an 8b-instant 6k-TPM trap on the
+        # chat assistant). The real second-line defence is the chat
+        # router's tool-result truncation, NOT this list.
+        # Comma-separated. Empty = no model fallback at all.
         "fallback_models": os.environ.get(
             "GROQ_FALLBACK_MODELS",
-            "llama-3.3-70b-versatile,llama-3.1-8b-instant",
+            "openai/gpt-oss-20b",
         ),
     },
     # TODO(prod-cutover): OpenAI + Anthropic provider config sections.
