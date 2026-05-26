@@ -147,7 +147,19 @@ def overview(request: Request):
 
 @api_view(["GET"])
 def gsc_dashboard(request: Request):
-    """Full GSC dashboard payload — queries, pages, daily series, summary."""
+    """Full GSC dashboard payload — every CSV under backend/data/gsc/
+    surfaced for the seven-tab UI.
+
+    Strictly file-backed. Never issues a live Search Console API call.
+    Refreshing the underlying CSVs is ``backend/scripts/gsc_pull.py``'s
+    job — this endpoint just renders what is on disk. Safe to call
+    even when operator GSC OAuth access is temporarily revoked.
+
+    Query params:
+      * ``limit`` (default 200) — top-N row cap for the big-dim slices
+        (top_queries, query_country, query_device, page_country, etc.)
+        so the payload stays under ~1 MB even with the full pull.
+    """
     sample = int(request.query_params.get("limit") or 200)
     adapter = GSCCSVAdapter()
     try:
@@ -155,11 +167,107 @@ def gsc_dashboard(request: Request):
     except Exception as exc:  # noqa: BLE001 - render empty state
         logger.warning("gsc dashboard failed: %s", exc)
         return Response({"available": False, "error": str(exc)})
+
+    # Daily series for the headline chart. The dedicated overview helper
+    # caps to the last 90 days; we additionally expose the full 480-day
+    # ``daily_full`` so the Overview tab can show a longer trend.
     daily = read_daily_series(adapter)
+    daily_full = [asdict(r) for r in adapter.daily()]
+
+    # ── Segment slices ───────────────────────────────────────────────
+    # Each big-dim file is sorted by clicks DESC by the upstream pull,
+    # so the first ``limit`` rows are the most-impactful. Daily-cross
+    # files are sorted by date and capped at the most recent window
+    # to keep the geo / device trend lines lightweight.
+    countries = [asdict(r) for r in adapter.countries(limit=sample)]
+    devices = [asdict(r) for r in adapter.devices()]
+    search_appearances = [asdict(r) for r in adapter.search_appearances()]
+
+    query_country = [asdict(r) for r in adapter.query_country(limit=sample)]
+    query_device = [asdict(r) for r in adapter.query_device(limit=sample)]
+    page_country = [asdict(r) for r in adapter.page_country(limit=sample)]
+    page_device = [asdict(r) for r in adapter.page_device(limit=sample)]
+
+    # Daily geo / device — last 90 days (3 months of trend is plenty
+    # for what the UI charts can render). Returns one row per (date,
+    # country|device) pair.
+    daily_country_window = 90 * 50  # ~50 countries × 90 days max
+    daily_device_window = 90 * 4    # 3-4 devices × 90 days
+    date_country = [
+        asdict(r) for r in adapter.date_country(limit=daily_country_window)
+    ]
+    date_device = [
+        asdict(r) for r in adapter.date_device(limit=daily_device_window)
+    ]
+
+    # ── Branded vs unbranded ─────────────────────────────────────────
+    branded_split = adapter.branded_split(sample_size=sample)
+    branded_payload = {
+        "branded_queries": branded_split.branded_queries,
+        "unbranded_queries": branded_split.unbranded_queries,
+        "branded_clicks": branded_split.branded_clicks,
+        "unbranded_clicks": branded_split.unbranded_clicks,
+        "branded_impressions": branded_split.branded_impressions,
+        "unbranded_impressions": branded_split.unbranded_impressions,
+        "branded_avg_position": branded_split.branded_avg_position,
+        "unbranded_avg_position": branded_split.unbranded_avg_position,
+        "branded_ratio_clicks": branded_split.branded_ratio_clicks,
+        "branded_ratio_queries": branded_split.branded_ratio_queries,
+        "tokens": branded_split.tokens,
+        "top_unbranded_queries": [
+            asdict(q) for q in branded_split.top_unbranded_queries
+        ],
+    }
+
+    # ── Image search (real data for Bajaj — "bajaj life logo" pos 5.8) ──
+    image_payload = {
+        "queries": [asdict(r) for r in adapter.image_queries(limit=sample)],
+        "pages": [asdict(r) for r in adapter.image_pages(limit=sample)],
+        "countries": [asdict(r) for r in adapter.image_countries(limit=sample)],
+        "devices": [asdict(r) for r in adapter.image_devices()],
+        "daily": [asdict(r) for r in adapter.image_daily(limit=90)],
+    }
+
+    # ── Other surfaces (mostly empty for Bajaj — still exposed) ──────
+    other_surfaces = {
+        "news_daily": [asdict(r) for r in adapter.news_daily()],
+        "discover_daily": [asdict(r) for r in adapter.discover_daily()],
+        "video_daily": [asdict(r) for r in adapter.video_daily()],
+        "google_news_daily": [asdict(r) for r in adapter.google_news_daily()],
+    }
+
+    # ── Indexation (manual UI export) ────────────────────────────────
+    # The Search Console API can't produce the full Pages / Coverage
+    # report at the same fidelity; the manual CSV export under
+    # coverage/_gsc_export_* is the source of truth for issues like
+    # "Crawled - currently not indexed".
+    idx = adapter.indexation_report()
+    if idx is not None:
+        indexation = {
+            "available": True,
+            "export_dir": idx.export_dir,
+            "critical_issues": [asdict(i) for i in idx.critical_issues],
+            "noncritical_issues": [asdict(i) for i in idx.noncritical_issues],
+            "chart": [asdict(p) for p in idx.chart],
+            "latest_indexed": idx.latest_indexed,
+            "latest_not_indexed": idx.latest_not_indexed,
+            "latest_impressions": idx.latest_impressions,
+            "metadata": idx.metadata,
+        }
+    else:
+        indexation = {"available": False}
+
+    # ── Sitemaps + sites verification ───────────────────────────────
+    sitemaps = [asdict(s) for s in adapter.sitemaps()]
+    available_files = adapter.available_files()
+
     return Response(
         {
             "available": True,
             "snapshot_path": summary.snapshot_path,
+            # Strictly file-backed — surfaced so the UI can show
+            # "Last pulled: <mtime>" + a banner when stale.
+            "live_api_calls": False,
             "totals": {
                 "queries": summary.total_queries,
                 "pages": summary.total_pages,
@@ -177,6 +285,22 @@ def gsc_dashboard(request: Request):
                 asdict(q) for q in summary.high_impression_low_click_queries
             ],
             "daily_series": daily,
+            "daily_full": daily_full,
+            "branded_split": branded_payload,
+            "countries": countries,
+            "devices": devices,
+            "search_appearances": search_appearances,
+            "query_country": query_country,
+            "query_device": query_device,
+            "page_country": page_country,
+            "page_device": page_device,
+            "date_country": date_country,
+            "date_device": date_device,
+            "image": image_payload,
+            "other_surfaces": other_surfaces,
+            "indexation": indexation,
+            "sitemaps": sitemaps,
+            "available_files": available_files,
         }
     )
 

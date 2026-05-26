@@ -170,10 +170,129 @@ export interface SeoOverview {
 // Source-data dashboards
 // ─────────────────────────────────────────────────────────────────────
 
+export interface GSCCountryRow {
+  country: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+}
+
+export interface GSCDeviceRow {
+  device: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+}
+
+export interface GSCSearchAppearanceRow {
+  search_appearance: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+}
+
+export interface GSCQueryCountryRow extends GSCQueryRow {
+  country: string;
+}
+
+export interface GSCQueryDeviceRow extends GSCQueryRow {
+  device: string;
+}
+
+export interface GSCPageCountryRow extends GSCPageRow {
+  country: string;
+}
+
+export interface GSCPageDeviceRow extends GSCPageRow {
+  device: string;
+}
+
+export interface GSCDateCountryRow extends GSCDailyRow {
+  country: string;
+}
+
+export interface GSCDateDeviceRow extends GSCDailyRow {
+  device: string;
+}
+
+export interface GSCBrandedSplit {
+  branded_queries: number;
+  unbranded_queries: number;
+  branded_clicks: number;
+  unbranded_clicks: number;
+  branded_impressions: number;
+  unbranded_impressions: number;
+  branded_avg_position: number;
+  unbranded_avg_position: number;
+  branded_ratio_clicks: number;
+  branded_ratio_queries: number;
+  tokens: string[];
+  top_unbranded_queries: GSCQueryRow[];
+}
+
+export interface GSCImagePayload {
+  queries: GSCQueryRow[];
+  pages: GSCPageRow[];
+  countries: GSCCountryRow[];
+  devices: GSCDeviceRow[];
+  daily: GSCDailyRow[];
+}
+
+export interface GSCOtherSurfaces {
+  news_daily: GSCDailyRow[];
+  discover_daily: GSCDailyRow[];
+  video_daily: GSCDailyRow[];
+  google_news_daily: GSCDailyRow[];
+}
+
+export interface GSCIndexationIssue {
+  reason: string;
+  source: string;
+  validation: string;
+  pages: number;
+}
+
+export interface GSCIndexationChartPoint {
+  date: string;
+  not_indexed: number;
+  indexed: number;
+  impressions: number;
+}
+
+export interface GSCIndexationPayload {
+  available: boolean;
+  export_dir?: string;
+  critical_issues?: GSCIndexationIssue[];
+  noncritical_issues?: GSCIndexationIssue[];
+  chart?: GSCIndexationChartPoint[];
+  latest_indexed?: number;
+  latest_not_indexed?: number;
+  latest_impressions?: number;
+  metadata?: Record<string, string>;
+}
+
+export interface GSCSitemapRow {
+  path: string;
+  last_submitted: string;
+  last_downloaded: string;
+  is_pending: boolean;
+  is_sitemaps_index: boolean;
+  sitemap_type: string;
+  warnings: number;
+  errors: number;
+  contents: Array<{ type?: string; submitted?: string; indexed?: string }>;
+}
+
 export interface GSCDashboard {
   available: boolean;
   error?: string;
   snapshot_path?: string;
+  // True when the payload was derived from a live API call (always
+  // false right now — backend reads CSVs only).
+  live_api_calls?: boolean;
   totals?: {
     queries: number;
     pages: number;
@@ -187,6 +306,22 @@ export interface GSCDashboard {
   underperforming_queries?: GSCQueryRow[];
   high_impression_low_click_queries?: GSCQueryRow[];
   daily_series?: GSCDailyRow[];
+  daily_full?: GSCDailyRow[];
+  branded_split?: GSCBrandedSplit;
+  countries?: GSCCountryRow[];
+  devices?: GSCDeviceRow[];
+  search_appearances?: GSCSearchAppearanceRow[];
+  query_country?: GSCQueryCountryRow[];
+  query_device?: GSCQueryDeviceRow[];
+  page_country?: GSCPageCountryRow[];
+  page_device?: GSCPageDeviceRow[];
+  date_country?: GSCDateCountryRow[];
+  date_device?: GSCDateDeviceRow[];
+  image?: GSCImagePayload;
+  other_surfaces?: GSCOtherSurfaces;
+  indexation?: GSCIndexationPayload;
+  sitemaps?: GSCSitemapRow[];
+  available_files?: Record<string, number>;
 }
 
 export interface SemrushOverviewRow {
