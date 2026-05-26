@@ -423,7 +423,7 @@ class GeoScore:
 
 def compute_geo_score(
     *,
-    brand: str = "Bajaj Allianz Life Insurance",
+    brand: str = "Bajaj Life Insurance",
     snapshot_id: str | None = None,
     deep: bool = True,
 ) -> GeoScore:

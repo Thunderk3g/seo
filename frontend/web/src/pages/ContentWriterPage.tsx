@@ -70,9 +70,9 @@ export default function ContentWriterPage() {
           Content Writer
         </h1>
         <p className="mt-1 text-sm text-brand-text-3">
-          Generate Bajaj Allianz page rewrites grounded in our crawl + competitor
-          evidence. Every generated string cites a real source — unbacked lines
-          are dropped before you see them.
+          Generate Bajaj Life Insurance page rewrites grounded in our crawl
+          + competitor evidence. Every generated string cites a real source
+          — unbacked lines are dropped before you see them.
         </p>
       </header>
 

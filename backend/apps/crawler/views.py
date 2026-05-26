@@ -214,11 +214,38 @@ def gsc_coverage_refresh_view(_request):
     return Response({"ok": True, "loaded_urls": len(cov)})
 
 
+# ── GSC freeze switch ─────────────────────────────────────────────
+# When GSC_FROZEN=true in env, the two endpoints below that can issue
+# live Search Console API calls (sitemap backfill + URL Inspection)
+# short-circuit with a 503 and leave the on-disk CSV cache untouched.
+# Used when the operator has temporarily lost GSC access — overnight
+# crawls must keep working off the existing csv coverage map rather
+# than failing on an OAuth refresh.
+def _gsc_is_frozen() -> bool:
+    import os
+    return os.environ.get("GSC_FROZEN", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 @api_view(["POST"])
 def gsc_coverage_build_view(request):
     """Derive a fresh coverage CSV from already-pulled GSC performance data
     plus a live sitemap fetch. Returns counts so the UI can show a toast.
+
+    Gated by ``GSC_FROZEN`` env — when set, returns 503 instead of
+    touching the network (operator has lost GSC access).
     """
+    if _gsc_is_frozen():
+        return Response(
+            {
+                "ok": False,
+                "error": "GSC is frozen (GSC_FROZEN=true). Using cached "
+                         "coverage CSV only — no live API calls until the "
+                         "operator restores Search Console access.",
+            },
+            status=503,
+        )
     from .storage import gsc_coverage_builder
     sitemap = request.query_params.get("sitemap") or gsc_coverage_builder.DEFAULT_SITEMAP
     backfill = request.query_params.get("backfill") in {"1", "true", "yes"}
@@ -358,7 +385,20 @@ def gsc_inspect_unknowns_view(request):
 
     Rate-limited (~2000/day per property). Idempotent — already-inspected
     URLs are skipped because they're no longer ``unknown``.
+
+    Gated by ``GSC_FROZEN`` env — when set, returns 503 instead of
+    issuing a live URL Inspection API request.
     """
+    if _gsc_is_frozen():
+        return Response(
+            {
+                "ok": False,
+                "error": "GSC is frozen (GSC_FROZEN=true). URL Inspection "
+                         "calls disabled until the operator restores "
+                         "Search Console access.",
+            },
+            status=503,
+        )
     from .storage import gsc_coverage_builder
     site = request.query_params.get("site") or "https://www.bajajlifeinsurance.com/"
     try:

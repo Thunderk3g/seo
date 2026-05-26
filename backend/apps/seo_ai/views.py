@@ -543,7 +543,7 @@ def meta_ads_dashboard(request: Request):
     if include_ours:
         bajaj_label = (
             request.query_params.get("our_brand")
-            or "Bajaj Allianz Life Insurance"
+            or "Bajaj Life Insurance"
         )
         if bajaj_label not in competitors:
             competitors = [bajaj_label] + list(competitors)
@@ -2193,7 +2193,7 @@ def geo_score(request: Request):
     feed — composed into one weighted 0-100 score with suggestions.
 
     Query params:
-      * ``brand`` (default: "Bajaj Allianz Life Insurance")
+      * ``brand`` (default: "Bajaj Life Insurance")
       * ``deep`` — set to ``false`` to skip the external SerpAPI +
         Wikidata calls (faster, page-signals only).
     """
@@ -2203,7 +2203,7 @@ def geo_score(request: Request):
 
     brand = (
         request.query_params.get("brand")
-        or "Bajaj Allianz Life Insurance"
+        or "Bajaj Life Insurance"
     ).strip()
     deep = (
         (request.query_params.get("deep") or "true").lower()
