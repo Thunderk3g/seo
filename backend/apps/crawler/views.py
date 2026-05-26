@@ -897,6 +897,127 @@ def issue_detail_view(_request, slug: str):
     })
 
 
+# ── Content map / similarity (Phase 2 + 3) ─────────────────────────────────
+
+
+@api_view(["GET"])
+def content_map_3d_view(request):
+    """GET /api/v1/crawler/content/map/3d
+    → 3D scatter points from the latest snapshot's PageEmbedding rows."""
+    from .models import CrawlSnapshot
+    from .content.projection import get_3d_points
+
+    snap_id = request.GET.get("snapshot", "")
+    snap = (
+        CrawlSnapshot.objects.filter(id=snap_id).first()
+        if snap_id else CrawlSnapshot.objects.order_by("-started_at").first()
+    )
+    if snap is None:
+        return Response({"error": "no snapshot"}, status=404)
+    points = get_3d_points(snap)
+    return Response({
+        "snapshot_id": str(snap.id),
+        "snapshot_date": snap.started_at.isoformat() if snap.started_at else "",
+        "total": len(points),
+        "points": points,
+    })
+
+
+@api_view(["GET"])
+def content_similar_view(request):
+    """GET /api/v1/crawler/content/similar
+    Params: url=<page_url> OR query=<free_text>,
+            product=<label>, page_type=<label>, top_k=<int>.
+
+    Returns top-k pages most semantically similar.
+    """
+    from .content.similarity import similar_to_url, similar_to_query
+
+    top_k = max(1, min(50, int(request.GET.get("top_k", "10"))))
+    product = request.GET.get("product") or None
+    page_type = request.GET.get("page_type") or None
+    url = request.GET.get("url") or ""
+    query = request.GET.get("query") or ""
+    if not (url or query):
+        return Response(
+            {"error": "must provide ?url= or ?query="}, status=400,
+        )
+    if url:
+        results = similar_to_url(
+            url, top_k=top_k, product=product, page_type=page_type,
+        )
+    else:
+        results = similar_to_query(
+            query, top_k=top_k, product=product, page_type=page_type,
+        )
+    return Response({"results": results})
+
+
+@api_view(["GET"])
+def snapshots_list_view(_request):
+    """GET /api/v1/crawler/snapshots — pickable snapshots for cluster /
+    map / inspector UIs.
+
+    Returns the most recent ~30 non-empty snapshots across both
+    Bajaj and competitor kinds, newest first. Each row is enough to
+    populate a dropdown (id, started_at, kind, target_domain, page
+    count) without hitting the per-snapshot detail endpoints.
+    """
+    from django.db.models import Count
+
+    from .models import CrawlSnapshot
+
+    rows = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(n__gte=5)
+        .order_by("-started_at")[:30]
+    )
+    return Response({
+        "count": len(rows),
+        "snapshots": [
+            {
+                "id": str(s.id),
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "kind": s.kind,
+                "engine": s.engine,
+                "target_domain": s.target_domain or "",
+                "page_count": s.pages_attempted or 0,
+                "ok_page_count": s.pages_ok or 0,
+                "health_score": s.health_score,
+                "status": s.status,
+            }
+            for s in rows
+        ],
+    })
+
+
+@api_view(["GET"])
+def content_clusters_view(request):
+    """GET /api/v1/crawler/content/clusters
+    Params: snapshot=<id> (optional, defaults to latest),
+            mode=primary|multi (default primary).
+
+    Returns the hierarchical Product → Page-type → pages tree, plus an
+    `uncertain` bucket. Pure rule-based — no LLM, no embeddings required.
+    """
+    from .models import CrawlSnapshot
+    from .content.clusters import build_clusters
+
+    snap_id = request.GET.get("snapshot", "")
+    snap = (
+        CrawlSnapshot.objects.filter(id=snap_id).first()
+        if snap_id else CrawlSnapshot.objects.order_by("-started_at").first()
+    )
+    if snap is None:
+        return Response({"error": "no snapshot"}, status=404)
+
+    mode = request.GET.get("mode", "primary").lower()
+    if mode not in ("primary", "multi"):
+        mode = "primary"
+
+    return Response(build_clusters(snap, mode=mode))
+
+
 # ── Compliance dashboard (WCAG / GDPR / OWASP) ─────────────────────────────
 
 

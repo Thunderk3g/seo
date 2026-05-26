@@ -36,6 +36,14 @@ urlpatterns = [
     ),
     path("issues", views.issues_view, name="issues"),
     path("issues/<str:slug>", views.issue_detail_view, name="issue-detail"),
+    # Content map + similarity (Phase 2/3 content classification).
+    path("content/map/3d", views.content_map_3d_view, name="content-map-3d"),
+    path("content/similar", views.content_similar_view, name="content-similar"),
+    path("content/clusters", views.content_clusters_view, name="content-clusters"),
+    # Snapshot picker — drives the cluster/map UIs so the operator
+    # can switch between the latest Bajaj snapshot and any competitor
+    # snapshot the link-walker has populated.
+    path("snapshots", views.snapshots_list_view, name="snapshots-list"),
     # Compliance dashboard — WCAG / GDPR / OWASP aggregated view.
     path("compliance", views.compliance_view, name="compliance"),
     path("compliance.csv", views.compliance_csv_view, name="compliance-csv"),

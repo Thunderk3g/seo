@@ -531,6 +531,22 @@ def meta_ads_dashboard(request: Request):
         if not competitors:
             resolution_source = "env_default"
 
+    # ── In-house Bajaj parity ───────────────────────────────────
+    # Prepend Bajaj's own brand so the dashboard surfaces "our ads"
+    # alongside "their ads". Opt-out via ``?include_ours=false`` for
+    # the per-competitor drill-down where Bajaj would be noise.
+    include_ours = (
+        (request.query_params.get("include_ours") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    if include_ours:
+        bajaj_label = (
+            request.query_params.get("our_brand")
+            or "Bajaj Allianz Life Insurance"
+        )
+        if bajaj_label not in competitors:
+            competitors = [bajaj_label] + list(competitors)
+
     country = (request.query_params.get("country") or "").strip() or None
     try:
         count = int(request.query_params.get("count") or 0) or None
@@ -1346,6 +1362,17 @@ def content_comparison(request: Request):
 # Django URL routing without needing query strings.
 
 
+def _headings_tree_for_sample(sample: dict) -> list:
+    """Compute the hierarchical headings tree on demand from a sample's
+    flat ``headings`` list. Pre-Phase-I samples have no ``headings``
+    field — return an empty tree without crashing."""
+    try:
+        from .services.custodian import headings_to_tree
+        return headings_to_tree(sample.get("headings") or [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _b64url_encode(url: str) -> str:
     """URL-safe base64 encoding without padding — used for per-URL
     routes. Padding-less keeps the URL slug shorter and avoids the `=`
@@ -1553,6 +1580,17 @@ def competitor_page_detail_view(_request, domain: str, url_b64: str):
         "lcp_ms": sample.get("lcp_ms"),
         "cls": sample.get("cls"),
         "inp_ms": sample.get("inp_ms"),
+        # Phase 2A.5 — structural mirror payload for the Inspector UI.
+        # Empty arrays on legacy GapDeepCrawl rows (built before this
+        # field landed) — the UI is expected to gracefully degrade to
+        # "rerun the deep crawl to capture this" rather than 500.
+        "headings": sample.get("headings") or [],
+        # Phase I — hierarchical heading tree (h1>h2>h3 nested) so the
+        # UI can render the actual page outline, not just the flat list.
+        "headings_tree": _headings_tree_for_sample(sample),
+        "internal_links": sample.get("internal_links") or [],
+        "external_links": sample.get("external_links") or [],
+        "images": sample.get("images") or [],
         "run_id": str(crawl.run_id),
         "run_started_at": (
             crawl.run.started_at.isoformat() if crawl.run.started_at else None
@@ -1599,3 +1637,628 @@ def chat_stream(request):
     response["X-Accel-Buffering"] = "no"
     response["Cache-Control"] = "no-cache"
     return response
+
+
+# ── LLM pool monitoring ──────────────────────────────────────────────
+
+
+@api_view(["GET"])
+def llm_pool_stats(_request):
+    """GET /api/v1/seo/llm/pool-stats — health of the Groq key pool.
+
+    Returns one row per configured key with call count, 429 count,
+    and remaining cooldown. Used by ops to confirm the pool is
+    spreading load across keys (instead of hammering the first one).
+    Key values are masked to the last 6 chars so logs don't leak.
+    """
+    from .llm.key_pool import get_groq_pool
+    pool = get_groq_pool()
+    if pool is None:
+        return Response({
+            "enabled": False,
+            "message": (
+                "No Groq keys configured. Set GROQ_API_KEYS=k1,k2,... in .env "
+                "(or GROQ_API_KEY=k for a single-key fallback)."
+            ),
+        })
+    return Response({
+        "enabled": True,
+        "key_count": len(pool),
+        "keys": pool.stats(),
+    })
+
+
+# ── Content Writer ───────────────────────────────────────────────────
+
+
+def _serialize_proposal(p) -> dict:
+    """Wire shape for ContentRewriteProposal.
+
+    We deliberately *omit* ``raw_proposal`` from the list endpoint and
+    only include it on detail — the raw payload is ~5-10x the size of
+    the filtered version and the list view is purely for picking which
+    proposal to inspect.
+    """
+    return {
+        "id": str(p.id),
+        "our_url": p.our_url,
+        "competitor_urls": p.competitor_urls or [],
+        "target_keywords": p.target_keywords or [],
+        "evidence_dict": p.evidence_dict or {},
+        "generated_proposal": p.generated_proposal or {},
+        "raw_proposal": p.raw_proposal or {},
+        "critic_verdict": p.critic_verdict or {},
+        "model_used": p.model_used or "",
+        "tokens_in": p.tokens_in,
+        "tokens_out": p.tokens_out,
+        "cost_usd": p.cost_usd,
+        "error": p.error or "",
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@api_view(["GET"])
+def content_writer_our_pages(_request):
+    """List crawled URLs the writer can rewrite.
+
+    Sourced from the latest CrawlSnapshot's CrawlerPageResult rows so
+    the UI selector only shows URLs that actually have the structural
+    payload (headings_json, internal_links_json) the agent needs.
+    """
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    # Pick the most recent snapshot that has a meaningful number of
+    # rows — the very latest may still be mid-crawl with 0 or 1 row
+    # (Phase C full crawl in progress can take hours during PSI). We
+    # require ≥ 5 so we don't surface a single trailing PDF row from
+    # an aborted run as "the dataset".
+    snap = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(n__gte=5)
+        .order_by("-id")
+        .first()
+    )
+    if snap is None:
+        return Response({"snapshot_id": None, "pages": []})
+    rows = (
+        CrawlerPageResult.objects.filter(snapshot=snap)
+        .exclude(status_code__in=["404", "500", "0"])
+        .values("url", "title", "page_type", "word_count")
+        .order_by("url")[:5000]
+    )
+    pages = [
+        {
+            "url": r["url"],
+            "title": (r["title"] or "")[:200],
+            "page_type": r["page_type"] or "",
+            "word_count": r["word_count"] or 0,
+        }
+        for r in rows
+    ]
+    return Response({
+        "snapshot_id": snap.id,
+        "snapshot_date": (
+            snap.started_at.isoformat() if snap.started_at else None
+        ),
+        "pages": pages,
+    })
+
+
+@api_view(["POST"])
+def content_writer_generate(request: Request):
+    """POST /api/v1/seo/content-writer/generate.
+
+    Body:
+        {
+          "our_url": "https://.../...",
+          "competitor_urls": ["...", "..."],   # optional
+          "target_keywords": ["...", "..."]    # optional
+        }
+
+    Returns the full :class:`ContentRewriteProposal` serialisation
+    immediately (synchronous — one LLM call, completes in 5-15 s).
+
+    The proposal is persisted regardless of outcome: errors land in
+    ``error`` so the operator can see what failed without losing the
+    request context.
+    """
+    from .agents.content_writer import generate_rewrite
+    from .models import ContentRewriteProposal
+
+    body = request.data or {}
+    our_url = (body.get("our_url") or "").strip()
+    if not our_url:
+        return Response(
+            {"error": "our_url is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    competitor_urls = [
+        (u or "").strip() for u in (body.get("competitor_urls") or [])
+        if (u or "").strip()
+    ]
+    target_keywords = [
+        (k or "").strip() for k in (body.get("target_keywords") or [])
+        if (k or "").strip()
+    ]
+
+    result = generate_rewrite(
+        our_url=our_url,
+        competitor_urls=competitor_urls,
+        target_keywords=target_keywords,
+    )
+
+    proposal = ContentRewriteProposal.objects.create(
+        our_url=result.our_url,
+        competitor_urls=result.competitor_urls,
+        target_keywords=result.target_keywords,
+        evidence_dict=result.evidence_dict,
+        raw_proposal=result.raw_proposal,
+        generated_proposal=result.filtered_proposal,
+        critic_verdict=result.critic_verdict,
+        model_used=result.model_used,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        cost_usd=result.cost_usd,
+        error=result.error or "",
+    )
+    return Response(_serialize_proposal(proposal))
+
+
+@api_view(["GET"])
+def content_writer_proposal_detail(_request, proposal_id: str):
+    """GET /api/v1/seo/content-writer/proposals/<uuid>."""
+    from .models import ContentRewriteProposal
+
+    try:
+        proposal = ContentRewriteProposal.objects.get(id=proposal_id)
+    except ContentRewriteProposal.DoesNotExist:
+        return Response(
+            {"error": f"proposal {proposal_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    return Response(_serialize_proposal(proposal))
+
+
+@api_view(["GET"])
+def geo_score(request: Request):
+    """GET /api/v1/seo/geo/score/.
+
+    Unified Generative Engine Optimization rollup — citation density,
+    E-E-A-T markup, AI-bot hit count, llms.txt presence, Reddit /
+    Quora mentions, YouTube presence, Wikidata entity, brand-mention
+    feed — composed into one weighted 0-100 score with suggestions.
+
+    Query params:
+      * ``brand`` (default: "Bajaj Allianz Life Insurance")
+      * ``deep`` — set to ``false`` to skip the external SerpAPI +
+        Wikidata calls (faster, page-signals only).
+    """
+    from dataclasses import asdict
+
+    from .services.geo import compute_geo_score
+
+    brand = (
+        request.query_params.get("brand")
+        or "Bajaj Allianz Life Insurance"
+    ).strip()
+    deep = (
+        (request.query_params.get("deep") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    result = compute_geo_score(brand=brand, deep=deep)
+    return Response(asdict(result))
+
+
+@api_view(["POST"])
+def design_brief_compose(request: Request):
+    """POST /api/v1/seo/design-brief/compose.
+
+    Body: ``{"figma_url": "https://www.figma.com/design/<key>/...",
+              "frame_name": "Term Insurance Landing"}``.
+
+    Returns the deterministic brief with the designer's frame
+    summary (text + images + instances), competitor zone signals
+    drawn from the LayoutAgent diff, and rule-based recommendations.
+
+    Errors land in the ``error`` field so the UI degrades gracefully:
+      * Missing FIGMA_TOKEN env → "set FIGMA_TOKEN in .env".
+      * Bad Figma URL → "could not parse Figma file URL".
+      * Frame name not found → "frame '<x>' not found in file".
+    """
+    from dataclasses import asdict
+
+    from .services.design_brief import compose_brief
+
+    body = request.data or {}
+    figma_url = (body.get("figma_url") or "").strip()
+    frame_name = (body.get("frame_name") or "").strip()
+    if not figma_url:
+        return Response(
+            {"error": "figma_url required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    brief = compose_brief(figma_url=figma_url, frame_name=frame_name)
+    payload = asdict(brief)
+    return Response(payload)
+
+
+@api_view(["POST"])
+def visual_audit_capture(request: Request):
+    """POST /api/v1/seo/visual-audit/capture.
+
+    Body: ``{ "urls": ["https://...", ...], "snapshot_id": "manual",
+              "viewport": "desktop"|"mobile" }``.
+
+    Captures one PNG per URL via Playwright headless Chromium and
+    returns the manifest. URLs that 404/timeout/bot-detect end up in
+    the ``skipped`` list with their error reason.
+
+    Storage: ``BASE_DIR/data/screenshots/<snapshot_id>/<urlhash>.png``.
+    Subsequent captures of the same URL overwrite — dedupe by hash.
+    """
+    from dataclasses import asdict
+
+    from .services.visual_audit import capture_page_screenshots
+
+    body = request.data or {}
+    urls = [u.strip() for u in (body.get("urls") or []) if isinstance(u, str) and u.strip()]
+    if not urls:
+        return Response(
+            {"error": "urls (non-empty list) required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    snapshot_id = (body.get("snapshot_id") or "manual").strip()
+    vw = (body.get("viewport") or "desktop").strip().lower()
+    viewport = (375, 812) if vw == "mobile" else (1280, 800)
+
+    result = capture_page_screenshots(
+        urls,
+        snapshot_id=snapshot_id,
+        viewport=viewport,
+    )
+    return Response({
+        "captured": [asdict(r) for r in result.captured],
+        "skipped": result.skipped,
+        "elapsed_sec": result.elapsed_sec,
+        "error": result.error,
+        "snapshot_id": snapshot_id,
+        "viewport": f"{viewport[0]}x{viewport[1]}",
+    })
+
+
+@api_view(["GET"])
+def orchestrator_v2_run(request: Request):
+    """GET /api/v1/seo/orchestrate/.
+
+    Orchestrator V2 — runs the full custodian pyramid synchronously
+    and returns one unified report (~80-150 ms). The Custodians page
+    consumes this; the future Briefings page renders the ``headline``
+    block as a "this week's focus" card.
+
+    Query params:
+      * ``adobe`` — set to ``false`` to skip the Adobe call (use when
+        credentials aren't configured to save the ~200ms IMS round-
+        trip on every dashboard load).
+      * ``structure`` — set to ``false`` to skip StructureAgent
+        (no-op when competitor snapshots don't exist yet).
+    """
+    from .services.orchestrator_v2 import run_orchestration
+
+    include_adobe = (
+        (request.query_params.get("adobe") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    include_structure = (
+        (request.query_params.get("structure") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    report = run_orchestration(
+        include_adobe=include_adobe,
+        include_structure_gaps=include_structure,
+    )
+    return Response(report)
+
+
+@api_view(["GET"])
+def custodian_structure_gaps(request: Request):
+    """GET /api/v1/seo/custodians/structure-gaps/.
+
+    StructureAgent output: internal-link patterns (page_type →
+    target_kind tuples) that competitors systematically use but we
+    don't. Lets the operator see "every ICICI term page links to a
+    calculator from the hero; we only do that on 12 % of ours".
+
+    Query params:
+      * ``min_pct`` — required competitor coverage to count as a
+        pattern (default 50.0).
+    """
+    from apps.crawler.models import CrawlSnapshot
+    from django.db.models import Count
+
+    from .services.custodian import link_pattern_gaps
+
+    try:
+        min_pct = float(request.query_params.get("min_pct") or 50.0)
+    except ValueError:
+        min_pct = 50.0
+
+    our_snap = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(kind="bajaj", n__gte=5)
+        .order_by("-started_at")
+        .first()
+    )
+    if our_snap is None:
+        return Response(
+            {"error": "no Bajaj crawl snapshot with data — crawl first"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Pick latest non-empty competitor snapshot per domain.
+    comp_snap_ids: list[str] = []
+    seen_domains: set[str] = set()
+    competitor_snaps = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(kind="competitor", n__gte=5)
+        .order_by("-started_at")
+    )
+    for s in competitor_snaps:
+        d = (s.target_domain or "").lower().lstrip("www.")
+        if d in seen_domains:
+            continue
+        seen_domains.add(d)
+        comp_snap_ids.append(str(s.id))
+
+    gaps = link_pattern_gaps(
+        our_snapshot_id=str(our_snap.id),
+        competitor_snapshot_ids=comp_snap_ids,
+        min_pct=min_pct,
+    )
+    return Response({
+        "our_snapshot_id": str(our_snap.id),
+        "competitor_snapshot_count": len(comp_snap_ids),
+        "min_pct": min_pct,
+        "gaps": gaps,
+    })
+
+
+@api_view(["GET"])
+def custodian_layout(request: Request):
+    """GET /api/v1/seo/custodians/layout/.
+
+    LayoutAgent output: per-landmark-zone aggregates (header / nav /
+    hero / main / aside / footer / other) for our latest Bajaj
+    snapshot, plus the zone-level diff against each competitor that
+    has a snapshot.
+
+    Query params:
+      * ``our_snapshot_id`` — override our snapshot (default = latest).
+
+    Existing pre-Phase-H rows have no ``zone`` field — those entries
+    appear in the ``unknown`` bucket. The 03:00 IST beat job
+    repopulates with proper zones.
+    """
+    from apps.crawler.models import CrawlSnapshot
+    from django.db.models import Count
+
+    from .services.custodian import layout_diff, summarise_layout
+
+    snap_override = request.query_params.get("our_snapshot_id")
+    if snap_override:
+        our_snap = CrawlSnapshot.objects.filter(id=snap_override).first()
+    else:
+        our_snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(kind="bajaj", n__gte=5)
+            .order_by("-started_at")
+            .first()
+        )
+    if our_snap is None:
+        return Response(
+            {"error": "no Bajaj snapshot with data"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Pick latest non-empty snapshot per competitor domain.
+    comp_snap_ids: list[str] = []
+    seen_domains: set[str] = set()
+    competitor_snaps = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(kind="competitor", n__gte=5)
+        .order_by("-started_at")
+    )
+    for s in competitor_snaps:
+        d = (s.target_domain or "").lower().lstrip("www.")
+        if d in seen_domains:
+            continue
+        seen_domains.add(d)
+        comp_snap_ids.append(str(s.id))
+
+    layout = summarise_layout(snapshot_id=str(our_snap.id))
+    diff = layout_diff(str(our_snap.id), comp_snap_ids) if comp_snap_ids else {
+        "our_snapshot_id": str(our_snap.id),
+        "diffs_by_competitor": {},
+    }
+    return Response({
+        "our_snapshot_id": str(our_snap.id),
+        "competitor_snapshot_count": len(comp_snap_ids),
+        "layout": layout,
+        "diff": diff,
+    })
+
+
+@api_view(["GET"])
+def custodian_adobe(_request):
+    """GET /api/v1/seo/custodians/adobe/.
+
+    AdobeAgent service-layer output: dashboard payload shaped for the
+    custodian. Lookback defaults to 30 days. Returns
+    ``{available: false, error: ...}`` when Adobe credentials aren't
+    set — the UI degrades gracefully instead of 500-ing.
+    """
+    from .services.custodian import summarise_adobe_traffic
+
+    return Response(summarise_adobe_traffic())
+
+
+@api_view(["GET"])
+def custodian_summary(request: Request):
+    """GET /api/v1/seo/custodians/summary.
+
+    Returns the OurDataCustodian view of bajajlifeinsurance.com
+    side-by-side with TheirDataCustodian for every competitor in
+    ``settings.COMPETITOR["roster"]``, plus the SiteDiffer report.
+
+    No LLM is invoked — this is the data layer the LLM-driven agents
+    (ContentWriter, SiteDifferAgent, etc.) consume. The frontend
+    Custodians page renders the same JSON directly.
+
+    Query params:
+      * ``our`` — override the "our" domain (default
+        ``bajajlifeinsurance.com``). Useful when this is deployed
+        for another tenant.
+      * ``compute_diff`` — set to ``false`` to skip the SiteDiffer
+        block (saves ~5 ms on big rosters).
+    """
+    from dataclasses import asdict
+
+    from .services.custodian import (
+        compute_site_diff,
+        summarise_competitor,
+        summarise_our_domain,
+    )
+
+    our_domain = (
+        request.query_params.get("our") or "bajajlifeinsurance.com"
+    ).strip().lower()
+    compute_diff = (
+        request.query_params.get("compute_diff", "true").lower()
+        not in ("0", "false", "no")
+    )
+
+    from django.conf import settings as dj_settings
+
+    roster = list(getattr(dj_settings, "COMPETITOR", {}).get("roster") or [])
+    ours = summarise_our_domain(domain=our_domain)
+    theirs = [summarise_competitor(d) for d in roster]
+    payload = {
+        "our": asdict(ours),
+        "competitors": [asdict(t) for t in theirs],
+        "roster_size": len(roster),
+    }
+    if compute_diff:
+        diff = compute_site_diff(ours, theirs)
+        payload["diff"] = asdict(diff)
+    return Response(payload)
+
+
+@api_view(["GET"])
+def competitor_changes(request: Request):
+    """GET /api/v1/seo/competitor/changes — recent ChangeWatcher events.
+
+    Query params (all optional):
+      * ``domain`` — filter to one competitor (apex host).
+      * ``kind`` — filter to one event kind (``new``/``title``/
+        ``content``/``structure``/``removed``).
+      * ``limit`` — default 100, max 500.
+
+    The default 100-event feed is enough for the "what changed today"
+    operator dashboard. For analytical replays use the model directly.
+    """
+    from .models import CompetitorChangeEvent
+
+    qs = CompetitorChangeEvent.objects.all()
+    domain = (request.query_params.get("domain") or "").strip().lower()
+    if domain:
+        qs = qs.filter(competitor_domain=domain.lstrip("www."))
+    kind = (request.query_params.get("kind") or "").strip().lower()
+    if kind in {c[0] for c in CompetitorChangeEvent.ChangeKind.choices}:
+        qs = qs.filter(kind=kind)
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except ValueError:
+        limit = 100
+    limit = max(1, min(limit, 500))
+    rows = qs.order_by("-detected_at")[:limit]
+    return Response({
+        "count": len(rows),
+        "events": [
+            {
+                "id": ev.id,
+                "url": ev.url,
+                "competitor_domain": ev.competitor_domain,
+                "kind": ev.kind,
+                "detected_at": (
+                    ev.detected_at.isoformat() if ev.detected_at else None
+                ),
+                "delta": ev.delta or {},
+            }
+            for ev in rows
+        ],
+    })
+
+
+@api_view(["GET"])
+def competitor_page_history(request: Request):
+    """GET /api/v1/seo/competitor/history?url=... — revision timeline
+    for one URL. Used by the Inspector's "revisions" tab to show how a
+    competitor's page has shifted across crawls.
+    """
+    from .models import CompetitorPageHistory
+
+    url = (request.query_params.get("url") or "").strip()
+    if not url:
+        return Response(
+            {"error": "url query param required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    rows = CompetitorPageHistory.objects.filter(url=url).order_by("-seen_at")[:50]
+    return Response({
+        "url": url,
+        "revisions": [
+            {
+                "id": h.id,
+                "seen_at": h.seen_at.isoformat() if h.seen_at else None,
+                "title": h.title,
+                "meta_description": h.meta_description,
+                "word_count": h.word_count,
+                "heading_count": h.heading_count,
+                "internal_link_count": h.internal_link_count,
+                "image_count": h.image_count,
+                "title_hash": h.title_hash,
+                "content_hash": h.content_hash,
+                "structure_hash": h.structure_hash,
+                "delta": h.delta or {},
+            }
+            for h in rows
+        ],
+    })
+
+
+@api_view(["GET"])
+def content_writer_proposals_list(_request):
+    """GET /api/v1/seo/content-writer/proposals — recent rewrites."""
+    from .models import ContentRewriteProposal
+
+    rows = ContentRewriteProposal.objects.order_by("-created_at")[:50]
+    return Response({
+        "count": len(rows),
+        "proposals": [
+            {
+                "id": str(p.id),
+                "our_url": p.our_url,
+                "model_used": p.model_used,
+                "accepted": (p.critic_verdict or {}).get("accepted", 0),
+                "rejected": (p.critic_verdict or {}).get("rejected", 0),
+                "cost_usd": p.cost_usd,
+                "error": p.error,
+                "created_at": (
+                    p.created_at.isoformat() if p.created_at else None
+                ),
+            }
+            for p in rows
+        ],
+    })

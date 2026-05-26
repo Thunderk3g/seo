@@ -1,0 +1,18 @@
+{
+  "category": "product:term",
+  "description": "Hand-picked seed texts for term insurance pages",
+  "seeds": [
+    {
+      "url": "https://www.bajajlifeinsurance.com/term-insurance-plans.html",
+      "text": "Term insurance is a pure life cover that pays a death benefit to your family if you die during the policy term. Buy ₹1 crore term insurance plan online with the lowest premium and high claim settlement ratio. Choose from regular pay, limited pay, and single pay options."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/term-insurance-plans/3-crore-term-insurance.html",
+      "text": "₹3 crore term insurance plan provides a substantial life cover at affordable premiums. Ideal for individuals with high financial responsibilities, this plan ensures your family's financial security through death benefit, terminal illness rider, and accidental death benefit add-ons."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-guide/term/role-of-medical-history-in-term-insurance.html",
+      "text": "Your medical history plays a significant role when applying for term insurance. Insurers evaluate pre-existing conditions, family medical history, lifestyle habits like smoking, and BMI to determine the premium and acceptance of the term life cover application."
+    }
+  ]
+}

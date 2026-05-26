@@ -24,7 +24,12 @@ interface NavItem {
 
 const PRIMARY_NAV: NavItem[] = [
   { id: 'chat', label: 'Assistant', icon: 'analytics', path: '/' },
+  { id: 'briefings', label: 'Weekly Briefing', icon: 'analytics', path: '/briefings' },
   { id: 'reports', label: 'Reports', icon: 'pages', path: '/reports' },
+  { id: 'content-writer', label: 'Content Writer', icon: 'zap', path: '/content-writer' },
+  { id: 'custodians', label: 'Data Custodians', icon: 'analytics', path: '/custodians' },
+  { id: 'competitor-changes', label: 'Competitor Changes', icon: 'issues', path: '/competitor-changes' },
+  { id: 'geo-score', label: 'GEO Score', icon: 'zap', path: '/geo-score' },
 ];
 
 const DATA_SOURCE_NAV: NavItem[] = [
@@ -44,6 +49,8 @@ const CRAWLER_NAV: NavItem[] = [
   { id: 'crawler-health', label: 'Health Overview', icon: 'analytics', path: '/health' },
   { id: 'crawler-issues', label: 'Issues', icon: 'issues', path: '/crawler/issues' },
   { id: 'crawler-compliance', label: 'Compliance', icon: 'issues', path: '/crawler/compliance' },
+  { id: 'crawler-content-map', label: 'Content Map (3D)', icon: 'visualizations', path: '/crawler/content-map' },
+  { id: 'crawler-content-clusters', label: 'Content Clusters', icon: 'pages', path: '/crawler/content-clusters' },
   { id: 'crawler-pages', label: 'Page Explorer', icon: 'pages', path: '/crawler/pages' },
   { id: 'crawler-trends', label: 'Trends', icon: 'analytics', path: '/trends' },
   { id: 'crawler-compare', label: 'Compare Crawls', icon: 'visualizations', path: '/compare' },

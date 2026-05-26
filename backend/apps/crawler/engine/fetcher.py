@@ -250,6 +250,13 @@ def _fetch_once(
             result["title"] = parsed["title"]
             result["word_count"] = parsed["word_count"]
             result["console_errors"] = parsed["console_errors"]
+            # Phase 2A.5 — structural mirror (parity with competitor crawler).
+            # Already capped inside parse_page (200 headings, 500 internal
+            # links, 200 external, 200 images) — safe to stamp as-is.
+            result["headings_json"] = parsed.get("headings", [])
+            result["internal_links_json"] = parsed.get("internal_links", [])
+            result["external_links_json"] = parsed.get("external_links", [])
+            result["images_json"] = parsed.get("images", [])
 
             # ── Phase A — SF parity signals ──────────────────────
             # All free signals derived from the response we already

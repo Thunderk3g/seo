@@ -9,16 +9,31 @@ from .views import (
     brand_mentions_refresh,
     chat_stream,
     competitor_dashboard,
+    competitor_changes,
     competitor_detail_view,
     competitor_gap_detection,
     competitor_page_detail_view,
+    competitor_page_history,
     content_comparison,
     content_comparison_our_pages,
+    content_writer_generate,
+    content_writer_our_pages,
+    content_writer_proposal_detail,
+    content_writer_proposals_list,
+    custodian_adobe,
+    custodian_layout,
+    custodian_structure_gaps,
+    custodian_summary,
+    design_brief_compose,
+    geo_score,
+    orchestrator_v2_run,
+    visual_audit_capture,
     gap_pipeline_detail,
     gap_pipeline_latest,
     gap_pipeline_start,
     gap_pipeline_status,
     gsc_dashboard,
+    llm_pool_stats,
     meta_ads_dashboard,
     overview,
     semrush_dashboard,
@@ -94,6 +109,69 @@ urlpatterns = [
         content_comparison,
         name="content-comparison",
     ),
+    # Day 3 — Orchestrator V2 (custodian pyramid synthesis).
+    path(
+        "orchestrate/",
+        orchestrator_v2_run,
+        name="orchestrate",
+    ),
+    # VisualAuditAgent — Playwright screenshot capture + (optional)
+    # multimodal LLM review. The capture step is unconditional;
+    # analysis is gated on VISUAL_LLM_PROVIDER env.
+    path(
+        "visual-audit/capture/",
+        visual_audit_capture,
+        name="visual-audit-capture",
+    ),
+    # DesignBriefAgent — Figma file URL + frame name → competitor-
+    # grounded design notes. Gated on FIGMA_TOKEN env.
+    path(
+        "design-brief/compose/",
+        design_brief_compose,
+        name="design-brief-compose",
+    ),
+    # GEO (Generative Engine Optimization) — unified 0-100 score with
+    # per-factor breakdown (citation density, E-E-A-T, AI-bot hits,
+    # llms.txt, Reddit/Quora, YouTube, Wikidata, brand mentions).
+    path(
+        "geo/score/",
+        geo_score,
+        name="geo-score",
+    ),
+    # Day 3 — DataCustodians + SiteDiffer + StructureAgent + AdobeAgent.
+    path(
+        "custodians/summary/",
+        custodian_summary,
+        name="custodian-summary",
+    ),
+    path(
+        "custodians/structure-gaps/",
+        custodian_structure_gaps,
+        name="custodian-structure-gaps",
+    ),
+    path(
+        "custodians/adobe/",
+        custodian_adobe,
+        name="custodian-adobe",
+    ),
+    path(
+        "custodians/layout/",
+        custodian_layout,
+        name="custodian-layout",
+    ),
+    # Phase G — ChangeWatcher: cross-snapshot competitor changes.
+    # ``/changes`` lists recent events (filter by domain / kind /
+    # limit). ``/history`` shows per-URL revision timeline.
+    path(
+        "competitor/changes/",
+        competitor_changes,
+        name="competitor-changes",
+    ),
+    path(
+        "competitor/history/",
+        competitor_page_history,
+        name="competitor-page-history",
+    ),
     # Phase 2 — per-competitor landing + per-URL detail. Replaces the
     # inline DeepCrawlPanel "dropdown" view. URL segments are
     # base64url-encoded so any URL round-trips through routing.
@@ -108,5 +186,28 @@ urlpatterns = [
         name="competitor-page-detail",
     ),
     path("chat/stream/", chat_stream, name="chat-stream"),
+    # LLM pool monitoring — Groq key pool health.
+    path("llm/pool-stats/", llm_pool_stats, name="llm-pool-stats"),
+    # Content Writer — LLM rewrites grounded in real evidence.
+    path(
+        "content-writer/our-pages/",
+        content_writer_our_pages,
+        name="content-writer-our-pages",
+    ),
+    path(
+        "content-writer/generate/",
+        content_writer_generate,
+        name="content-writer-generate",
+    ),
+    path(
+        "content-writer/proposals/",
+        content_writer_proposals_list,
+        name="content-writer-proposals-list",
+    ),
+    path(
+        "content-writer/proposals/<uuid:proposal_id>/",
+        content_writer_proposal_detail,
+        name="content-writer-proposal-detail",
+    ),
     path("", include(_router.urls)),
 ]

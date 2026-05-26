@@ -1,0 +1,14 @@
+{
+  "category": "page_type:product_landing",
+  "description": "Product landing pages (top-of-funnel buy intent)",
+  "seeds": [
+    {
+      "url": "https://www.bajajlifeinsurance.com/term-insurance-plans.html",
+      "text": "Buy term insurance plan online. Compare plans, calculate premium, view claim settlement ratio, and apply for instant policy issuance. Features include flexible premium payment, riders for accidental death, critical illness cover, and tax benefits under Section 80C and 10(10D)."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/group-insurance-plans/group-secure-return.html",
+      "text": "Group Secure Return is an employer-employee group insurance plan offering guaranteed returns alongside life cover. Designed for organisations to provide retirement benefits to employees with options for systematic gratuity payouts and pension."
+    }
+  ]
+}

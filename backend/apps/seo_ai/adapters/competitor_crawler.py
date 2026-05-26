@@ -40,7 +40,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 import requests
@@ -109,6 +109,193 @@ class CompetitorPage:
     # enough Chrome traffic.
     cwv_mobile: dict[str, Any] = field(default_factory=dict)
     cwv_desktop: dict[str, Any] = field(default_factory=dict)
+
+    # ── Structural mirror (Phase 2A.5 — for competitor page Inspector) ──
+    # The "where things are placed" data the dashboard needs in order to
+    # replicate a competitor's information architecture.
+    #
+    # headings:        ordered list of every H1–H6 in document order, with
+    #                  position index. Drives the page-outline tree view.
+    # internal_links:  every <a> pointing within the same host. Each entry
+    #                  has anchor text, href, the nearest preceding heading
+    #                  text (so the UI can group "calculator links in the
+    #                  pricing section"), and a kind classification.
+    # external_links:  same shape but off-domain — useful for citation /
+    #                  partner-link analysis.
+    # images:          every <img> with src + alt + dimensions for per-image
+    #                  alt audit and design replication.
+    headings: list[dict[str, Any]] = field(default_factory=list)
+    internal_links: list[dict[str, Any]] = field(default_factory=list)
+    external_links: list[dict[str, Any]] = field(default_factory=list)
+    images: list[dict[str, Any]] = field(default_factory=list)
+
+
+# ── Internal-link kind classifier ─────────────────────────────────────
+# Reused from deep_crawl._PAGE_TYPE_PATTERNS *plus* Bajaj-product-aware
+# buckets so the Inspector UI can answer "where does this page link to a
+# calculator?" without further client-side parsing.
+_LINK_KIND_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("calculator",      re.compile(r"/(calculator|estimate|tool)s?/?", re.I)),
+    ("product_term",    re.compile(r"/term[-_]?insurance", re.I)),
+    ("product_ulip",    re.compile(r"/ulip", re.I)),
+    ("product_savings", re.compile(r"/(savings|endowment)", re.I)),
+    ("product_retire",  re.compile(r"/(retirement|pension)", re.I)),
+    ("product_child",   re.compile(r"/child[-_]?(insurance|plan)", re.I)),
+    ("product_group",   re.compile(r"/group[-_]?(insurance|plan)", re.I)),
+    ("product_health",  re.compile(r"/(health|wellness|diabetes)", re.I)),
+    ("nri",             re.compile(r"/nri", re.I)),
+    ("fund",            re.compile(r"/funds?/", re.I)),
+    ("blog",            re.compile(r"/(blog|insights|articles|guide|resources)s?/?", re.I)),
+    ("faq",             re.compile(r"/(faq|faqs|help|support)/?", re.I)),
+    ("claim",           re.compile(r"/claim", re.I)),
+    ("contact",         re.compile(r"/contact", re.I)),
+    ("legal",           re.compile(r"/(privacy|terms|disclaimer|policy)", re.I)),
+)
+
+
+def _classify_link_kind(href: str) -> str:
+    for label, pat in _LINK_KIND_PATTERNS:
+        if pat.search(href):
+            return label
+    return "other"
+
+
+def _classify_zone(el) -> str:
+    """LayoutAgent zone tagger.
+
+    Walks up the DOM from ``el`` and returns the closest enclosing
+    landmark zone (``header``, ``nav``, ``main``, ``aside``, ``footer``,
+    ``hero``, or ``other``). The zone tells the dashboard "where on
+    the page does this link/image/heading live" — load-bearing context
+    for the LayoutAgent's "competitors always put the calculator CTA
+    in the hero; you bury it in the footer" claim.
+
+    Detection rules (first match wins):
+
+    * <header> or class/id containing "header" / "site-header" / "top"
+    * <nav>   or class/id containing "nav" / "menu"
+    * .hero / #hero / class containing "hero" / "banner" / "above-fold"
+    * <main> / <article> / class "content" / "main"
+    * <aside> / class "sidebar" / "related"
+    * <footer> / id/class "footer" / "site-footer"
+    * fallback: "other"
+    """
+    # Climb up to 12 ancestors max — beyond that we're at <body> or
+    # we have a pathological DOM, either way "other" is the right call.
+    cur = el
+    hops = 0
+    while cur is not None and hops < 12:
+        parent = getattr(cur, "parent", None)
+        if parent is None or getattr(parent, "name", None) in (None, "[document]"):
+            break
+        name = (getattr(parent, "name", "") or "").lower()
+        attrs = parent.attrs if hasattr(parent, "attrs") else {}
+        cls = " ".join(attrs.get("class") or []).lower()
+        pid = (attrs.get("id") or "").lower()
+        role = (attrs.get("role") or "").lower()
+        blob = f" {cls} {pid} {role} "
+
+        if name == "header" or "site-header" in blob or " masthead " in blob:
+            return "header"
+        if name == "nav" or " navigation " in blob or " menu " in blob:
+            return "nav"
+        if " hero " in blob or " banner " in blob or " above-fold " in blob:
+            return "hero"
+        if name in ("main", "article") or " main " in blob or " content " in blob:
+            return "main"
+        if name == "aside" or " sidebar " in blob or " related " in blob:
+            return "aside"
+        if name == "footer" or " site-footer " in blob or " footer " in blob:
+            return "footer"
+        cur = parent
+        hops += 1
+    return "other"
+
+
+def _extract_structured(soup, page_host: str, base_url: str) -> dict[str, list]:
+    """Walk the parsed document in document order and capture the
+    structural mirror data: ordered headings, per-link inventory tagged
+    with its nearest preceding section heading + DOM zone, and per-image
+    details.
+
+    Single-pass, no DOM rewriting — safe to call after the body-text
+    extraction (which decomposes <script>/<style>/etc.) since headings,
+    anchors and images aren't in the decomposed tag set.
+
+    Each emitted entry carries:
+      * ``section`` — nearest preceding heading text (drives "where in
+        the visual flow").
+      * ``zone`` — landmark element the entry lives inside (drives
+        "header CTA vs footer CTA").
+    """
+    headings: list[dict[str, Any]] = []
+    internal_links: list[dict[str, Any]] = []
+    external_links: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
+
+    current_section = ""   # nearest preceding heading text, drives "where"
+
+    # ``descendants`` walks the DOM in document order — exactly what we need.
+    for el in soup.descendants:
+        name = getattr(el, "name", None)
+        if not name:
+            continue
+
+        if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            text = el.get_text(" ", strip=True)
+            if not text:
+                continue
+            level = int(name[1])
+            headings.append({
+                "level": level,
+                "text": text[:300],
+                "idx": len(headings),
+                "zone": _classify_zone(el),
+            })
+            current_section = text[:200]
+            continue
+
+        if name == "a":
+            href = (el.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                continue
+            anchor = el.get_text(" ", strip=True)[:200]
+            absolute = urljoin(base_url, href)
+            target_host = (_host(absolute) or "").lower().lstrip("www.")
+            entry = {
+                "anchor": anchor,
+                "href": absolute[:1024],
+                "section": current_section,
+                "zone": _classify_zone(el),
+                "kind": _classify_link_kind(absolute),
+                "rel": " ".join(el.get("rel") or []) or "",
+            }
+            if not target_host or target_host == page_host or target_host.endswith("." + page_host):
+                internal_links.append(entry)
+            else:
+                external_links.append(entry)
+            continue
+
+        if name == "img":
+            src = (el.get("src") or "").strip()
+            if not src:
+                continue
+            images.append({
+                "src": urljoin(base_url, src)[:1024],
+                "alt": (el.get("alt") or "").strip()[:300],
+                "width": (el.get("width") or "").strip()[:8],
+                "height": (el.get("height") or "").strip()[:8],
+                "section": current_section,
+                "zone": _classify_zone(el),
+                "loading": (el.get("loading") or "").strip()[:16],
+            })
+
+    return {
+        "headings": headings,
+        "internal_links": internal_links,
+        "external_links": external_links,
+        "images": images,
+    }
 
 
 class CompetitorCrawler:
@@ -812,6 +999,21 @@ def _parse_html(*, url: str, final_url: str, status: int, body: str) -> Competit
     if imgs:
         with_alt = sum(1 for i in imgs if (i.get("alt") or "").strip())
         page.image_alt_pct = round(100.0 * with_alt / len(imgs), 1)
+
+    # ── Structural mirror (Phase 2A.5) ─────────────────────────────
+    # Captures everything the Inspector UI needs to render a competitor's
+    # page structure: every heading in document order, every internal
+    # link with section + kind, every image with alt + dims. Done in a
+    # single descendants() walk before body_text decomposition strips
+    # script/style nodes — anchors / headings / imgs are unaffected.
+    structured = _extract_structured(soup, page_host, final_url or url)
+    # Reasonable caps so a single 10,000-link sitemap-style page doesn't
+    # blow up JSONB rows. Practical limits: a typical article has <50
+    # headings, <100 links, <30 images.
+    page.headings = structured["headings"][:200]
+    page.internal_links = structured["internal_links"][:500]
+    page.external_links = structured["external_links"][:200]
+    page.images = structured["images"][:200]
 
     # ── JSON-LD schema parse ──────────────────────────────────────
     schema_types: list[str] = []

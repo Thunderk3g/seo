@@ -169,6 +169,22 @@ class GroqProvider(LLMProvider):
             )
         http_client = httpx.Client(verify=verify, timeout=60.0)
 
+        # Key pool: when GROQ_API_KEYS env carries multiple comma-
+        # separated keys (free tier with 7-8 keys is common), we
+        # round-robin them and back off the offending key on 429s
+        # instead of hammering one budget. ``cfg['api_key']`` stays
+        # in use as the bootstrap key for the OpenAI client init;
+        # we swap ``self._client.api_key`` per-request inside complete().
+        from .key_pool import get_groq_pool
+
+        self._pool = get_groq_pool()  # None when GROQ_API_KEYS unset
+
+        # Store the bound http_client + base_url so we can rebuild the
+        # OpenAI client with a fresh key per request without re-creating
+        # the underlying httpx connection pool each time.
+        self._http_client = http_client
+        self._base_url = cfg["base_url"]
+
         self._client = OpenAI(
             api_key=cfg["api_key"],
             base_url=cfg["base_url"],
@@ -203,16 +219,37 @@ class GroqProvider(LLMProvider):
         if response_format:
             kwargs["response_format"] = response_format
 
-        # Groq free tier is rate-limited per minute. A 413/429 on a
-        # 4k-token prompt almost always means "another concurrent
-        # request just ate your budget" — backing off briefly and
-        # retrying once typically clears it without bothering the user.
+        # Per-request key acquisition when a pool is configured. Each
+        # attempt acquires a fresh key from the pool — if the prior
+        # attempt 429-ed, that key is now cooling and we'll get a
+        # different one. With N keys the effective TPM is N×.
         import time as _time
+        from .key_pool import PoolExhaustedError
 
         last_exc: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(max(3, len(self._pool) if self._pool else 3)):
+            # Acquire-and-bind a key for this attempt.
+            current_key: str | None = None
+            if self._pool is not None:
+                try:
+                    current_key = self._pool.acquire()
+                except PoolExhaustedError as pex:
+                    # Every key cooling. Sleep precisely the time the
+                    # pool reports, then try again on next loop iter.
+                    sleep_for = max(1.0, min(pex.wait_seconds, 60.0))
+                    logger.warning(
+                        "groq pool exhausted; sleeping %.1fs", sleep_for,
+                    )
+                    _time.sleep(sleep_for)
+                    continue
+                # OpenAI client's api_key is read on every request from
+                # the instance attribute — safe to mutate.
+                self._client.api_key = current_key
+
             try:
                 resp = self._client.chat.completions.create(**kwargs)
+                if self._pool is not None and current_key is not None:
+                    self._pool.report_success(current_key)
                 break
             except Exception as exc:  # pragma: no cover - network errors
                 msg = str(exc).lower()
@@ -223,15 +260,24 @@ class GroqProvider(LLMProvider):
                     or "429" in msg
                     or "413" in msg
                 )
-                if retryable and attempt < 2:
-                    wait = 30 if "tokens per minute" in msg else 5 * (attempt + 1)
-                    logger.warning(
-                        "groq retrying after %ss (attempt %d): %s",
-                        wait,
-                        attempt + 1,
-                        exc,
-                    )
-                    _time.sleep(wait)
+                if self._pool is not None and current_key is not None and retryable:
+                    self._pool.report_429(current_key)
+                if retryable and attempt < (len(self._pool) if self._pool else 2):
+                    # With the pool, just loop — next acquire() will
+                    # skip the cooling key. Without the pool, fall back
+                    # to the legacy backoff.
+                    if self._pool is None:
+                        wait = (
+                            30 if "tokens per minute" in msg
+                            else 5 * (attempt + 1)
+                        )
+                        logger.warning(
+                            "groq retrying after %ss (attempt %d): %s",
+                            wait,
+                            attempt + 1,
+                            exc,
+                        )
+                        _time.sleep(wait)
                     continue
                 logger.error("groq.complete failed: %s", exc)
                 raise

@@ -1,0 +1,18 @@
+{
+  "category": "product:ulip",
+  "description": "Hand-picked seed texts for ULIP (unit-linked) pages",
+  "seeds": [
+    {
+      "url": "https://www.bajajlifeinsurance.com/ulip-plans/",
+      "text": "ULIP plans combine life insurance with market-linked investment. Choose from equity funds, debt funds, or balanced funds. Switch between funds, get tax benefits under Section 80C, and build long-term wealth alongside life cover. Unit linked insurance plan with NAV-based returns."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/funds/opportunity-fund.html",
+      "text": "The Opportunity Fund is a high-growth equity fund within the ULIP portfolio. It invests in large-cap and mid-cap stocks aiming for capital appreciation over the long term. View latest NAV, fund performance, asset allocation, and benchmark comparison."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-guide/ulip/insurance-and-investment-planning.html",
+      "text": "Combining insurance and investment through a unit-linked insurance plan offers market exposure, fund switching flexibility, and life cover in one product. Understand fund types, charges, lock-in period, and tax implications of ULIP investments."
+    }
+  ]
+}

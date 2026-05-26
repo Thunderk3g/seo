@@ -1,0 +1,18 @@
+{
+  "category": "page_type:calculator",
+  "description": "Interactive financial calculator pages",
+  "seeds": [
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-calculator/premium-calculator.html",
+      "text": "Calculate your life insurance premium online. Enter your age, sum assured, policy term, and payment frequency. Get instant premium quotes for term insurance, endowment, and ULIP plans. Compare premium amounts and choose the right plan for your financial goals."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-calculator/sip-calculator.html",
+      "text": "SIP calculator helps you compute the future value of your monthly systematic investment plan. Enter monthly investment amount, expected rate of return, and investment duration to see the maturity value, total invested amount, and wealth gained from compounding."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-calculator/ppf-calculator.html",
+      "text": "PPF calculator computes the maturity amount of your Public Provident Fund investment. Enter yearly contribution, interest rate, and 15-year tenure to see total deposit, interest earned, and final corpus. PPF is a tax-saving investment under Section 80C."
+    }
+  ]
+}

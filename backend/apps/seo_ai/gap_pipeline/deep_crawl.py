@@ -52,6 +52,7 @@ frontend both read it:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import statistics
 import time
@@ -68,15 +69,14 @@ from ..models import GapCompetitor, GapDeepCrawl, GapPipelineRun
 logger = logging.getLogger("seo.ai.gap_pipeline.deep_crawl")
 
 
-_DEFAULT_PAGES_PER_DOMAIN = 25
-# PSI is now parallelised inside CompetitorCrawler.enrich_with_cwv (see
-# the inline_workers knob in PSI config), so we score every sampled
-# page rather than only the top 10. With 4 PSI workers the typical
-# 25-page enrichment finishes in ~2-3 min instead of ~15 min serial.
-# Quota: 25 pages × 2 strategies × 10 competitors = 500 PSI calls per
-# gap run = 2 % of daily budget. Override via env if you want a tighter
-# cap or to revert to the old 10-page top.
-_CWV_PAGES_PER_COMPETITOR = _DEFAULT_PAGES_PER_DOMAIN
+_DEFAULT_PAGES_PER_DOMAIN = 0   # 0 = unlimited (full sitemap)
+# PSI enrichment cap: 0 means enrich every fetched competitor page.
+# At full scale (10 competitors × ~800 pages × 2 strategies) = ~16k
+# PSI calls — well within the 25k/day free quota. Override via env
+# SEO_AI_CWV_PAGES_PER_COMPETITOR=<n> if you ever want a tighter cap.
+_CWV_PAGES_PER_COMPETITOR = int(
+    os.environ.get("SEO_AI_CWV_PAGES_PER_COMPETITOR", "0") or 0
+)
 
 
 # Page-type heuristics. URL-token first (cheap + reliable), then HTML
@@ -278,8 +278,21 @@ def _build_profile(
                 else (p.cwv_mobile or {}).get("lab_cls")
             ),
             "inp_ms": (p.cwv_mobile or {}).get("field_inp_ms"),
+            # Phase 2A.5 — structural mirror for the Competitor Page
+            # Inspector. Lets the UI render heading-tree, link inventory
+            # (with section + kind tags), and per-image alt audit without
+            # an extra fetch. Already capped in the extractor (200 headings,
+            # 500 internal links, 200 external links, 200 images) so the
+            # profile JSON stays bounded.
+            "headings": getattr(p, "headings", []) or [],
+            "internal_links": getattr(p, "internal_links", []) or [],
+            "external_links": getattr(p, "external_links", []) or [],
+            "images": getattr(p, "images", []) or [],
         }
-        for p in ok_pages[:25]
+        # Was hardcoded at [:25] — that silently capped the profile
+        # JSON to 25 pages even when we'd fetched the full sitemap.
+        # Now unlimited: every fetched OK page lands in the profile.
+        for p in ok_pages
     ]
 
     return {
@@ -340,10 +353,9 @@ def _crawl_domain(
     )
 
     if all_urls:
-        # Deep-crawl the top-N for now. With the full list available,
-        # we could later swap in smarter sampling (page-type quota,
-        # SEMrush top_pages overlap, etc.) without changing this call.
-        sample_urls = all_urls[:pages_per_domain]
+        # pages_per_domain == 0 → full sitemap, no slice (the operator
+        # wants every page their sitemap declares).
+        sample_urls = all_urls if pages_per_domain == 0 else all_urls[:pages_per_domain]
     else:
         # No sitemap (or all sub-sitemaps failed) — fall back to
         # homepage only so we still capture something and downstream
@@ -359,7 +371,12 @@ def _crawl_domain(
     # enrichment is silently skipped when PSI is disabled (missing SA
     # file, PSI_ENABLED=false) so the rest of the profile still builds.
     try:
-        crawler.enrich_with_cwv(pages, max_urls=_CWV_PAGES_PER_COMPETITOR)
+        # _CWV_PAGES_PER_COMPETITOR == 0 → enrich every fetched page.
+        # The adapter accepts max_urls=None for "no cap".
+        crawler.enrich_with_cwv(
+            pages,
+            max_urls=_CWV_PAGES_PER_COMPETITOR or None,
+        )
     except Exception as exc:  # noqa: BLE001 - never block profile build
         logger.info("competitor cwv enrichment failed for %s: %s", bare, exc)
 
@@ -385,10 +402,16 @@ def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:
         GapCompetitor.objects.filter(run=run).order_by("rank")
     )
     pages_per_domain = int(
-        getattr(settings, "SEO_AI", {}).get("gap_pipeline_pages_per_domain", _DEFAULT_PAGES_PER_DOMAIN)
+        getattr(settings, "SEO_AI", {}).get(
+            "gap_pipeline_pages_per_domain", _DEFAULT_PAGES_PER_DOMAIN
+        )
         or _DEFAULT_PAGES_PER_DOMAIN
     )
-    pages_per_domain = max(5, min(pages_per_domain, 50))
+    # 0 = unlimited (full sitemap). Previously clamped at 50 even when
+    # the env said more — that's what was throwing away half the work
+    # the spider already did. Negative values are nonsensical here so
+    # we floor at 0 (which downstream interprets as "no cap").
+    pages_per_domain = max(0, pages_per_domain)
 
     crawler = CompetitorCrawler()
     sitemap_adapter = SitemapXMLAdapter()

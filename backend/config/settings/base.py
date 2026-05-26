@@ -158,6 +158,20 @@ SEMRUSH = {
 COMPETITOR = {
     "enabled": os.environ.get("COMPETITOR_ENABLED", "true").lower()
     in ("1", "true", "yes", "on"),
+    # Roster — domains the Celery beat ``walk_competitor_roster`` task
+    # re-crawls every day. Comma-separated env var; defaults to the
+    # Indian life-insurance peer set Bajaj cares about. Apex hosts
+    # only (no scheme, no www) — the walker handles canonicalisation.
+    "roster": [
+        d.strip().lower().lstrip("www.")
+        for d in os.environ.get(
+            "COMPETITOR_ROSTER",
+            "iciciprulife.com,hdfclife.com,maxlifeinsurance.com,"
+            "tataaia.com,sbilife.co.in,kotaklife.com,pnbmetlife.com,"
+            "adityabirlasunlifeinsurance.com",
+        ).split(",")
+        if d.strip()
+    ],
     "top_n": int(os.environ.get("COMPETITOR_TOP_N", "10")),
     "pages_per_competitor": int(os.environ.get("COMPETITOR_PAGES_PER_COMP", "50")),
     "keywords_per_competitor": int(os.environ.get("COMPETITOR_KW_PER_COMP", "100")),
@@ -228,14 +242,17 @@ COMPETITOR = {
     # is dropped. It also runs the audit detectors against the
     # competitor's snapshot, so each domain ends up with a Health
     # Score visible via /api/v1/crawler/competitors/<domain>/health.
-    "engine": os.environ.get("COMPETITOR_ENGINE", "legacy").strip().lower(),
-    # When the Scrapy engine is active, this toggles the Playwright
-    # JS-rendering gate (same middleware used by BajajSpider). Off by
-    # default because Playwright adds ~3s/page; flip on for SPA-heavy
-    # competitor rosters (ICICI Pru, Tata AIA) where the static fetch
-    # returns thin HTML.
+    # Default flipped to "scrapy" so competitor crawls go through the
+    # same Scrapy + Playwright + dual-write stack as the in-house
+    # BajajSpider. Set COMPETITOR_ENGINE=legacy to revert.
+    "engine": os.environ.get("COMPETITOR_ENGINE", "scrapy").strip().lower(),
+    # Default flipped to TRUE so SPA competitors (ICICI Pru, Tata AIA,
+    # Max Life — all React/Next.js shells) get their JS-rendered HTML
+    # captured. The gate middleware only invokes Playwright when the
+    # static body looks thin (<200 visible chars or matches SPA
+    # heuristics), so the cost is bounded.
     "use_playwright_fallback": os.environ.get(
-        "COMPETITOR_USE_PLAYWRIGHT_FALLBACK", "false",
+        "COMPETITOR_USE_PLAYWRIGHT_FALLBACK", "true",
     ).strip().lower() in ("1", "true", "yes", "on"),
 }
 

@@ -1,5 +1,7 @@
+import { lazy, Suspense } from 'react';
 import { Route, Switch } from 'wouter';
 import Sidebar from './components/Sidebar';
+import RouteErrorBoundary from './components/RouteErrorBoundary';
 // StatusBar removed per request — file kept at components/StatusBar.tsx.
 import ChatPage from './pages/ChatPage';
 import GscPage from './pages/GscPage';
@@ -17,6 +19,11 @@ import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
 import IssuesPage from './crawler/pages/IssuesPage';
 import CompliancePage from './crawler/pages/CompliancePage';
+// ContentMapPage pulls in @react-three/fiber, which crashes at import-time
+// against React 18 (r3f@9 needs React 19). Lazy-load it so the rest of the
+// app keeps working; downgrade r3f→8 / drei→9 to fix the page itself.
+const ContentMapPage = lazy(() => import('./crawler/pages/ContentMapPage'));
+import ContentClustersPage from './crawler/pages/ContentClustersPage';
 import ReportsPage from './pages/ReportsPage';
 import PageExplorerPage from './crawler/pages/PageExplorerPage';
 import HealthDashboard from './crawler/pages/HealthDashboard';
@@ -25,6 +32,11 @@ import CompareCrawlsPage from './crawler/pages/CompareCrawlsPage';
 import GeoDashboard from './crawler/pages/GeoDashboard';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
+import ContentWriterPage from './pages/ContentWriterPage';
+import CustodiansPage from './pages/CustodiansPage';
+import BriefingsPage from './pages/BriefingsPage';
+import GeoPage from './pages/GeoPage';
+import CompetitorChangesPage from './pages/CompetitorChangesPage';
 
 export default function App() {
   return (
@@ -66,8 +78,34 @@ export default function App() {
             <Route path="/crawler/issues/:slug" component={IssuesPage} />
             {/* Compliance — WCAG / GDPR / OWASP manager-facing report. */}
             <Route path="/crawler/compliance" component={CompliancePage} />
+            {/* 3D content map — segregated by product + page-type.
+                Wrapped in an error boundary because @react-three/fiber@9
+                crashes against React 18; downgrade to r3f@8 / drei@9 to
+                fix. Use Content Clusters in the meantime. */}
+            <Route path="/crawler/content-map">
+              <RouteErrorBoundary
+                label="Content Map (3D)"
+                hint="Run: cd frontend/web && npm install @react-three/fiber@^8 @react-three/drei@^9 — r3f@9 needs React 19 but this app is on React 18. The Content Clusters page is a non-3D alternative."
+              >
+                <Suspense fallback={<div style={{ padding: 24 }}>Loading 3D map…</div>}>
+                  <ContentMapPage />
+                </Suspense>
+              </RouteErrorBoundary>
+            </Route>
+            {/* Hierarchical cluster tree (Product → Page-type → pages). */}
+            <Route path="/crawler/content-clusters" component={ContentClustersPage} />
             {/* Manager-facing XLSX report builder. */}
             <Route path="/reports" component={ReportsPage} />
+            {/* ContentWriter — LLM rewrites with citation pills. */}
+            <Route path="/content-writer" component={ContentWriterPage} />
+            {/* DataCustodians — our domain + competitor roster + SiteDiffer. */}
+            <Route path="/custodians" component={CustodiansPage} />
+            {/* Briefings — Orchestrator V2 headline + biggest signals. */}
+            <Route path="/briefings" component={BriefingsPage} />
+            {/* GEO score — Generative Engine Optimization rollup. */}
+            <Route path="/geo-score" component={GeoPage} />
+            {/* ChangeWatcher feed — daily competitor change events. */}
+            <Route path="/competitor-changes" component={CompetitorChangesPage} />
             {/* Phase 2 — Ahrefs-style Page Explorer with sortable/
                 filterable URL inventory over the latest crawl. */}
             <Route path="/crawler/pages" component={PageExplorerPage} />

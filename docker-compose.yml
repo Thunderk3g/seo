@@ -2,7 +2,10 @@ version: "3.8"
 
 services:
   db:
-    image: postgres:15
+    # pgvector image (postgres 15 + vector extension) — required for the
+    # Phase 2 content-embedding similarity search. Drop-in compatible with
+    # vanilla postgres:15; pg_data volume migrates without recreate.
+    image: pgvector/pgvector:pg15
     # Credentials match the local-dev `.env` (DB_USER=postgres / DB_PASSWORD=postgres)
     # so `docker compose up` and bare-metal Django agree on creds.
     environment:
@@ -13,7 +16,9 @@ services:
     # `compliance-postgres` container that holds host:5432. In-network port
     # remains 5432, so api/worker continue to use DB_HOST=db, DB_PORT=5432.
     # Host-side tools (bare-metal pytest, psql) must connect to localhost:5433.
-    ports: ["5433:5432"]
+    # Host port 5434 (5432 + 5433 both taken by unrelated containers).
+    # In-network port stays 5432 so api/worker config is unchanged.
+    ports: ["5434:5432"]
     volumes: [pg_data:/var/lib/postgresql/data]
 
   redis:
@@ -74,11 +79,36 @@ services:
       DB_HOST: db
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      # Scrapy-playwright runs on AsyncioSelectorReactor; the spider
+      # pipeline does sync Django ORM writes from worker threads off
+      # that reactor. Django's async-detection raises
+      # SynchronousOnlyOperation unless we set the escape hatch here.
+      DJANGO_ALLOW_ASYNC_UNSAFE: "true"
     volumes:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
     depends_on: [db, redis]
+
+  # ── Celery beat — fires the periodic tasks defined in
+  # core/scheduler/scheduler.py::CELERY_BEAT_SCHEDULE. Separate from
+  # ``worker`` so beat can be paused (compose stop beat) without
+  # killing live task execution. Uses the same image + bind mount so
+  # schedule edits land via the same Django reload path.
+  beat:
+    build: { context: ./backend }
+    command: celery -A config beat -l info --pidfile=/tmp/celerybeat.pid
+    env_file: [.env]
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+      - ./backend/reports:/app/reports
+    depends_on: [db, redis, worker]
+    restart: unless-stopped
 
 volumes:
   pg_data:

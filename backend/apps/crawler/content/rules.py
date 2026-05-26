@@ -115,66 +115,90 @@ _PRODUCT_RULES: dict[str, list[tuple[str, str, float]]] = {
     # label : [(signal_name, regex, weight), ...]
     # Note: URL patterns alone need to exceed UNCERTAIN_THRESHOLD (0.60)
     # so a single URL hit qualifies — we use 0.65 for definitive paths.
+    #
+    # Each product carries TWO families of URL patterns:
+    #   * ``url:*-bajaj``     — Bajaj-specific paths (highest precision)
+    #   * ``url:*-generic``   — insurer-agnostic paths that catch the
+    #     same product on ICICI / HDFC / Max / Tata AIA / SBI / Kotak
+    #     etc. Lower weight (0.65) so Bajaj-specific patterns still win
+    #     when both fire, but enough to classify competitor pages.
     "term": [
         ("url:term-plans",   r"/term-insurance-plans?(?:\.|/|$)", 0.70),
         ("url:nri-term",     r"/nri-term-", 0.70),
         ("url:term-html",    r"/term-insurance-plans?\.html(?:$|\?)", 0.70),
-        ("url:guide-term",   r"/life-insurance-guide/term/", 0.65),  # NEW
-        ("title:term",       r"\bterm insurance\b", W_TITLE),
-        ("title:crore",      r"₹[\d,]+\s*crore\s*term", 0.15),
+        ("url:guide-term",   r"/life-insurance-guide/term/", 0.65),
+        # Generic insurer-agnostic catchers — ICICI uses
+        # /insurance-plans/term-insurance/, HDFC uses /term-insurance/,
+        # Max uses /life-insurance-plans/term-plan/, Tata AIA uses
+        # /life-insurance/term-insurance-plans/, SBI uses /smart-shield/.
+        ("url:term-generic",  r"/term[-_]?insurance(?:[-_/]plan)?", 0.65),
+        ("url:iprotect",      r"/iprotect", 0.65),
+        ("url:click2protect", r"/click[-_]?2[-_]?protect", 0.65),
+        ("title:term",        r"\bterm insurance\b", W_TITLE),
+        ("title:crore",       r"₹[\d,]+\s*crore\s*term", 0.15),
     ],
     "ulip": [
-        ("url:ulip",         r"/ulip-plans?(?:\.|/|$)", 0.70),
-        ("url:guide-ulip",   r"/life-insurance-guide/ulip/", 0.65),
-        ("url:funds",        r"/funds/", 0.65),
-        ("title:ulip",       r"\bulip\b", W_TITLE),
-        ("title:linked",     r"\b(unit[- ]linked|investment plan|fund)\b", W_TITLE),
+        ("url:ulip",          r"/ulip-plans?(?:\.|/|$)", 0.70),
+        ("url:guide-ulip",    r"/life-insurance-guide/ulip/", 0.65),
+        ("url:funds",         r"/funds/", 0.65),
+        # Generic — most insurers use /ulip/ or /unit-linked/.
+        ("url:ulip-generic",  r"/ulip(?:[-_/]plan)?", 0.65),
+        ("url:unit-linked",   r"/unit[-_]?linked", 0.65),
+        ("title:ulip",        r"\bulip\b", W_TITLE),
+        ("title:linked",      r"\b(unit[- ]linked|investment plan|fund)\b", W_TITLE),
     ],
     "endowment": [
-        ("url:endow",        r"/endowment-plans?(?:\.|/|$)", 0.70),
-        ("url:savings",      r"/savings-plans?(?:\.|/|$)", 0.70),
-        ("url:guide-invest", r"/life-insurance-guide/investments/", 0.65),  # NEW
-        ("url:guar",         r"/guaranteed-", 0.35),
-        ("title:endow",      r"\b(endowment|savings plan|guaranteed return|smart wealth|solvency)\b", W_TITLE),
+        ("url:endow",         r"/endowment-plans?(?:\.|/|$)", 0.70),
+        ("url:savings",       r"/savings-plans?(?:\.|/|$)", 0.70),
+        ("url:guide-invest",  r"/life-insurance-guide/investments/", 0.65),
+        ("url:guar",          r"/guaranteed-", 0.35),
+        # Generic — endowment + savings + guaranteed-income.
+        ("url:endow-generic", r"/(endowment|saving[s]?[-_]?plan|guaranteed[-_]?(?:income|return|saving|wealth))", 0.65),
+        ("title:endow",       r"\b(endowment|savings plan|guaranteed return|smart wealth|solvency)\b", W_TITLE),
     ],
     "retirement": [
-        ("url:pension",      r"/(retirement|pension)-?(plan|pension-plan)s?", 0.70),
-        ("url:guide-ret",    r"/life-insurance-guide/retirement/", 0.65),
-        ("url:pension-fund", r"/funds/[a-z0-9-]*pension[a-z0-9-]*", 0.65),
-        ("title:retire",     r"\b(pension|retirement|annuity|viklang|family pension)\b", W_TITLE),
+        ("url:pension",       r"/(retirement|pension)-?(plan|pension-plan)s?", 0.70),
+        ("url:guide-ret",     r"/life-insurance-guide/retirement/", 0.65),
+        ("url:pension-fund",  r"/funds/[a-z0-9-]*pension[a-z0-9-]*", 0.65),
+        # Generic — annuity + pension + retirement variations.
+        ("url:retire-generic", r"/(retirement|pension|annuity|immediate[-_]annuity|deferred[-_]annuity)", 0.65),
+        ("title:retire",      r"\b(pension|retirement|annuity|viklang|family pension)\b", W_TITLE),
     ],
     "child": [
-        ("url:child",        r"/child-plans?(?:\.|/|$)", 0.70),
-        ("url:guide-child",  r"/life-insurance-guide/child/", 0.65),  # NEW
-        ("title:child",      r"\b(child plan|education plan|child future)\b", W_TITLE),
+        ("url:child",         r"/child-plans?(?:\.|/|$)", 0.70),
+        ("url:guide-child",   r"/life-insurance-guide/child/", 0.65),
+        # Generic — child + education + young-star variants.
+        ("url:child-generic", r"/(child|education|young[-_]?star|future[-_]?genius)", 0.65),
+        ("title:child",       r"\b(child plan|education plan|child future)\b", W_TITLE),
     ],
     "group": [
-        ("url:group",        r"/group-insurance-plans?(?:\.|/|$)", 0.70),
-        ("title:group",      r"\b(group insurance|employer-employee|group secure)\b", W_TITLE),
+        ("url:group",         r"/group-insurance-plans?(?:\.|/|$)", 0.70),
+        ("url:group-generic", r"/group[-_]?(insurance|term|secure|gratuity|leave[-_]?encash|superannuation)", 0.65),
+        ("title:group",       r"\b(group insurance|employer-employee|group secure)\b", W_TITLE),
     ],
     "wellness": [
-        ("url:diabetes",     r"/diabetes-care-program", 0.70),
-        ("url:wellness",     r"/wellness", 0.70),
-        ("url:rider",        r"/(health|critical-illness)-rider", 0.70),
-        ("title:wellness",   r"\b(diabetes|wellness|health rider)\b", W_TITLE),
+        ("url:diabetes",      r"/diabetes-care-program", 0.70),
+        ("url:wellness",      r"/wellness", 0.70),
+        ("url:rider",         r"/(health|critical-illness)-rider", 0.70),
+        # Generic — health + critical-illness add-ons.
+        ("url:health-generic", r"/(health[-_]?(plan|insurance)|critical[-_]illness)", 0.65),
+        ("title:wellness",    r"\b(diabetes|wellness|health rider)\b", W_TITLE),
     ],
     "tax": [
-        ("url:tax-guide",    r"/life-insurance-guide/tax/", 0.70),
-        ("url:tax-save",     r"/tax-saving", 0.70),
-        ("title:tax",        r"\b(tax[- ]saving|section 80c|itr|deduction)\b", W_TITLE),
+        ("url:tax-guide",     r"/life-insurance-guide/tax/", 0.70),
+        ("url:tax-save",      r"/tax-saving", 0.70),
+        ("url:tax-generic",   r"/(tax[-_]?(saving|benefit|deduction)|section[-_]?80c)", 0.65),
+        ("title:tax",         r"\b(tax[- ]saving|section 80c|itr|deduction)\b", W_TITLE),
     ],
     "nri": [
-        ("url:us",           r"^/us/", 0.65),
-        ("url:hi",           r"^/hi/", 0.25),   # Hindi alone is weak NRI signal
-        ("url:nri",          r"/nri-", 0.65),
-        ("title:nri",        r"\b(nri|non-resident|abroad|overseas)\b", W_TITLE),
+        ("url:us",            r"^/us/", 0.65),
+        ("url:hi",            r"^/hi/", 0.25),
+        ("url:nri",           r"/nri-", 0.65),
+        ("url:nri-generic",   r"/(nri|non[-_]?resident|overseas[-_]?(indian|customer))", 0.65),
+        ("title:nri",         r"\b(nri|non-resident|abroad|overseas)\b", W_TITLE),
     ],
     "general_life": [
-        # Broad life-insurance blog content — fires only on
-        # /life-insurance-guide/life/ which Bajaj uses for the general
-        # editorial bucket (not product-specific). Bumped to 0.65 so a
-        # single URL match qualifies above threshold.
-        ("url:guide-life",   r"/life-insurance-guide/life/", 0.65),
+        ("url:guide-life",    r"/life-insurance-guide/life/", 0.65),
     ],
 }
 

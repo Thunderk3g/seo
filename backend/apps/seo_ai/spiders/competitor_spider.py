@@ -57,6 +57,23 @@ def _host(url: str) -> str:
         return ""
 
 
+def _canonicalise(url: str) -> str:
+    """Cheap URL normalisation for the walk-mode dedupe set.
+
+    Drops fragments and query strings — competitors love mirroring the
+    same page across ``?utm_source=...`` permutations that we'd
+    otherwise re-crawl. Lowercases the host but keeps the path's case
+    (some CMS frameworks are case-sensitive).
+    """
+    try:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        port = f":{p.port}" if p.port else ""
+        return f"{p.scheme}://{host}{port}{p.path or '/'}"
+    except ValueError:
+        return url
+
+
 def _collect_schema_types(node, out: list[str]) -> None:
     """Mirror of legacy adapter helper — walks JSON-LD for @type values."""
     if isinstance(node, dict):
@@ -134,12 +151,26 @@ class CompetitorSpider(Spider):
         body_text_max_chars: int = 0,
         user_agent: str | None = None,
         playwright_enabled: bool = False,
+        mode: str = "urls",
+        max_depth: int = 2,
+        max_pages: int = 0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.target_domain = (target_domain or "").lower().lstrip("www.")
         self._urls: list[str] = list(urls or [])
         self.body_text_max_chars = int(body_text_max_chars or 0)
+        # Link-walking parameters.
+        # mode='urls'  → fetch only ``urls`` (default, gap-pipeline contract).
+        # mode='walk'  → use ``urls`` as seeds and follow internal <a> links
+        #                up to ``max_depth`` hops, stopping at ``max_pages``.
+        # max_pages=0 means "unlimited" — bounded only by max_depth and the
+        # spider's CLOSESPIDER_TIMEOUT.
+        self.mode = (mode or "urls").lower()
+        self.max_depth = max(0, int(max_depth or 0))
+        self.max_pages = max(0, int(max_pages or 0))
+        self._walk_pages_count = 0
+        self._walk_seen: set[str] = set()
         # Spider-level allowed_domains so Scrapy's OffsiteMiddleware
         # doesn't drop www-vs-apex redirects.
         if self.target_domain:
@@ -156,13 +187,29 @@ class CompetitorSpider(Spider):
         self.captured_items: list[dict] = []
 
     # ── start ──────────────────────────────────────────────────────
-    def start_requests(self):
-        """Emit one Request per URL in the input list. No link walking
-        — competitor URLs come pre-selected from the gap pipeline."""
+    async def start(self):
+        """Modern Scrapy 2.13+ async entry point.
+
+        Yields one Request per seed URL. ``mode='urls'`` (default)
+        treats each seed as a leaf; ``mode='walk'`` uses it as a seed
+        for the depth-bounded link-walk inside :meth:`parse`.
+
+        Implemented as ``async def`` per the new Scrapy contract —
+        the legacy ``start_requests`` signature still works as a
+        compat shim but emits a deprecation warning and (on some
+        2.13 builds) silently drops requests when the spider also
+        installs custom middlewares. Using ``start`` is the safer
+        forward-compatible call site.
+        """
         for url in self._urls:
             if not url:
                 continue
-            meta = {"download_latency_t0": time.monotonic()}
+            self._walk_seen.add(_canonicalise(url))
+            meta = {
+                "download_latency_t0": time.monotonic(),
+                "depth": 0,
+                "walk": self.mode == "walk",
+            }
             yield Request(
                 url,
                 callback=self.parse,
@@ -220,6 +267,40 @@ class CompetitorSpider(Spider):
             final_url=response.url,
             body=body_text_raw,
         )
+
+        # ── Audit-field parity with the in-house Bajaj crawler ─────
+        # Security headers from the HTTP response. The presence/
+        # absence of each header is itself the audit signal — empty
+        # string = header missing.
+        def _hdr(key: str) -> str:
+            val = response.headers.get(key)
+            if not val:
+                return ""
+            return val.decode("ascii", errors="ignore") if isinstance(val, bytes) else str(val)
+
+        security_headers = {
+            "hsts": _hdr("Strict-Transport-Security")[:512],
+            "csp": _hdr("Content-Security-Policy"),
+            "x_frame_options": _hdr("X-Frame-Options")[:128],
+            "x_content_type_options": _hdr("X-Content-Type-Options")[:64],
+            "referrer_policy": _hdr("Referrer-Policy")[:128],
+            "permissions_policy": _hdr("Permissions-Policy"),
+        }
+
+        # Redirect chain from Scrapy's downloader. ``redirect_urls`` is
+        # the list of pre-redirect URLs in the order they were hit;
+        # ``redirect_reasons`` is the parallel list of HTTP status codes.
+        redirect_urls = response.meta.get("redirect_urls") or []
+        redirect_reasons = response.meta.get("redirect_reasons") or []
+        redirect_chain = [
+            {
+                "url": (u or "")[:1024],
+                "status": int(s or 0),
+                "type": "http",
+            }
+            for u, s in zip(redirect_urls, redirect_reasons)
+        ]
+
         parsed.update({
             "status_code": status_str,
             "status": "OK",
@@ -231,8 +312,64 @@ class CompetitorSpider(Spider):
             "error_type": "",
             "error_message": "",
             "error": "",
+            **security_headers,
+            "redirect_chain": redirect_chain,
+            "redirect_hops": len(redirect_chain),
+            "redirect_loop": (
+                len(redirect_urls) > 0
+                and url in redirect_urls
+            ),
+            "redirect_final_url": response.url[:2048],
         })
         yield parsed
+
+        # ── link-walking ────────────────────────────────────────────
+        # Spider-level fan-out: when we're in walk mode and below the
+        # per-spider page cap + depth cap, follow every internal link
+        # we just parsed. Deduplication is by canonicalised URL so the
+        # same page reached via two different anchors is visited once.
+        if not response.meta.get("walk"):
+            return
+        depth = int(response.meta.get("depth") or 0)
+        if depth >= self.max_depth:
+            return
+        if self.max_pages and self._walk_pages_count >= self.max_pages:
+            return
+
+        for link in parsed.get("internal_links") or []:
+            href = link.get("href") or ""
+            if not href:
+                continue
+            canon = _canonicalise(href)
+            if canon in self._walk_seen:
+                continue
+            target_host = (_host(canon) or "").lower().lstrip("www.")
+            # Only stay within target_domain — OffsiteMiddleware will
+            # drop the rest anyway, this just keeps the request queue
+            # tidy.
+            if (
+                self.target_domain
+                and target_host
+                and target_host != self.target_domain
+                and not target_host.endswith("." + self.target_domain)
+            ):
+                continue
+            self._walk_seen.add(canon)
+            self._walk_pages_count += 1
+            if self.max_pages and self._walk_pages_count > self.max_pages:
+                return
+            yield Request(
+                href,
+                callback=self.parse,
+                errback=self.errback_default,
+                meta={
+                    "download_latency_t0": time.monotonic(),
+                    "depth": depth + 1,
+                    "walk": True,
+                },
+                headers={"User-Agent": self._user_agent},
+                dont_filter=False,
+            )
 
     # ── error item helpers ─────────────────────────────────────────
     def _error_item(
@@ -275,6 +412,10 @@ class CompetitorSpider(Spider):
             "has_schema_org": False,
             "playwright_used": False,
             "target_domain": self.target_domain,
+            "headings": [],
+            "internal_links": [],
+            "external_links": [],
+            "images": [],
             "error_type": "HTTPError" if status not in ("0", "") else "NetworkError",
             "error_message": error,
             "error": error,
@@ -313,13 +454,20 @@ class CompetitorSpider(Spider):
             out.update({
                 "title": "", "title_length": 0,
                 "meta_description": "", "meta_description_length": 0,
-                "canonical": "", "meta_robots": "",
+                "canonical": "", "canonical_html": "",
+                "meta_robots": "",
                 "h1_texts": [], "h2_texts": [],
                 "h2_count": 0, "h3_count": 0,
                 "internal_link_count": 0, "external_link_count": 0,
                 "image_count": 0, "image_alt_pct": 0.0, "cta_count": 0,
                 "schema_types": [], "has_schema_org": False,
+                "jsonld_count": 0, "jsonld_blocks": [],
+                "hreflang_count": 0, "hreflang_entries": [],
+                "hreflang_has_x_default": False,
+                "flesch_score": 0.0, "grade_level": 0.0,
                 "word_count": 0, "body_text": "",
+                "headings": [], "internal_links": [],
+                "external_links": [], "images": [],
             })
             return out
 
@@ -394,8 +542,11 @@ class CompetitorSpider(Spider):
         else:
             out["image_alt_pct"] = 0.0
 
-        # JSON-LD schema types
+        # JSON-LD: capture both the @type names AND the full block
+        # JSON for downstream rich-result validation. Bajaj's
+        # in-house parser keeps blocks too; this brings parity.
         schema_types: list[str] = []
+        jsonld_blocks: list[dict] = []
         for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
             raw = script.string or script.get_text() or ""
             if not raw.strip():
@@ -405,11 +556,82 @@ class CompetitorSpider(Spider):
             except (json.JSONDecodeError, ValueError):
                 continue
             _collect_schema_types(data, schema_types)
+            # Cap each block at 50 keys / 10 KB serialised so a
+            # pathological 1 MB JSON-LD blob doesn't blow up the row.
+            try:
+                serial = json.dumps(data)[:10_000]
+                jsonld_blocks.append(json.loads(serial))
+            except Exception:  # noqa: BLE001
+                pass
         seen: set[str] = set()
         out["schema_types"] = [
             t for t in schema_types if not (t in seen or seen.add(t))
         ][:20]
         out["has_schema_org"] = bool(out["schema_types"])
+        out["jsonld_count"] = len(jsonld_blocks)
+        out["jsonld_blocks"] = jsonld_blocks[:20]
+
+        # Hreflang inventory — read every <link rel="alternate" hreflang="xx-XX">.
+        hreflang_entries: list[dict] = []
+        has_x_default = False
+        for link in soup.find_all("link", attrs={"rel": re.compile(r"alternate", re.I)}):
+            hl = (link.get("hreflang") or "").strip()
+            href = (link.get("href") or "").strip()
+            if not hl or not href:
+                continue
+            entry = {"hreflang": hl[:16], "href": href[:1024]}
+            hreflang_entries.append(entry)
+            if hl.lower() == "x-default":
+                has_x_default = True
+        out["hreflang_count"] = len(hreflang_entries)
+        out["hreflang_entries"] = hreflang_entries[:50]
+        out["hreflang_has_x_default"] = has_x_default
+
+        # Canonical chain — HTML <link rel="canonical"> vs HTTP Link
+        # header. The HTTP-header form lives on the spider parser
+        # (called from parse()) — we surface canonical_html here.
+        out["canonical_html"] = out.get("canonical", "")[:2048]
+
+        # Readability — Flesch reading ease over the visible body.
+        # Cheap to compute, useful as a content-quality cross-check.
+        try:
+            from textstat import flesch_reading_ease, flesch_kincaid_grade
+            # The text variable comes from the body-text pass below.
+            # We compute on the (not-yet-decomposed) soup text to
+            # match Bajaj's flesch_score column.
+            visible_for_flesch = soup.get_text(" ", strip=True)
+            visible_for_flesch = _WHITESPACE_RE.sub(" ", visible_for_flesch)[:50_000]
+            if visible_for_flesch and len(visible_for_flesch.split()) > 20:
+                out["flesch_score"] = float(flesch_reading_ease(visible_for_flesch))
+                out["grade_level"] = float(flesch_kincaid_grade(visible_for_flesch))
+        except Exception:  # noqa: BLE001
+            # textstat not installed or text too short — skip silently.
+            out["flesch_score"] = 0.0
+            out["grade_level"] = 0.0
+
+        # ── Structural mirror (Phase 2A.5) ─────────────────────────
+        # Reuse the legacy adapter's walker so the JSON shape is byte-
+        # identical regardless of which engine fetched the page. Done
+        # BEFORE the body-text decompose() pass — soup descendants
+        # still include script/style nodes at this point but the walker
+        # only looks at h1-h6/a/img, none of which get decomposed.
+        try:
+            from apps.seo_ai.adapters.competitor_crawler import (
+                _extract_structured,
+            )
+            structured = _extract_structured(
+                soup, page_host, final_url or url,
+            )
+        except Exception as exc:  # noqa: BLE001 - never break the parse
+            log.debug("structural extract failed for %s (%s)", url, exc)
+            structured = {
+                "headings": [], "internal_links": [],
+                "external_links": [], "images": [],
+            }
+        out["headings"] = structured["headings"]
+        out["internal_links"] = structured["internal_links"]
+        out["external_links"] = structured["external_links"]
+        out["images"] = structured["images"]
 
         # Body text — strip non-visible tags, collapse whitespace.
         for tag in soup(["script", "style", "noscript", "template"]):
