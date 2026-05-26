@@ -67,6 +67,11 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
+      # HuggingFace embedding model (all-MiniLM-L6-v2 ~87MB) — gitignored
+      # but bind-mounted so weights survive `docker compose down` and the
+      # embedder doesn't re-download from the HF hub on every container
+      # restart. Path matches MINILM_PATH default in crawler/content/__init__.py.
+      - ./backend/models:/app/models
     depends_on: [db, redis]
 
   worker:
@@ -88,6 +93,7 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
+      - ./backend/models:/app/models
     depends_on: [db, redis]
 
   # ── Celery beat — fires the periodic tasks defined in
@@ -107,6 +113,7 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
+      - ./backend/models:/app/models
     depends_on: [db, redis, worker]
     restart: unless-stopped
 

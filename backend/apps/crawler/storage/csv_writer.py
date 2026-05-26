@@ -112,6 +112,18 @@ PHASE_E_FIELDS = [
 ]
 
 
+# ── Phase 2A.5 — structural mirror parity ────────────────────────
+# Per-page heading / link / image inventory built by parser._extract_structured()
+# and stamped by fetcher.py:256-259. Previously DB-only (DictWriter dropped
+# them with extrasaction='ignore'); now present in the CSV schema too so
+# `load_csv_to_db` round-trip preserves them. Serialized as JSON strings
+# inside append() so DictWriter doesn't write Python repr.
+PHASE_2A_FIELDS = [
+    "headings_json", "internal_links_json",
+    "external_links_json", "images_json",
+]
+
+
 # ── Phase D — cookies + AMP + accessibility ──────────────────────
 PHASE_D_FIELDS = [
     # D.1 cookies
@@ -146,6 +158,8 @@ RESULTS_FIELDS = [
     *PHASE_D_FIELDS,
     # Phase E — LanguageTool grammar + AXE color contrast.
     *PHASE_E_FIELDS,
+    # Phase 2A.5 — structural mirror (headings/links/images JSON).
+    *PHASE_2A_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -366,7 +380,16 @@ def append(stream: str, row: dict) -> None:
         if h is None:
             return
         _, writer = h
-        writer.writerow(row)
+        # csv.DictWriter str()-ifies list/dict values as Python repr, which
+        # is not valid JSON and breaks CSV round-trip (load_csv_to_db reads
+        # the column back with json.loads). Serialize structured values to
+        # JSON strings just for the CSV; dual-write below still sees the
+        # original row dict with native types.
+        csv_row = {
+            k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v)
+            for k, v in row.items()
+        }
+        writer.writerow(csv_row)
         _writes_since_flush += 1
         if _writes_since_flush >= _FLUSH_EVERY:
             for f, _ in _handles.values():

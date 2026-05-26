@@ -28,6 +28,12 @@ SAFE_STR_FIELDS = {
     "content_type", "status", "status_code", "error_type", "error_message",
 }
 SAFE_INT_FIELDS = {"response_time_ms", "word_count"}
+# Phase 2A.5 structural mirror — JSONField columns serialized by csv_writer
+# as JSON strings. Parsed back via json.loads here. Empty / missing → [].
+SAFE_JSON_LIST_FIELDS = {
+    "headings_json", "internal_links_json",
+    "external_links_json", "images_json",
+}
 
 
 class Command(BaseCommand):
@@ -86,6 +92,18 @@ class Command(BaseCommand):
                     kw["jsonld_types"] = []
             else:
                 kw["jsonld_types"] = []
+
+            # Phase 2A.5 structural fields (headings / link / image inventories)
+            for field in SAFE_JSON_LIST_FIELDS:
+                raw = r.get(field, "")
+                if not raw:
+                    kw[field] = []
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                    kw[field] = parsed if isinstance(parsed, list) else []
+                except (TypeError, ValueError):
+                    kw[field] = []
 
             # Skip empty/header rows
             if not kw.get("url"):

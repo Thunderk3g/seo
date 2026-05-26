@@ -128,12 +128,23 @@ LLM = {
     #   "/path/to/ca.pem"    → custom CA bundle, e.g. corporate root CA
     "ssl_verify": os.environ.get("LLM_SSL_VERIFY", "").strip(),
     "groq": {
+        # NOTE: this single-key value is the back-compat fallback only.
+        # The production path is the multi-key pool in
+        # ``apps.seo_ai.llm.key_pool.get_groq_pool`` which reads
+        # ``GROQ_API_KEYS`` (comma-separated) first and falls back to
+        # ``GROQ_API_KEY`` here when only one key is configured. Setting
+        # both is harmless; the pool dedupes.
         "api_key": os.environ.get("GROQ_API_KEY", ""),
         "base_url": os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
         "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "max_tokens": int(os.environ.get("GROQ_MAX_TOKENS", "4096")),
         "temperature": float(os.environ.get("GROQ_TEMPERATURE", "0.2")),
     },
+    # TODO(prod-cutover): OpenAI + Anthropic provider config sections.
+    # Concrete provider classes still need to be added to
+    # apps.seo_ai.llm.provider.py — see the get_provider() factory.
+    # Apify (Meta Ads adapter at apps.seo_ai.adapters.apify_meta_ads) is
+    # a separate subsystem and does NOT use this LLM dict.
 }
 
 SEMRUSH = {

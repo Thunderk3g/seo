@@ -112,7 +112,29 @@ Roster lives in `COMPETITOR["roster"]` (env `COMPETITOR_ROSTER`,
 comma-separated apex hosts). The Indian life-insurance peer set is
 the default.
 
-## 9. Cutover smoke tests
+## 9. Deferred work (acknowledged, not blocking first deploy)
+
+These are known gaps tracked separately from this checklist. None of
+them prevent the current Groq-backed stack from going live, but each
+should be picked up as a follow-up before the next major release.
+
+- **LLM provider rewrite — OpenAI + Anthropic.** `apps.seo_ai.llm.provider.get_provider()`
+  currently dispatches only `groq` / `stub`. Concrete `OpenAIProvider`
+  and `AnthropicProvider` classes (plus matching config sections in
+  `settings/base.py::LLM`) are pending. `OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY` are already consumed by the AI-visibility probe
+  subsystem; reusing them for the core LLM stack is a one-file change.
+- **Apify Meta Ads — broader integration.** The
+  `apps.seo_ai.adapters.apify_meta_ads` adapter is wired and the API
+  key is provisioned (`APIFY_API_TOKEN`). Expansion to additional
+  Apify actors (e.g. organic SERP scrapers, brand-mention crawlers)
+  will land later — Apify is *not* an LLM provider, so it lives outside
+  the provider factory.
+- **Tier 2 TF-IDF content classifier** is documented in
+  `apps/crawler/content/pipeline.py` but unimplemented. Tier 1 → Tier 3
+  (MiniLM embeddings) covers the fallback path today.
+
+## 10. Cutover smoke tests
 
 After the first deploy, manually verify:
 

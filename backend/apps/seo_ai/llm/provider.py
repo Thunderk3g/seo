@@ -484,7 +484,24 @@ _singleton: LLMProvider | None = None
 
 
 def get_provider() -> LLMProvider:
-    """Return the configured provider (lazy, cached for the process)."""
+    """Return the configured provider (lazy, cached for the process).
+
+    Currently shipped:
+      * ``groq`` — production-ready, multi-key pool with 429 backoff
+      * ``stub`` — offline / test mode
+
+    Deferred (prod-cutover work — tracked separately):
+      * ``openai``   → add OpenAIProvider class + config section in
+                       settings/base.py LLM dict (uses OPENAI_API_KEY)
+      * ``anthropic``→ add AnthropicProvider class + config section
+                       (uses ANTHROPIC_API_KEY)
+
+    The OPENAI_API_KEY / ANTHROPIC_API_KEY env vars are already used by
+    apps.seo_ai.adapters.ai_visibility.* probes (independent subsystem).
+
+    Apify (Meta Ads ingestion via apps.seo_ai.adapters.apify_meta_ads)
+    is NOT an LLM provider — it lives outside this factory.
+    """
     global _singleton
     if _singleton is not None:
         return _singleton
