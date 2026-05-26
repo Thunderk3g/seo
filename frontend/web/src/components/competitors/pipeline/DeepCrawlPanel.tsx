@@ -99,8 +99,19 @@ export default function DeepCrawlPanel({ rows }: { rows: GapDeepCrawlRow[] }) {
                       us
                     </span>
                   )}
-                  <Link href={`/competitors/${encodeURIComponent(c.domain)}`}>
-                    <a
+                  {c.is_us ? (
+                    // Our own row is not linkable — the per-competitor
+                    // endpoint filters is_us=False (we don't ship a
+                    // /competitors/<our-domain>/ page). Rendering it as
+                    // a plain span avoids 404 and the <a><a> nesting bug.
+                    <span
+                      style={{ color: 'var(--text-1)', fontWeight: 500 }}
+                    >
+                      {c.domain}
+                    </span>
+                  ) : (
+                    <Link
+                      href={`/competitors/${encodeURIComponent(c.domain)}`}
                       style={{
                         color: 'var(--accent)',
                         textDecoration: 'none',
@@ -108,8 +119,8 @@ export default function DeepCrawlPanel({ rows }: { rows: GapDeepCrawlRow[] }) {
                       }}
                     >
                       {c.domain}
-                    </a>
-                  </Link>
+                    </Link>
+                  )}
                 </td>
                 <td className="num">{fmt(c.sitemap_url_count)}</td>
                 <td className="num">
@@ -157,8 +168,13 @@ export default function DeepCrawlPanel({ rows }: { rows: GapDeepCrawlRow[] }) {
                     !c.profile?.has_pricing_page && <span>—</span>}
                 </td>
                 <td style={{ textAlign: 'right' }}>
-                  <Link href={`/competitors/${encodeURIComponent(c.domain)}`}>
-                    <a
+                  {c.is_us ? (
+                    <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
+                      —
+                    </span>
+                  ) : (
+                    <Link
+                      href={`/competitors/${encodeURIComponent(c.domain)}`}
                       style={{
                         color: 'var(--accent)',
                         textDecoration: 'none',
@@ -167,8 +183,8 @@ export default function DeepCrawlPanel({ rows }: { rows: GapDeepCrawlRow[] }) {
                       }}
                     >
                       Open →
-                    </a>
-                  </Link>
+                    </Link>
+                  )}
                 </td>
               </tr>
             ))}

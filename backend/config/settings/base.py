@@ -139,6 +139,16 @@ LLM = {
         "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "max_tokens": int(os.environ.get("GROQ_MAX_TOKENS", "4096")),
         "temperature": float(os.environ.get("GROQ_TEMPERATURE", "0.2")),
+        # 413 fallback chain. When the primary model returns
+        # "request too large" (TPM-per-key bucket is too small for
+        # this prompt), the provider transparently retries with the
+        # next model in this list — ordered smartest → highest-TPM.
+        # llama-3.3-70b-versatile ≈ 12k TPM, llama-3.1-8b-instant ≈ 30k.
+        # Comma-separated. Empty = no fallback (fail-fast on 413).
+        "fallback_models": os.environ.get(
+            "GROQ_FALLBACK_MODELS",
+            "llama-3.3-70b-versatile,llama-3.1-8b-instant",
+        ),
     },
     # TODO(prod-cutover): OpenAI + Anthropic provider config sections.
     # Concrete provider classes still need to be added to

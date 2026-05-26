@@ -193,6 +193,12 @@ class GroqProvider(LLMProvider):
         self.model = cfg["model"]
         self._default_max_tokens = cfg["max_tokens"]
         self._default_temperature = cfg["temperature"]
+        # 413 ("request too large") fallback chain — primary first,
+        # then progressively smaller / higher-TPM models. Pre-cleaned.
+        raw_fb = (cfg.get("fallback_models") or "").strip()
+        self._fallback_models: list[str] = [
+            m.strip() for m in raw_fb.split(",") if m.strip()
+        ]
 
     def complete(
         self,
@@ -222,9 +228,17 @@ class GroqProvider(LLMProvider):
         # Per-request key acquisition when a pool is configured. Each
         # attempt acquires a fresh key from the pool — if the prior
         # attempt 429-ed, that key is now cooling and we'll get a
-        # different one. With N keys the effective TPM is N×.
+        # different one. With N keys the effective TPM is N×ACROSS
+        # CALLS — a single request still has to fit one key's TPM
+        # bucket. When a single request is too big for the current
+        # model's bucket the API returns 413; we downshift to the
+        # next model in the fallback chain instead of cooling a key
+        # (413 is not a key-state problem).
         import time as _time
         from .key_pool import PoolExhaustedError
+
+        model_chain = [kwargs["model"], *self._fallback_models]
+        model_idx = 0
 
         last_exc: Exception | None = None
         for attempt in range(max(3, len(self._pool) if self._pool else 3)):
@@ -254,18 +268,37 @@ class GroqProvider(LLMProvider):
             except Exception as exc:  # pragma: no cover - network errors
                 msg = str(exc).lower()
                 last_exc = exc
-                retryable = (
+                # 413 = request too large for this model's TPM bucket.
+                # Rotating keys won't help (same bucket per model);
+                # swap to the next fallback model and retry.
+                is_413 = (
+                    "413" in msg
+                    or "request too large" in msg
+                    or "request_too_large" in msg
+                )
+                if is_413 and model_idx + 1 < len(model_chain):
+                    prev_model = model_chain[model_idx]
+                    model_idx += 1
+                    next_model = model_chain[model_idx]
+                    kwargs["model"] = next_model
+                    logger.warning(
+                        "groq 413 on %s — downshifting to %s (request too "
+                        "large for prior model's TPM bucket)",
+                        prev_model,
+                        next_model,
+                    )
+                    # 413 isn't a key problem — don't cool the key.
+                    continue
+                # 429 / TPM exhausted on the current model. Same model,
+                # different key (or backoff if no pool).
+                is_429 = (
                     "rate_limit" in msg
                     or "tokens per minute" in msg
                     or "429" in msg
-                    or "413" in msg
                 )
-                if self._pool is not None and current_key is not None and retryable:
+                if is_429 and self._pool is not None and current_key is not None:
                     self._pool.report_429(current_key)
-                if retryable and attempt < (len(self._pool) if self._pool else 2):
-                    # With the pool, just loop — next acquire() will
-                    # skip the cooling key. Without the pool, fall back
-                    # to the legacy backoff.
+                if is_429 and attempt < (len(self._pool) if self._pool else 2):
                     if self._pool is None:
                         wait = (
                             30 if "tokens per minute" in msg
