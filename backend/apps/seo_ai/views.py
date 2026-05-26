@@ -1473,28 +1473,271 @@ def _slim_sample_for_index(sample: dict) -> dict:
     }
 
 
+# ── BUG-031 fix: read competitor detail from CrawlerPageResult ─────
+# Phase G's Scrapy walk writes to CrawlerPageResult / CompetitorPageHistory,
+# not to GapDeepCrawl. The helpers below let competitor_detail_view +
+# competitor_page_detail_view source from the live tables (5k+ rows)
+# instead of the orphan GapDeepCrawl table (~34 stale rows). GapDeepCrawl
+# remains the fallback when no CrawlerPageResult data exists for a domain,
+# so legacy gap-pipeline outputs still render.
+
+
+def _latest_competitor_snapshot_for(domain: str):
+    """Most-recent COMPLETE competitor snapshot with rows for `domain`.
+
+    Falls back to the latest complete snapshot regardless of pages_ok
+    when none have rows (so an empty crawl still surfaces metadata
+    instead of 404-ing). Returns None when nothing matches.
+    """
+    from apps.crawler.models import CrawlSnapshot
+
+    normalized = _normalize_competitor_domain(domain)
+    base = CrawlSnapshot.objects.filter(
+        kind=CrawlSnapshot.Kind.COMPETITOR,
+        status=CrawlSnapshot.Status.COMPLETE,
+        target_domain__iexact=normalized,
+    ).order_by("-started_at")
+    with_pages = base.filter(pages_ok__gt=0).first()
+    return with_pages or base.first()
+
+
+def _h1_text_from_headings(headings_json) -> str:
+    """First H1 text from the structural headings list, empty if none."""
+    if not headings_json:
+        return ""
+    for h in headings_json:
+        if isinstance(h, dict) and int(h.get("level") or 0) == 1:
+            return (h.get("text") or "").strip()
+    return ""
+
+
+def _profile_from_page_results(pages) -> dict:
+    """Aggregate CrawlerPageResult rows into the same profile shape that
+    GapDeepCrawl.profile carried, so the frontend sees a consistent payload
+    regardless of which storage track populated it."""
+    pages = list(pages)
+    n = len(pages)
+    if n == 0:
+        return {}
+
+    def _ok(p) -> bool:
+        try:
+            code = int(p.status_code or 0)
+        except (TypeError, ValueError):
+            return False
+        return 200 <= code < 400
+
+    ok = sum(1 for p in pages if _ok(p))
+    word_counts = [int(p.word_count or 0) for p in pages]
+    word_counts_sorted = sorted(word_counts)
+    response_times = [int(p.response_time_ms or 0) for p in pages if p.response_time_ms]
+    has_schema_pages = sum(1 for p in pages if (p.jsonld_count or 0) > 0)
+    h1_pages = sum(1 for p in pages if (p.h1_count or 0) > 0)
+
+    page_types: dict[str, int] = {}
+    schema_types_set: set[str] = set()
+    for p in pages:
+        pt = (p.page_type or "").strip() or "unknown"
+        page_types[pt] = page_types.get(pt, 0) + 1
+        for t in (p.jsonld_types or []):
+            if t:
+                schema_types_set.add(str(t))
+
+    # PSI / CWV — prefer mobile_* (CrUX-backed), fall back to legacy *_ms.
+    def _mobile_or_legacy(p, mobile_attr: str, legacy_attr: str):
+        v = getattr(p, mobile_attr, None)
+        if v is not None:
+            return v
+        return getattr(p, legacy_attr, None)
+
+    pagespeed_vals = [
+        _mobile_or_legacy(p, "mobile_pagespeed_score", "pagespeed_score")
+        for p in pages
+    ]
+    pagespeed_vals = [v for v in pagespeed_vals if v is not None]
+    lcp_vals = [_mobile_or_legacy(p, "mobile_lcp_ms", "lcp_ms") for p in pages]
+    lcp_vals = [v for v in lcp_vals if v is not None]
+    cls_vals = [_mobile_or_legacy(p, "mobile_cls", "cls") for p in pages]
+    cls_vals = [v for v in cls_vals if v is not None]
+    inp_vals = [_mobile_or_legacy(p, "mobile_inp_ms", "inp_ms") for p in pages]
+    inp_vals = [v for v in inp_vals if v is not None]
+
+    def _median(vs):
+        if not vs:
+            return 0
+        s = sorted(vs)
+        return s[len(s) // 2]
+
+    pricing_signals = [p for p in pages if "/pricing" in (p.url or "").lower()]
+    llms_signals = [p for p in pages if (p.url or "").lower().rstrip("/").endswith("/llms.txt")]
+
+    return {
+        "page_count": n,
+        "ok_count": ok,
+        "avg_word_count": round(sum(word_counts) / n) if n else 0,
+        "median_word_count": word_counts_sorted[n // 2] if n else 0,
+        "avg_response_ms": (
+            round(sum(response_times) / len(response_times))
+            if response_times else 0
+        ),
+        "schema_pct": round(100 * has_schema_pages / n) if n else 0,
+        "h1_pct": round(100 * h1_pages / n) if n else 0,
+        "page_types": page_types,
+        "schema_types": sorted(schema_types_set)[:20],
+        "has_pricing_page": bool(pricing_signals),
+        "has_llms_txt": bool(llms_signals),
+        # has_pricing_md isn't a direct CrawlerPageResult signal — preserve
+        # the field for shape parity but leave it False unless a future
+        # crawler stamps it explicitly.
+        "has_pricing_md": False,
+        # Simple AI-citability proxy: schema% + has_llms_txt + heading
+        # coverage, scaled to 100. The original GapDeepCrawl figure used
+        # a deeper scorer; this stand-in keeps the UI tile populated.
+        "ai_citability_score": min(
+            100,
+            round(
+                (has_schema_pages / n * 50 if n else 0)
+                + (h1_pages / n * 30 if n else 0)
+                + (20 if llms_signals else 0)
+            ),
+        ),
+        "cwv_pages_count": len(pagespeed_vals),
+        "avg_pagespeed_score": (
+            round(sum(pagespeed_vals) / len(pagespeed_vals))
+            if pagespeed_vals else 0
+        ),
+        "median_lcp_ms": _median(lcp_vals),
+        "median_cls": round(_median(cls_vals), 3) if cls_vals else 0,
+        "median_inp_ms": _median(inp_vals),
+    }
+
+
+def _slim_page_from_result(p) -> dict:
+    """Sample-page summary derived from a CrawlerPageResult row.
+
+    Mirrors the dict shape that _slim_sample_for_index used to build
+    from the GapDeepCrawl JSON blob.
+    """
+    h1_text = _h1_text_from_headings(p.headings_json)
+    return {
+        "url": p.url,
+        "url_b64": _b64url_encode(p.url or ""),
+        "title": p.title or "",
+        "meta_description": (p.meta_description or "")[:280],
+        "page_type": p.page_type or "",
+        "word_count": int(p.word_count or 0),
+        "has_schema": bool(p.jsonld_count or 0),
+        "schema_types": list(p.jsonld_types or []),
+        "response_time_ms": int(p.response_time_ms or 0),
+        "pagespeed_score": p.mobile_pagespeed_score or p.pagespeed_score,
+        "lcp_ms": p.mobile_lcp_ms or p.lcp_ms,
+        "cls": p.mobile_cls if p.mobile_cls is not None else p.cls,
+        "inp_ms": p.mobile_inp_ms or p.inp_ms,
+        "h1_text": h1_text,
+        "internal_link_count": len(p.internal_links_json or []),
+        "external_link_count": len(p.external_links_json or []),
+    }
+
+
+def _full_page_from_result(p, snap) -> dict:
+    """Full per-URL detail derived from a CrawlerPageResult row.
+
+    Mirrors the dict shape the legacy GapDeepCrawl-backed endpoint built.
+    """
+    headings = p.headings_json or []
+    h1_texts = [
+        (h.get("text") or "").strip()
+        for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 1
+    ]
+    h2_texts = [
+        (h.get("text") or "").strip()
+        for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 2
+    ]
+    sample_for_tree = {"headings": headings}
+    return {
+        "domain": snap.target_domain,
+        "url": p.url,
+        "url_b64": _b64url_encode(p.url or ""),
+        "title": p.title or "",
+        "meta_description": p.meta_description or "",
+        "h1_texts": h1_texts,
+        "h2_texts": h2_texts,
+        "schema_types": list(p.jsonld_types or []),
+        "word_count": int(p.word_count or 0),
+        "has_schema": bool(p.jsonld_count or 0),
+        "page_type": p.page_type or "",
+        "response_time_ms": int(p.response_time_ms or 0),
+        "internal_link_count": len(p.internal_links_json or []),
+        "external_link_count": len(p.external_links_json or []),
+        "last_modified": "",
+        "body_text": p.body_text or "",
+        "pagespeed_score": p.mobile_pagespeed_score or p.pagespeed_score,
+        "lcp_ms": p.mobile_lcp_ms or p.lcp_ms,
+        "cls": p.mobile_cls if p.mobile_cls is not None else p.cls,
+        "inp_ms": p.mobile_inp_ms or p.inp_ms,
+        "headings": headings,
+        "headings_tree": _headings_tree_for_sample(sample_for_tree),
+        "internal_links": p.internal_links_json or [],
+        "external_links": p.external_links_json or [],
+        "images": p.images_json or [],
+        "run_id": str(snap.id),
+        "run_started_at": (
+            snap.started_at.isoformat() if snap.started_at else None
+        ),
+    }
+
+
 @api_view(["GET"])
 def competitor_detail_view(_request, domain: str):
     """Per-competitor landing page payload.
 
-    Returns:
-      - the normalized domain
-      - the deep-crawl profile summary (KPIs, page-type breakdown,
-        schema coverage, AI citability, CWV aggregates)
-      - a slim list of every sample page (URL, title, meta, page_type,
-        CWV, etc. — body_text excluded to keep the response under
-        ~50 KB even for the 25-page-per-competitor max)
-      - the run_id and started_at so the UI can show "based on crawl
-        from <date>"
+    Sources from CrawlerPageResult first (Phase G Scrapy walk output) and
+    falls back to the legacy GapDeepCrawl table when no CrawlerPageResult
+    snapshot exists for the domain. Either way the response shape is
+    identical so the frontend hook doesn't care which storage track served.
 
-    Returns 404 when we have no GapDeepCrawl for the domain.
+    Returns 404 only when neither storage has anything for the domain.
     """
+    from apps.crawler.models import CrawlerPageResult
+
+    snap = _latest_competitor_snapshot_for(domain)
+    if snap is not None:
+        pages = list(CrawlerPageResult.objects.filter(snapshot=snap))
+        if pages:
+            profile = _profile_from_page_results(pages)
+            return Response({
+                "domain": snap.target_domain,
+                "is_us": False,
+                "run_id": str(snap.id),
+                "run_started_at": (
+                    snap.started_at.isoformat() if snap.started_at else None
+                ),
+                "sitemap_url_count": (
+                    len(snap.allowed_domains or [])
+                    if hasattr(snap, "allowed_domains") else 0
+                ),
+                "pages_attempted": snap.pages_attempted,
+                "pages_ok": snap.pages_ok,
+                "profile_summary": profile,
+                "sample_pages": [_slim_page_from_result(p) for p in pages],
+                "sample_count": len(pages),
+                "error": "",
+            })
+
+    # Fallback — legacy GapDeepCrawl path. Kept so old gap-pipeline runs
+    # still render until they age out.
     crawl = _latest_deep_crawl_for(domain)
     if crawl is None:
         return Response(
             {
-                "error": f"no deep-crawl data for {domain}",
-                "hint": "run the gap pipeline first",
+                "error": f"no crawl data for {domain}",
+                "hint": (
+                    "no CrawlSnapshot or GapDeepCrawl rows match this "
+                    "domain — trigger the daily competitor walk or "
+                    "/api/v1/seo/gap-pipeline/start/ to populate"
+                ),
             },
             status=status.HTTP_404_NOT_FOUND,
         )
@@ -1521,16 +1764,12 @@ def competitor_detail_view(_request, domain: str):
 def competitor_page_detail_view(_request, domain: str, url_b64: str):
     """Per-URL detail view payload.
 
-    Returns the full sample-page dict including the body_text that the
-    landing endpoint omits. Title, meta, H1/H2 texts, schema types,
-    response time, per-URL CWV, internal/external link counts, and the
-    full visible body text captured by the competitor crawler.
-
-    404 when:
-      - the domain has no deep crawl (same as the landing endpoint)
-      - the base64 segment doesn't decode to a valid URL
-      - that URL isn't in this competitor's sample_pages
+    Sources from CrawlerPageResult first (matched on snapshot + url) and
+    falls back to GapDeepCrawl when no CrawlerPageResult exists for the
+    URL. Response shape is identical to the legacy path.
     """
+    from apps.crawler.models import CrawlerPageResult
+
     decoded = _b64url_decode(url_b64)
     if decoded is None:
         return Response(
@@ -1538,12 +1777,23 @@ def competitor_page_detail_view(_request, domain: str, url_b64: str):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    snap = _latest_competitor_snapshot_for(domain)
+    if snap is not None:
+        page = CrawlerPageResult.objects.filter(
+            snapshot=snap, url=decoded.strip(),
+        ).first()
+        if page is not None:
+            return Response(_full_page_from_result(page, snap))
+
     crawl = _latest_deep_crawl_for(domain)
     if crawl is None:
         return Response(
             {
-                "error": f"no deep-crawl data for {domain}",
-                "hint": "run the gap pipeline first",
+                "error": f"no crawl data for {domain}",
+                "hint": (
+                    "no CrawlSnapshot or GapDeepCrawl rows match this "
+                    "domain — trigger the daily competitor walk first"
+                ),
             },
             status=status.HTTP_404_NOT_FOUND,
         )

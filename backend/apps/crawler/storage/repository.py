@@ -11,11 +11,20 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from pathlib import Path
 from typing import Iterable
 
 from ..conf import settings
 from . import url_classifier
+
+# Phase 2A.5 structural JSON fields (body_text + internal_links_json
+# with 100+ entries + images_json) can exceed Python's default 128 KB
+# csv field-size limit once the writer serializes lists/dicts to JSON
+# strings. Raise the cap to sys.maxsize so the reader doesn't choke on
+# legitimately wide rows. Side effect is process-wide which is fine —
+# we never read attacker-controlled CSVs.
+csv.field_size_limit(sys.maxsize)
 
 # Master registry — single source of truth for UI table keys.
 #
