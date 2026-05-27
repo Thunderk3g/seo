@@ -63,6 +63,37 @@ export interface CompetitorDetail {
   error: string;
 }
 
+export interface PageHeading {
+  level: number;   // 1-6
+  text: string;
+  idx: number;
+}
+export interface PageLink {
+  anchor: string;
+  href: string;
+  section: string; // nearest preceding heading text
+  kind: string;    // calculator | product_term | blog | … | other
+  rel: string;
+}
+export interface PageImage {
+  src: string;
+  alt: string;
+  width: string;
+  height: string;
+  section: string;
+  loading: string;
+}
+
+export interface PageVideo {
+  src: string;
+  kind: 'native' | 'youtube' | 'vimeo' | 'wistia' | 'other';
+  poster: string;
+  section: string;
+  zone: string;
+  width: string;
+  height: string;
+}
+
 export interface CompetitorPageDetail {
   domain: string;
   url: string;
@@ -84,6 +115,13 @@ export interface CompetitorPageDetail {
   lcp_ms: number | null;
   cls: number | null;
   inp_ms: number | null;
+  // Phase 2A.5 structural mirror — may be empty on legacy GapDeepCrawl
+  // rows captured before this field landed.
+  headings: PageHeading[];
+  internal_links: PageLink[];
+  external_links: PageLink[];
+  images: PageImage[];
+  videos: PageVideo[];
   run_id: string;
   run_started_at: string | null;
 }

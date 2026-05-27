@@ -18,15 +18,17 @@
 //     tab.
 
 import { useState } from 'react';
+import { useCompetitorCrawls } from '../api/hooks/useCompetitorCrawls';
 import { useCompetitorDashboard } from '../api/hooks/useCompetitorDashboard';
 import { useCompetitorGap } from '../api/hooks/useCompetitorGap';
 import { useLatestGapPipeline } from '../api/hooks/useGapPipeline';
 import CompetitorOverviewTab from '../components/competitors/CompetitorOverviewTab';
+import CrawledCompetitorsTab from '../components/competitors/CrawledCompetitorsTab';
 import GapDetectionPipelineSection from '../components/competitors/GapDetectionPipelineSection';
 import GapDetectionSection from '../components/competitors/GapDetectionSection';
 import UnifiedKpiStrip from '../components/competitors/UnifiedKpiStrip';
 
-type TabId = 'overview' | 'pipeline' | 'findings';
+type TabId = 'overview' | 'crawled' | 'pipeline' | 'findings';
 
 const DEFAULT_DOMAIN = 'bajajlifeinsurance.com';
 
@@ -36,8 +38,12 @@ export default function CompetitorsPage() {
     dashboard.data?.domain || DEFAULT_DOMAIN,
   );
   const findings = useCompetitorGap(dashboard.data?.domain || DEFAULT_DOMAIN);
+  const crawled = useCompetitorCrawls();
 
-  const [tab, setTab] = useState<TabId>('overview');
+  // Default to "crawled" — it loads fast (no SEMrush dependency) and
+  // shows freshly-walked competitors, which is what the operator
+  // typically wants to see first.
+  const [tab, setTab] = useState<TabId>('crawled');
 
   // Counts shown on the tab pills. Each falls back gracefully to '·'
   // while data loads so the chip never renders empty.
@@ -81,6 +87,16 @@ export default function CompetitorsPage() {
       <div className="competitor-tab-strip">
         <button
           type="button"
+          className={'tab ' + (tab === 'crawled' ? 'active' : '')}
+          onClick={() => setTab('crawled')}
+        >
+          Crawled{' '}
+          <span className="tab-count">
+            {(crawled.data?.count ?? 0).toLocaleString()}
+          </span>
+        </button>
+        <button
+          type="button"
           className={'tab ' + (tab === 'overview' ? 'active' : '')}
           onClick={() => setTab('overview')}
         >
@@ -106,6 +122,7 @@ export default function CompetitorsPage() {
       </div>
 
       <div className="competitor-tab-body">
+        {tab === 'crawled' && <CrawledCompetitorsTab />}
         {tab === 'overview' && <OverviewTabBody />}
         {tab === 'pipeline' && (
           <GapDetectionPipelineSection domain={domain} />

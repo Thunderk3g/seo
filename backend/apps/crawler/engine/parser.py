@@ -102,12 +102,10 @@ def _collect_links(soup: BeautifulSoup, base_url: str) -> list[str]:
 
 def parse_page(html: str, base_url: str) -> dict:
     """Return dict with title, word_count, links, console_errors,
-    meta_description.
-
-    meta_description is extracted in addition to title because Phase A
-    SF-parity needs it for pixel-width detection. Empty string when no
-    `<meta name="description">` tag is present, which itself is a
-    SEO miss the downstream detectors flag.
+    meta_description, plus the Phase 2A.5 structural mirror
+    (headings, internal_links, external_links, images) so the
+    in-house Inspector can be apples-to-apples with the competitor
+    crawler's payload.
     """
     import re as _re
     soup = BeautifulSoup(html, "html.parser")
@@ -125,6 +123,11 @@ def parse_page(html: str, base_url: str) -> dict:
 
     console_errors = detect_console_errors(html, soup)
 
+    # Phase 2A.5 — capture structural mirror BEFORE decomposing
+    # script/style nodes (which strips text but leaves headings/anchors/
+    # imgs untouched anyway; we still keep the order).
+    structured = _extract_structured(soup, base_url)
+
     for el in soup(["script", "style", "noscript"]):
         el.decompose()
     text = _WS.sub(" ", soup.get_text(separator=" ", strip=True)).strip()
@@ -136,4 +139,122 @@ def parse_page(html: str, base_url: str) -> dict:
         "word_count": word_count,
         "links": links,
         "console_errors": console_errors,
+        "headings": structured["headings"][:200],
+        "internal_links": structured["internal_links"][:500],
+        "external_links": structured["external_links"][:200],
+        "images": structured["images"][:200],
+    }
+
+
+# ── Structural mirror (reused on competitor side too) ─────────────
+# Same shapes the competitor crawler emits, so the Inspector UI is
+# template-agnostic between in-house and competitor data.
+
+_LINK_KIND_PATTERNS_INHOUSE: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("calculator",      re.compile(r"/(calculator|estimate|tool)s?/?", re.I)),
+    ("product_term",    re.compile(r"/term[-_]?insurance", re.I)),
+    ("product_ulip",    re.compile(r"/ulip", re.I)),
+    ("product_savings", re.compile(r"/(savings|endowment)", re.I)),
+    ("product_retire",  re.compile(r"/(retirement|pension)", re.I)),
+    ("product_child",   re.compile(r"/child[-_]?(insurance|plan)", re.I)),
+    ("product_group",   re.compile(r"/group[-_]?(insurance|plan)", re.I)),
+    ("product_health",  re.compile(r"/(health|wellness|diabetes)", re.I)),
+    ("nri",             re.compile(r"/nri", re.I)),
+    ("fund",            re.compile(r"/funds?/", re.I)),
+    ("blog",            re.compile(r"/(blog|insights|articles|guide|resources)s?/?", re.I)),
+    ("faq",             re.compile(r"/(faq|faqs|help|support)/?", re.I)),
+    ("claim",           re.compile(r"/claim", re.I)),
+    ("contact",         re.compile(r"/contact", re.I)),
+    ("legal",           re.compile(r"/(privacy|terms|disclaimer|policy)", re.I)),
+)
+
+
+def _classify_link_kind(href: str) -> str:
+    for label, pat in _LINK_KIND_PATTERNS_INHOUSE:
+        if pat.search(href):
+            return label
+    return "other"
+
+
+def _extract_structured(soup: "BeautifulSoup", base_url: str) -> dict:
+    """Walk descendants() in document order capturing headings, anchors
+    and images with their nearest preceding heading as 'section' AND
+    landmark zone (header/nav/hero/main/aside/footer) for LayoutAgent.
+
+    Mirrors the competitor-side extractor in
+    ``apps.seo_ai.adapters.competitor_crawler`` so both sides emit
+    identical JSON shape.
+    """
+    # Lazy import keeps the in-house parser independent of the
+    # competitor adapter at module-load time.
+    from apps.seo_ai.adapters.competitor_crawler import _classify_zone
+    from urllib.parse import urljoin, urlparse
+
+    page_host = (urlparse(base_url).hostname or "").lower().lstrip("www.")
+
+    headings: list[dict] = []
+    internal_links: list[dict] = []
+    external_links: list[dict] = []
+    images: list[dict] = []
+    current_section = ""
+
+    for el in soup.descendants:
+        name = getattr(el, "name", None)
+        if not name:
+            continue
+
+        if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            text = el.get_text(" ", strip=True)
+            if not text:
+                continue
+            level = int(name[1])
+            headings.append({
+                "level": level,
+                "text": text[:300],
+                "idx": len(headings),
+                "zone": _classify_zone(el),
+            })
+            current_section = text[:200]
+            continue
+
+        if name == "a":
+            href = (el.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                continue
+            anchor = el.get_text(" ", strip=True)[:200]
+            absolute = urljoin(base_url, href)
+            target_host = (urlparse(absolute).hostname or "").lower().lstrip("www.")
+            entry = {
+                "anchor": anchor,
+                "href": absolute[:1024],
+                "section": current_section,
+                "zone": _classify_zone(el),
+                "kind": _classify_link_kind(absolute),
+                "rel": " ".join(el.get("rel") or []) or "",
+            }
+            if not target_host or target_host == page_host or target_host.endswith("." + page_host):
+                internal_links.append(entry)
+            else:
+                external_links.append(entry)
+            continue
+
+        if name == "img":
+            src = (el.get("src") or "").strip()
+            if not src:
+                continue
+            images.append({
+                "src": urljoin(base_url, src)[:1024],
+                "alt": (el.get("alt") or "").strip()[:300],
+                "width": (el.get("width") or "").strip()[:8],
+                "height": (el.get("height") or "").strip()[:8],
+                "section": current_section,
+                "zone": _classify_zone(el),
+                "loading": (el.get("loading") or "").strip()[:16],
+            })
+
+    return {
+        "headings": headings,
+        "internal_links": internal_links,
+        "external_links": external_links,
+        "images": images,
     }

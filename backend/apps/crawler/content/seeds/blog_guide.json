@@ -1,0 +1,14 @@
+{
+  "category": "page_type:blog_guide",
+  "description": "Editorial guide / knowledge content seeds",
+  "seeds": [
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-guide/life/importance-of-regularly-reviewing-your-insurance-policies.html",
+      "text": "Reviewing your insurance policies regularly is essential to ensure they match your current life stage, financial goals, and family responsibilities. This guide covers when to review, what to look for in your existing coverage, how to identify protection gaps, and tips for updating beneficiary information."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-guide/term/limited-payout-vs-regular-payout.html",
+      "text": "Limited payout and regular payout are two premium payment options in term insurance. Understand the difference, advantages of each, financial planning implications, and which option suits short-term versus long-term policyholders."
+    }
+  ]
+}

@@ -22,6 +22,13 @@ backend/db.sqlite3
 *.log
 local_settings.py
 
+# ── Celery runtime state ──────────────────────────────
+backend/celerybeat-schedule
+backend/celerybeat-schedule.*
+
+# ── ML model weights (re-downloadable from HuggingFace) ─
+backend/models/
+
 # ── Backend data directory (never push to GitHub) ─────
 # Everything the backend reads/writes at runtime lives here:
 #   backend/data/                  → crawler CSVs + crawl_state.json

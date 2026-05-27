@@ -478,6 +478,114 @@ export const crawlerApi = {
       }>;
     }>('/compliance'),
 
+  // 3D content map — Phase 3 of the content classification pipeline.
+  // Returns UMAP-projected chunk embeddings with classification labels
+  // ready for direct rendering.
+  contentMap3d: () =>
+    request<{
+      snapshot_id: string;
+      snapshot_date: string;
+      total: number;
+      points: Array<{
+        id: number;
+        chunk_idx: number;
+        x: number;
+        y: number;
+        z: number;
+        url: string;
+        title: string;
+        products: string[];
+        page_type: string;
+        confidence: number;
+      }>;
+    }>('/content/map/3d'),
+
+  // Similarity search — pages most similar to a URL or free text.
+  contentSimilar: (params: { url?: string; query?: string; product?: string;
+                              page_type?: string; top_k?: number }) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== '') qs.set(k, String(v));
+    });
+    return request<{
+      results: Array<{
+        url: string;
+        title: string;
+        page_type: string;
+        products: string[];
+        similarity: number;
+      }>;
+    }>(`/content/similar?${qs.toString()}`);
+  },
+
+  // Phase 1c — Hierarchical content cluster tree (Product → Page-type → pages).
+  // Pure rule-based; works without embeddings. `mode` toggles between
+  // single-primary-product and multi-label assignment.
+  contentClusters: (params: { snapshot?: string; mode?: 'primary' | 'multi' } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.snapshot) qs.set('snapshot', params.snapshot);
+    if (params.mode) qs.set('mode', params.mode);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{
+      snapshot_id: string;
+      snapshot_date: string;
+      mode: 'primary' | 'multi';
+      totals: {
+        pages: number;
+        classified: number;
+        uncertain: number;
+        assignments: number;
+      };
+      products: Array<{
+        product: string;
+        label: string;
+        count: number;
+        page_types: Array<{
+          page_type: string;
+          label: string;
+          count: number;
+          pages: Array<{
+            url: string;
+            title: string;
+            confidence: number;
+            tier: number;
+            products: string[];
+            page_type: string;
+          }>;
+        }>;
+      }>;
+      uncertain: {
+        count: number;
+        pages: Array<{
+          url: string;
+          title: string;
+          confidence: number;
+          tier: number;
+          products: string[];
+          page_type: string;
+        }>;
+      };
+    }>(`/content/clusters${suffix}`);
+  },
+
+  // Pickable snapshots — feeds the cluster + map picker so the
+  // operator can switch between Bajaj and competitor snapshots.
+  snapshots: () =>
+    request<{
+      count: number;
+      snapshots: Array<{
+        id: string;
+        started_at: string | null;
+        kind: string;
+        engine: string;
+        target_domain: string;
+        page_count: number;
+        ok_page_count: number;
+        health_score: number | null;
+        status: string;
+      }>;
+    }>('/snapshots'),
+
   // Phase 2 — Page Explorer (Ahrefs-style sortable/filterable URL
   // inventory). Server-side sort + filter; pass query params 1:1.
   pages: (params: {

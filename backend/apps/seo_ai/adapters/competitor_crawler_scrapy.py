@@ -154,13 +154,56 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
     def fetch_one(self, url: str) -> CompetitorPage:
         return self.fetch_pages([url])[0]
 
+    def walk_domain(
+        self,
+        *,
+        domain: str,
+        seeds: list[str],
+        max_depth: int = 2,
+        max_pages: int = 0,
+    ) -> list[CompetitorPage]:
+        """Spider one competitor domain from a set of seeds + link-walk.
+
+        Unlike :meth:`fetch_pages`, this does NOT preserve input order —
+        the spider returns pages in the order they were crawled. Use
+        when you want "everything reachable from these seeds within
+        max_depth" rather than "fetch these specific URLs".
+
+        ``max_pages=0`` means unlimited (only ``max_depth`` and the
+        subprocess timeout bound the crawl).
+        """
+        if not seeds:
+            return []
+        target = _apex_of((domain or "").lower().lstrip("www."))
+        if not target:
+            target = _apex_of(_host(seeds[0]))
+        pages = self._crawl_one_domain(
+            target,
+            seeds,
+            mode="walk",
+            max_depth=max_depth,
+            max_pages=max_pages,
+        )
+        return list(pages.values())
+
     # ── subprocess orchestration ─────────────────────────────────────
 
     def _crawl_one_domain(
-        self, domain: str, urls: list[str],
+        self,
+        domain: str,
+        urls: list[str],
+        *,
+        mode: str = "urls",
+        max_depth: int = 2,
+        max_pages: int = 0,
     ) -> dict[str, CompetitorPage]:
         """Spawn one ``crawl_competitor`` subprocess for this domain.
-        Returns a dict keyed by URL → CompetitorPage."""
+        Returns a dict keyed by URL → CompetitorPage.
+
+        ``mode='walk'`` switches the spider into link-walking mode where
+        ``urls`` is the seed list and the spider follows internal links
+        up to ``max_depth`` / ``max_pages``.
+        """
         if not urls:
             return {}
 
@@ -178,6 +221,9 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
                 "--output-file", str(out_file),
                 "--user-agent", self.user_agent,
                 "--body-cap", str(self.body_text_max_chars),
+                "--mode", mode,
+                "--max-depth", str(max_depth),
+                "--max-pages", str(max_pages),
             ]
             if self.playwright_enabled:
                 cmd.append("--playwright")
@@ -187,8 +233,16 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
             # runtime at the same envelope the legacy adapter uses
             # (timeout_sec × retry_attempts × len(urls)) plus a fixed
             # 60 s of startup slack.
+            # Walk mode visits MUCH more than len(urls) — use max_pages
+            # as the projected page count, falling back to a large
+            # ceiling when unbounded.
+            projected_pages = (
+                max_pages or 500
+                if mode == "walk"
+                else len(urls)
+            )
             base_timeout = max(
-                self.timeout_sec * self.retry_attempts * max(1, len(urls)),
+                self.timeout_sec * self.retry_attempts * max(1, projected_pages),
                 120,
             )
             total_timeout = min(base_timeout + 60, 60 * 60)  # cap at 1 h
@@ -291,4 +345,9 @@ def _item_to_page(item: dict) -> CompetitorPage:
         schema_types=list(item.get("schema_types") or []),
         meta_robots=item.get("meta_robots") or "",
         body_text=item.get("body_text") or "",
+        # Structural mirror — Scrapy parity with the legacy adapter.
+        headings=list(item.get("headings") or []),
+        internal_links=list(item.get("internal_links") or []),
+        external_links=list(item.get("external_links") or []),
+        images=list(item.get("images") or []),
     )

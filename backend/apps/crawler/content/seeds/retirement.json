@@ -1,0 +1,14 @@
+{
+  "category": "product:retirement",
+  "description": "Pension and retirement plan content seeds",
+  "seeds": [
+    {
+      "url": "https://www.bajajlifeinsurance.com/retirement-pension-plans.html",
+      "text": "Retirement pension plans ensure a steady income after you stop working. Choose between immediate annuity and deferred annuity options. Build a retirement corpus through systematic premium payments and receive guaranteed monthly pension for life."
+    },
+    {
+      "url": "https://www.bajajlifeinsurance.com/life-insurance-guide/retirement/what-is-a-family-pension-plan.html",
+      "text": "A family pension plan provides a regular income to the surviving family members of a deceased employee or annuitant. It includes types like service pension, family pension, disability pension, and details on eligibility, calculation, and tax treatment of pension income."
+    }
+  ]
+}

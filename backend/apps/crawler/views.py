@@ -214,11 +214,38 @@ def gsc_coverage_refresh_view(_request):
     return Response({"ok": True, "loaded_urls": len(cov)})
 
 
+# ── GSC freeze switch ─────────────────────────────────────────────
+# When GSC_FROZEN=true in env, the two endpoints below that can issue
+# live Search Console API calls (sitemap backfill + URL Inspection)
+# short-circuit with a 503 and leave the on-disk CSV cache untouched.
+# Used when the operator has temporarily lost GSC access — overnight
+# crawls must keep working off the existing csv coverage map rather
+# than failing on an OAuth refresh.
+def _gsc_is_frozen() -> bool:
+    import os
+    return os.environ.get("GSC_FROZEN", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 @api_view(["POST"])
 def gsc_coverage_build_view(request):
     """Derive a fresh coverage CSV from already-pulled GSC performance data
     plus a live sitemap fetch. Returns counts so the UI can show a toast.
+
+    Gated by ``GSC_FROZEN`` env — when set, returns 503 instead of
+    touching the network (operator has lost GSC access).
     """
+    if _gsc_is_frozen():
+        return Response(
+            {
+                "ok": False,
+                "error": "GSC is frozen (GSC_FROZEN=true). Using cached "
+                         "coverage CSV only — no live API calls until the "
+                         "operator restores Search Console access.",
+            },
+            status=503,
+        )
     from .storage import gsc_coverage_builder
     sitemap = request.query_params.get("sitemap") or gsc_coverage_builder.DEFAULT_SITEMAP
     backfill = request.query_params.get("backfill") in {"1", "true", "yes"}
@@ -358,7 +385,20 @@ def gsc_inspect_unknowns_view(request):
 
     Rate-limited (~2000/day per property). Idempotent — already-inspected
     URLs are skipped because they're no longer ``unknown``.
+
+    Gated by ``GSC_FROZEN`` env — when set, returns 503 instead of
+    issuing a live URL Inspection API request.
     """
+    if _gsc_is_frozen():
+        return Response(
+            {
+                "ok": False,
+                "error": "GSC is frozen (GSC_FROZEN=true). URL Inspection "
+                         "calls disabled until the operator restores "
+                         "Search Console access.",
+            },
+            status=503,
+        )
     from .storage import gsc_coverage_builder
     site = request.query_params.get("site") or "https://www.bajajlifeinsurance.com/"
     try:
@@ -895,6 +935,159 @@ def issue_detail_view(_request, slug: str):
         "affected_urls": affected,
         "started_at": audit.started_at,
     })
+
+
+# ── Content map / similarity (Phase 2 + 3) ─────────────────────────────────
+
+
+@api_view(["GET"])
+def content_map_3d_view(request):
+    """GET /api/v1/crawler/content/map/3d
+
+    Returns 3D scatter points from a snapshot's PageEmbedding rows. The
+    snapshot is selected by (in priority order):
+      1. ?snapshot=<uuid>  — exact match
+      2. ?domain=<host>    — latest non-empty COMPLETE competitor
+                             snapshot for that target_domain
+      3. (default)         — latest snapshot of any kind
+
+    Each competitor gets its own content map because every
+    PageEmbedding row carries snapshot_id; there's no cross-domain
+    bleed. Returns 404 only when no snapshot at all can be resolved.
+    """
+    from django.db.models import Count
+
+    from .models import CrawlSnapshot
+    from .content.projection import get_3d_points
+
+    snap_id = (request.GET.get("snapshot") or "").strip()
+    domain = (request.GET.get("domain") or "").strip().lower()
+    snap = None
+    if snap_id:
+        snap = CrawlSnapshot.objects.filter(id=snap_id).first()
+    elif domain:
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(
+                kind="competitor",
+                status="complete",
+                target_domain__iexact=domain,
+                n__gte=1,
+            )
+            .order_by("-started_at")
+            .first()
+        )
+    else:
+        snap = CrawlSnapshot.objects.order_by("-started_at").first()
+    if snap is None:
+        return Response(
+            {"error": "no snapshot", "domain": domain or None},
+            status=404,
+        )
+    points = get_3d_points(snap)
+    return Response({
+        "snapshot_id": str(snap.id),
+        "snapshot_kind": snap.kind,
+        "snapshot_domain": snap.target_domain or "",
+        "snapshot_date": snap.started_at.isoformat() if snap.started_at else "",
+        "total": len(points),
+        "points": points,
+    })
+
+
+@api_view(["GET"])
+def content_similar_view(request):
+    """GET /api/v1/crawler/content/similar
+    Params: url=<page_url> OR query=<free_text>,
+            product=<label>, page_type=<label>, top_k=<int>.
+
+    Returns top-k pages most semantically similar.
+    """
+    from .content.similarity import similar_to_url, similar_to_query
+
+    top_k = max(1, min(50, int(request.GET.get("top_k", "10"))))
+    product = request.GET.get("product") or None
+    page_type = request.GET.get("page_type") or None
+    url = request.GET.get("url") or ""
+    query = request.GET.get("query") or ""
+    if not (url or query):
+        return Response(
+            {"error": "must provide ?url= or ?query="}, status=400,
+        )
+    if url:
+        results = similar_to_url(
+            url, top_k=top_k, product=product, page_type=page_type,
+        )
+    else:
+        results = similar_to_query(
+            query, top_k=top_k, product=product, page_type=page_type,
+        )
+    return Response({"results": results})
+
+
+@api_view(["GET"])
+def snapshots_list_view(_request):
+    """GET /api/v1/crawler/snapshots — pickable snapshots for cluster /
+    map / inspector UIs.
+
+    Returns the most recent ~30 non-empty snapshots across both
+    Bajaj and competitor kinds, newest first. Each row is enough to
+    populate a dropdown (id, started_at, kind, target_domain, page
+    count) without hitting the per-snapshot detail endpoints.
+    """
+    from django.db.models import Count
+
+    from .models import CrawlSnapshot
+
+    rows = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(n__gte=5)
+        .order_by("-started_at")[:30]
+    )
+    return Response({
+        "count": len(rows),
+        "snapshots": [
+            {
+                "id": str(s.id),
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "kind": s.kind,
+                "engine": s.engine,
+                "target_domain": s.target_domain or "",
+                "page_count": s.pages_attempted or 0,
+                "ok_page_count": s.pages_ok or 0,
+                "health_score": s.health_score,
+                "status": s.status,
+            }
+            for s in rows
+        ],
+    })
+
+
+@api_view(["GET"])
+def content_clusters_view(request):
+    """GET /api/v1/crawler/content/clusters
+    Params: snapshot=<id> (optional, defaults to latest),
+            mode=primary|multi (default primary).
+
+    Returns the hierarchical Product → Page-type → pages tree, plus an
+    `uncertain` bucket. Pure rule-based — no LLM, no embeddings required.
+    """
+    from .models import CrawlSnapshot
+    from .content.clusters import build_clusters
+
+    snap_id = request.GET.get("snapshot", "")
+    snap = (
+        CrawlSnapshot.objects.filter(id=snap_id).first()
+        if snap_id else CrawlSnapshot.objects.order_by("-started_at").first()
+    )
+    if snap is None:
+        return Response({"error": "no snapshot"}, status=404)
+
+    mode = request.GET.get("mode", "primary").lower()
+    if mode not in ("primary", "multi"):
+        mode = "primary"
+
+    return Response(build_clusters(snap, mode=mode))
 
 
 # ── Compliance dashboard (WCAG / GDPR / OWASP) ─────────────────────────────

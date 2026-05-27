@@ -681,3 +681,169 @@ class BrandMention(models.Model):
     def __str__(self) -> str:
         return f"{self.source_domain} — {self.brand_variant} ({self.sentiment})"
 
+
+# ── Content Writer (Phase F) ──────────────────────────────────────────
+
+
+class ContentRewriteProposal(models.Model):
+    """One LLM-generated rewrite proposal for one of our pages.
+
+    Captures the full input (page + competitor evidence + keywords) and
+    the full output (raw proposal, critic verdict, filtered proposal)
+    so a human can audit *why* the agent suggested what it did. Every
+    generated string carries a ``source_ref`` resolving back into
+    ``evidence_dict`` — proposals without backing get filtered before
+    the human ever sees them.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    our_url = models.URLField(max_length=2048)
+    competitor_urls = models.JSONField(default=list, blank=True)
+    target_keywords = models.JSONField(default=list, blank=True)
+
+    # Frozen at generation time so re-reading the same proposal later
+    # shows what the agent actually had access to — not whatever the
+    # crawler has captured *since*.
+    evidence_dict = models.JSONField(default=dict, blank=True)
+
+    # Raw model output (before critic filtering) — kept for debugging
+    # when generated_proposal looks too sparse.
+    raw_proposal = models.JSONField(default=dict, blank=True)
+
+    # Proposal after the deterministic critic dropped unbacked items.
+    # This is what the UI renders.
+    generated_proposal = models.JSONField(default=dict, blank=True)
+
+    # {accepted, rejected, rejected_items: [{path, source_ref, reason}, ...]}
+    critic_verdict = models.JSONField(default=dict, blank=True)
+
+    model_used = models.CharField(max_length=128, blank=True, default="")
+    tokens_in = models.IntegerField(default=0)
+    tokens_out = models.IntegerField(default=0)
+    cost_usd = models.FloatField(default=0.0)
+    error = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["-created_at"]),
+            models.Index(fields=["our_url", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"rewrite {self.our_url} @ {self.created_at:%Y-%m-%d}"
+
+
+# ── Competitor change tracking (Phase G) ──────────────────────────────
+
+
+class CompetitorPageHistory(models.Model):
+    """Per-URL competitor history with rolling content hashes.
+
+    One row per (url, seen_at). When the link-walking spider re-crawls a
+    competitor and the pipeline detects ``title_hash`` /
+    ``content_hash`` / ``structure_hash`` has changed from the most
+    recent prior row, a new history row is appended and a
+    :class:`CompetitorChangeEvent` is fired.
+
+    Why a separate model from CrawlerPageResult: that table is wiped /
+    re-stamped per snapshot. History is a *cross-snapshot* signal —
+    "this URL's headline changed yesterday" — which lives or dies on a
+    durable append-only log. Storage is cheap (text + hashes), so we
+    keep every revision rather than just deltas.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    url = models.URLField(max_length=2048, db_index=True)
+    competitor_domain = models.CharField(max_length=255, db_index=True)
+    seen_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # Snapshot the row came from — lets us audit which crawl produced
+    # each revision. Nullable so legacy backfills (no snapshot)
+    # still persist.
+    snapshot_id = models.UUIDField(null=True, blank=True)
+
+    # Surface fields — short text so the UI can render a revision
+    # timeline without joining back to CrawlerPageResult.
+    title = models.CharField(max_length=1024, blank=True, default="")
+    meta_description = models.CharField(max_length=1024, blank=True, default="")
+    word_count = models.IntegerField(default=0)
+    heading_count = models.IntegerField(default=0)
+    internal_link_count = models.IntegerField(default=0)
+    image_count = models.IntegerField(default=0)
+
+    # Three rolling hashes — narrow enough that we can index them and
+    # broad enough that we can answer "did the heading outline change"
+    # vs "did body content change" vs "did the title only change".
+    title_hash = models.CharField(max_length=64, db_index=True)
+    content_hash = models.CharField(max_length=64, db_index=True)
+    structure_hash = models.CharField(max_length=64, db_index=True)
+
+    # Optional per-row delta payload from the previous revision —
+    # populated by ChangeWatcher when this row was an append. First-
+    # ever row for a URL has delta={}.
+    delta = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-seen_at",)
+        indexes = [
+            models.Index(fields=["url", "-seen_at"]),
+            models.Index(fields=["competitor_domain", "-seen_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.competitor_domain} {self.url[:60]} @ {self.seen_at:%Y-%m-%d}"
+
+
+class CompetitorChangeEvent(models.Model):
+    """One detected change between two consecutive CompetitorPageHistory
+    revisions of the same URL.
+
+    Distinct from CompetitorPageHistory because not every history append
+    is a noteworthy change (re-crawls can produce identical hashes when
+    nothing moved). Events surface to the UI dashboard + the
+    ChangeWatcherAgent's notification fan-out; history is the
+    underlying log we replay against.
+    """
+
+    class ChangeKind(models.TextChoices):
+        NEW = "new", "Newly discovered URL"
+        TITLE = "title", "Title changed"
+        CONTENT = "content", "Body content changed"
+        STRUCTURE = "structure", "Page structure changed"
+        REMOVED = "removed", "URL gone (404 / drop)"
+
+    id = models.BigAutoField(primary_key=True)
+    url = models.URLField(max_length=2048, db_index=True)
+    competitor_domain = models.CharField(max_length=255, db_index=True)
+    kind = models.CharField(
+        max_length=16, choices=ChangeKind.choices,
+    )
+    detected_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    from_history = models.ForeignKey(
+        CompetitorPageHistory,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="from_events",
+    )
+    to_history = models.ForeignKey(
+        CompetitorPageHistory,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="to_events",
+    )
+    delta = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-detected_at",)
+        indexes = [
+            models.Index(fields=["competitor_domain", "-detected_at"]),
+            models.Index(fields=["kind", "-detected_at"]),
+            models.Index(fields=["url", "-detected_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.competitor_domain} {self.kind} {self.url[:60]}"
+

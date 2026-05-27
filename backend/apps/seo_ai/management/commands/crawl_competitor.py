@@ -24,8 +24,18 @@ of how the parent process consumes the JSONL.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+
+# Scrapy-playwright runs on the AsyncioSelectorReactor. Django's ORM
+# detects that and raises ``SynchronousOnlyOperation`` when the
+# pipeline tries to write rows. This subprocess is the only one that
+# does sync ORM from inside the reactor; we know it's safe (the
+# pipeline calls happen in worker threads, not the reactor thread).
+# Set the escape hatch BEFORE Django imports so connection setup
+# picks it up.
+os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
 
 from django.core.management.base import BaseCommand
 
@@ -43,6 +53,19 @@ class Command(BaseCommand):
             "--playwright", action="store_true",
             help="Enable Playwright JS-rendering gate.",
         )
+        parser.add_argument(
+            "--mode", choices=("urls", "walk"), default="urls",
+            help="urls = fetch only seeds (default). walk = follow "
+                 "internal <a> links from each seed up to --max-depth.",
+        )
+        parser.add_argument(
+            "--max-depth", type=int, default=2,
+            help="Walk mode: link depth from each seed. Ignored for urls mode.",
+        )
+        parser.add_argument(
+            "--max-pages", type=int, default=0,
+            help="Walk mode: hard cap on followed pages (0 = unlimited).",
+        )
 
     def handle(self, *args, **options) -> None:
         target_domain: str = options["target_domain"]
@@ -51,6 +74,9 @@ class Command(BaseCommand):
         user_agent: str = options.get("user_agent") or ""
         body_cap: int = int(options.get("body_cap") or 0)
         playwright_enabled: bool = bool(options.get("playwright"))
+        mode: str = options.get("mode") or "urls"
+        max_depth: int = int(options.get("max_depth") or 2)
+        max_pages: int = int(options.get("max_pages") or 0)
 
         if not urls_path.exists():
             raise SystemExit(f"urls-file not found: {urls_path}")
@@ -92,10 +118,22 @@ class Command(BaseCommand):
 
         process_settings: dict = {}
         if not playwright_enabled:
-            # Remove the Playwright middleware + download handlers so a
-            # Scrapy install without scrapy-playwright still works.
-            process_settings["DOWNLOADER_MIDDLEWARES"] = {}
-            process_settings["DOWNLOAD_HANDLERS"] = {}
+            # Without Playwright we must STILL provide a non-empty
+            # DOWNLOAD_HANDLERS map — earlier we wiped it to {} hoping
+            # Scrapy would fall back to defaults, but CrawlerProcess
+            # settings override base settings AND spider custom_settings,
+            # leaving Scrapy with no handlers at all (0 pages crawled).
+            # Explicitly point at Scrapy's built-in HTTP handlers.
+            process_settings["DOWNLOAD_HANDLERS"] = {
+                "http": "scrapy.core.downloader.handlers.http.HTTPDownloadHandler",
+                "https": "scrapy.core.downloader.handlers.http.HTTPDownloadHandler",
+            }
+            # Drop the Playwright downloader-middleware — its only job
+            # is the JS-render gate, which is meaningless without the
+            # handler above.
+            process_settings["DOWNLOADER_MIDDLEWARES"] = {
+                "apps.crawler.middlewares.playwright_gate.PlaywrightGateMiddleware": None,
+            }
             # AsyncioSelectorReactor is required by scrapy-playwright;
             # without playwright we can stick with the default reactor.
             process_settings["TWISTED_REACTOR"] = (
@@ -116,6 +154,9 @@ class Command(BaseCommand):
                 body_text_max_chars=body_cap,
                 user_agent=user_agent or None,
                 playwright_enabled=playwright_enabled,
+                mode=mode,
+                max_depth=max_depth,
+                max_pages=max_pages,
             )
             process.start(stop_after_crawl=True)
         finally:

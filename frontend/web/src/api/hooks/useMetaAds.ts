@@ -67,8 +67,21 @@ export interface MetaAdsDashboardResponse {
   competitors?: CompetitorAdsSummary[];
 }
 
-export function metaAdsKey(competitors: string[], country: string, count: number) {
-  return ['seo-meta-ads', { competitors: competitors.join('|'), country, count }] as const;
+export function metaAdsKey(
+  competitors: string[],
+  country: string,
+  count: number,
+  includeOurs: boolean,
+) {
+  return [
+    'seo-meta-ads',
+    {
+      competitors: competitors.join('|'),
+      country,
+      count,
+      includeOurs,
+    },
+  ] as const;
 }
 
 /**
@@ -80,33 +93,41 @@ export function metaAdsKey(competitors: string[], country: string, count: number
  *
  * Pass an empty array to fall back to the backend's default competitor
  * roster (set via APIFY_META_ADS_COMPETITORS env).
+ *
+ * `includeOurs` (default false) controls whether the backend prepends
+ * Bajaj's own brand to the request. Competitor-specific sections must
+ * leave this false so they don't render Bajaj's ads under a
+ * competitor's banner — the dedicated /meta-ads page is the
+ * canonical surface for our own ads.
  */
 export function useMetaAds(
   competitors: string[],
-  opts: { country?: string; count?: number; enabled?: boolean } = {},
+  opts: {
+    country?: string;
+    count?: number;
+    enabled?: boolean;
+    includeOurs?: boolean;
+  } = {},
 ) {
   const country = opts.country ?? 'IN';
   const count = opts.count ?? 25;
   const enabled = opts.enabled ?? true;
+  const includeOurs = opts.includeOurs ?? false;
   return useQuery({
-    queryKey: metaAdsKey(competitors, country, count),
+    queryKey: metaAdsKey(competitors, country, count, includeOurs),
     queryFn: () => {
-      // wouter's API client builds the querystring from the params
-      // object. To pass repeated ?competitor= the easiest path is to
-      // hit the path directly with URLSearchParams.
       const params = new URLSearchParams();
       for (const c of competitors) {
         if (c.trim()) params.append('competitor', c);
       }
       params.append('country', country);
       params.append('count', String(count));
+      params.append('include_ours', includeOurs ? 'true' : 'false');
       return api.get<MetaAdsDashboardResponse>(
         `/seo/meta-ads/?${params.toString()}`,
       );
     },
     enabled,
-    // Disk cache TTL on the backend is 24h; client-side cache is just
-    // to avoid refetch on tab focus.
     staleTime: 30 * 60_000,
     refetchOnWindowFocus: false,
   });

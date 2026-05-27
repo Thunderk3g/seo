@@ -313,6 +313,22 @@ class CrawlerPageResult(models.Model):
     # Result of user-defined extractors. Keys match CustomExtractor.name.
     custom_extracted = models.JSONField(default=dict, blank=True)
 
+    # ── Phase 2A.5 — Structural mirror ────────────────────────────
+    # Mirrors the competitor crawler's structural capture so the
+    # in-house Inspector can show our pages with the same UI.
+    # headings        : ordered [{level, text, idx}, ...]
+    # internal_links  : every internal <a> [{anchor, href, section, kind, rel}]
+    # external_links  : every external <a> same shape
+    # images          : every <img> [{src, alt, width, height, section, loading}]
+    headings_json = models.JSONField(default=list, blank=True)
+    internal_links_json = models.JSONField(default=list, blank=True)
+    external_links_json = models.JSONField(default=list, blank=True)
+    images_json = models.JSONField(default=list, blank=True)
+    # videos: every <video> + YouTube/Vimeo <iframe> embed found on the
+    # page. Each entry: {src, kind (native|youtube|vimeo|other),
+    # poster, section, zone, width, height}.
+    videos_json = models.JSONField(default=list, blank=True)
+
     # ── Phase C.4 — Readability + spelling ────────────────────────
     flesch_score = models.FloatField(default=0.0)
     grade_level = models.FloatField(default=0.0)
@@ -610,6 +626,48 @@ class Backlink(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_domain} -> {self.target_url}"
+
+
+class PageEmbedding(models.Model):
+    """One vector per content chunk per page. Drives similarity search
+    and the 3D content-map projection.
+
+    Schema decision: we use pgvector through django-pgvector's VectorField
+    when available; falls back to JSONField in environments without the
+    extension. The migration uses RunSQL for the actual `vector(384)`
+    column so the ORM stays version-tolerant.
+    """
+
+    id              = models.BigAutoField(primary_key=True)
+    page            = models.ForeignKey(
+        "CrawlerPageResult", on_delete=models.CASCADE, related_name="embeddings",
+    )
+    chunk_idx       = models.IntegerField(default=0)
+    chunk_text      = models.TextField(blank=True, default="")
+    # vector(384) column added via RunSQL migration; this field is for
+    # ORM completeness only (raw selects use the SQL column directly).
+    embedding_json  = models.JSONField(default=list, blank=True)
+    # Classification copy — denormalised so similarity search can filter
+    # without joining to a separate classifications table.
+    products        = models.JSONField(default=list, blank=True)
+    page_type       = models.CharField(max_length=32, blank=True, default="")
+    confidence      = models.FloatField(default=0.0)
+    # 3D projection coords cached per snapshot. Updated by Phase 3.
+    coord_x         = models.FloatField(null=True, blank=True)
+    coord_y         = models.FloatField(null=True, blank=True)
+    coord_z         = models.FloatField(null=True, blank=True)
+    created_at      = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["page_type"]),
+            models.Index(fields=["confidence"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["page", "chunk_idx"], name="uniq_page_embedding_chunk",
+            ),
+        ]
 
 
 class CustomExtractor(models.Model):

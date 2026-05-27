@@ -29,6 +29,7 @@ import json
 import logging
 import re
 from dataclasses import asdict
+from pathlib import Path
 
 from django.http import StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -146,7 +147,19 @@ def overview(request: Request):
 
 @api_view(["GET"])
 def gsc_dashboard(request: Request):
-    """Full GSC dashboard payload — queries, pages, daily series, summary."""
+    """Full GSC dashboard payload — every CSV under backend/data/gsc/
+    surfaced for the seven-tab UI.
+
+    Strictly file-backed. Never issues a live Search Console API call.
+    Refreshing the underlying CSVs is ``backend/scripts/gsc_pull.py``'s
+    job — this endpoint just renders what is on disk. Safe to call
+    even when operator GSC OAuth access is temporarily revoked.
+
+    Query params:
+      * ``limit`` (default 200) — top-N row cap for the big-dim slices
+        (top_queries, query_country, query_device, page_country, etc.)
+        so the payload stays under ~1 MB even with the full pull.
+    """
     sample = int(request.query_params.get("limit") or 200)
     adapter = GSCCSVAdapter()
     try:
@@ -154,11 +167,107 @@ def gsc_dashboard(request: Request):
     except Exception as exc:  # noqa: BLE001 - render empty state
         logger.warning("gsc dashboard failed: %s", exc)
         return Response({"available": False, "error": str(exc)})
+
+    # Daily series for the headline chart. The dedicated overview helper
+    # caps to the last 90 days; we additionally expose the full 480-day
+    # ``daily_full`` so the Overview tab can show a longer trend.
     daily = read_daily_series(adapter)
+    daily_full = [asdict(r) for r in adapter.daily()]
+
+    # ── Segment slices ───────────────────────────────────────────────
+    # Each big-dim file is sorted by clicks DESC by the upstream pull,
+    # so the first ``limit`` rows are the most-impactful. Daily-cross
+    # files are sorted by date and capped at the most recent window
+    # to keep the geo / device trend lines lightweight.
+    countries = [asdict(r) for r in adapter.countries(limit=sample)]
+    devices = [asdict(r) for r in adapter.devices()]
+    search_appearances = [asdict(r) for r in adapter.search_appearances()]
+
+    query_country = [asdict(r) for r in adapter.query_country(limit=sample)]
+    query_device = [asdict(r) for r in adapter.query_device(limit=sample)]
+    page_country = [asdict(r) for r in adapter.page_country(limit=sample)]
+    page_device = [asdict(r) for r in adapter.page_device(limit=sample)]
+
+    # Daily geo / device — last 90 days (3 months of trend is plenty
+    # for what the UI charts can render). Returns one row per (date,
+    # country|device) pair.
+    daily_country_window = 90 * 50  # ~50 countries × 90 days max
+    daily_device_window = 90 * 4    # 3-4 devices × 90 days
+    date_country = [
+        asdict(r) for r in adapter.date_country(limit=daily_country_window)
+    ]
+    date_device = [
+        asdict(r) for r in adapter.date_device(limit=daily_device_window)
+    ]
+
+    # ── Branded vs unbranded ─────────────────────────────────────────
+    branded_split = adapter.branded_split(sample_size=sample)
+    branded_payload = {
+        "branded_queries": branded_split.branded_queries,
+        "unbranded_queries": branded_split.unbranded_queries,
+        "branded_clicks": branded_split.branded_clicks,
+        "unbranded_clicks": branded_split.unbranded_clicks,
+        "branded_impressions": branded_split.branded_impressions,
+        "unbranded_impressions": branded_split.unbranded_impressions,
+        "branded_avg_position": branded_split.branded_avg_position,
+        "unbranded_avg_position": branded_split.unbranded_avg_position,
+        "branded_ratio_clicks": branded_split.branded_ratio_clicks,
+        "branded_ratio_queries": branded_split.branded_ratio_queries,
+        "tokens": branded_split.tokens,
+        "top_unbranded_queries": [
+            asdict(q) for q in branded_split.top_unbranded_queries
+        ],
+    }
+
+    # ── Image search (real data for Bajaj — "bajaj life logo" pos 5.8) ──
+    image_payload = {
+        "queries": [asdict(r) for r in adapter.image_queries(limit=sample)],
+        "pages": [asdict(r) for r in adapter.image_pages(limit=sample)],
+        "countries": [asdict(r) for r in adapter.image_countries(limit=sample)],
+        "devices": [asdict(r) for r in adapter.image_devices()],
+        "daily": [asdict(r) for r in adapter.image_daily(limit=90)],
+    }
+
+    # ── Other surfaces (mostly empty for Bajaj — still exposed) ──────
+    other_surfaces = {
+        "news_daily": [asdict(r) for r in adapter.news_daily()],
+        "discover_daily": [asdict(r) for r in adapter.discover_daily()],
+        "video_daily": [asdict(r) for r in adapter.video_daily()],
+        "google_news_daily": [asdict(r) for r in adapter.google_news_daily()],
+    }
+
+    # ── Indexation (manual UI export) ────────────────────────────────
+    # The Search Console API can't produce the full Pages / Coverage
+    # report at the same fidelity; the manual CSV export under
+    # coverage/_gsc_export_* is the source of truth for issues like
+    # "Crawled - currently not indexed".
+    idx = adapter.indexation_report()
+    if idx is not None:
+        indexation = {
+            "available": True,
+            "export_dir": idx.export_dir,
+            "critical_issues": [asdict(i) for i in idx.critical_issues],
+            "noncritical_issues": [asdict(i) for i in idx.noncritical_issues],
+            "chart": [asdict(p) for p in idx.chart],
+            "latest_indexed": idx.latest_indexed,
+            "latest_not_indexed": idx.latest_not_indexed,
+            "latest_impressions": idx.latest_impressions,
+            "metadata": idx.metadata,
+        }
+    else:
+        indexation = {"available": False}
+
+    # ── Sitemaps + sites verification ───────────────────────────────
+    sitemaps = [asdict(s) for s in adapter.sitemaps()]
+    available_files = adapter.available_files()
+
     return Response(
         {
             "available": True,
             "snapshot_path": summary.snapshot_path,
+            # Strictly file-backed — surfaced so the UI can show
+            # "Last pulled: <mtime>" + a banner when stale.
+            "live_api_calls": False,
             "totals": {
                 "queries": summary.total_queries,
                 "pages": summary.total_pages,
@@ -176,6 +285,22 @@ def gsc_dashboard(request: Request):
                 asdict(q) for q in summary.high_impression_low_click_queries
             ],
             "daily_series": daily,
+            "daily_full": daily_full,
+            "branded_split": branded_payload,
+            "countries": countries,
+            "devices": devices,
+            "search_appearances": search_appearances,
+            "query_country": query_country,
+            "query_device": query_device,
+            "page_country": page_country,
+            "page_device": page_device,
+            "date_country": date_country,
+            "date_device": date_device,
+            "image": image_payload,
+            "other_surfaces": other_surfaces,
+            "indexation": indexation,
+            "sitemaps": sitemaps,
+            "available_files": available_files,
         }
     )
 
@@ -531,6 +656,22 @@ def meta_ads_dashboard(request: Request):
         if not competitors:
             resolution_source = "env_default"
 
+    # ── In-house Bajaj parity ───────────────────────────────────
+    # Prepend Bajaj's own brand so the dashboard surfaces "our ads"
+    # alongside "their ads". Opt-out via ``?include_ours=false`` for
+    # the per-competitor drill-down where Bajaj would be noise.
+    include_ours = (
+        (request.query_params.get("include_ours") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    if include_ours:
+        bajaj_label = (
+            request.query_params.get("our_brand")
+            or "Bajaj Life Insurance"
+        )
+        if bajaj_label not in competitors:
+            competitors = [bajaj_label] + list(competitors)
+
     country = (request.query_params.get("country") or "").strip() or None
     try:
         count = int(request.query_params.get("count") or 0) or None
@@ -652,15 +793,38 @@ def sitemap_dashboard(_request: Request):
     )
 
 
+def _competitor_dashboard_cache_path(domain: str):
+    """File-cache location for the competitor_dashboard payload.
+
+    One JSON file per domain under settings.SEO_AI['data_dir'], inside a
+    dedicated _competitor_dashboard_cache/ subdir so it's easy to GC
+    independent of crawl outputs. Domain is slugified so colons / slashes
+    can't escape the cache root.
+    """
+    from django.conf import settings as _settings
+
+    safe = re.sub(r"[^a-z0-9._-]+", "_", (domain or "").strip().lower()) or "_"
+    cache_dir = Path(_settings.SEO_AI["data_dir"]) / "_competitor_dashboard_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{safe}.json"
+
+
 @api_view(["GET"])
 def competitor_dashboard(request: Request):
     """Competitor gap report for a domain — no LLM call, just the
     deterministic facts built by the same machinery the CompetitorAgent
-    uses. Heavy on first call (SEMrush + crawl); cached for 7 days
-    after that so subsequent loads are instant.
+    uses. Heavy on first call (SEMrush + 500-page rival crawl, 3-7 min);
+    cached to disk for SEO_AI['competitor_dashboard_cache_ttl_sec']
+    (default 7 days) so subsequent loads return in <100ms.
+
+    ``?refresh=true`` forces a rebuild even when cache is fresh.
     """
-    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    import time as _time
+
     from django.conf import settings as _settings
+
+    domain = request.query_params.get("domain") or "bajajlifeinsurance.com"
+    force_refresh = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
 
     if not _settings.SEMRUSH.get("api_key"):
         return Response(
@@ -671,35 +835,59 @@ def competitor_dashboard(request: Request):
             {"available": False, "error": "COMPETITOR_ENABLED=false"}
         )
 
+    # File-cache read-through. Stale or missing → fall through to rebuild.
+    cache_path = _competitor_dashboard_cache_path(domain)
+    ttl_sec = int(_settings.SEO_AI.get("competitor_dashboard_cache_ttl_sec", 7 * 86400))
+    if not force_refresh and cache_path.exists():
+        try:
+            age_sec = _time.time() - cache_path.stat().st_mtime
+            if age_sec < ttl_sec:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                cached["_cache"] = {
+                    "hit": True,
+                    "age_sec": int(age_sec),
+                    "ttl_sec": ttl_sec,
+                }
+                return Response(cached)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("competitor dashboard cache read failed: %s", exc)
+
     # Build a one-off SEORun-less context. CompetitorAgent.build_facts
     # only uses the run for logging system events; we side-step that
-    # by using a transient in-memory SEORun row (committed=False).
+    # by using a transient in-memory SEORun row.
     from .agents.competitor import CompetitorAgent
     from .models import SEORun
 
-    transient = SEORun(domain=domain, triggered_by="dashboard")
-    transient.id = None  # don't persist conversation logs for dashboard hits
-    # We need a saved SEORun for SEORunMessage FK; create + delete is
-    # cheaper than building a logging-shim.
-    transient.save()
+    transient: SEORun | None = None
     try:
+        transient = SEORun(domain=domain, triggered_by="dashboard")
+        transient.id = None
+        transient.save()
         agent = CompetitorAgent(run=transient, step_index_start=0)
         facts = agent.build_facts(domain=domain)
     except SemrushError as exc:
-        transient.delete()
+        if transient is not None and transient.pk:
+            transient.delete()
         return Response({"available": False, "error": str(exc)})
     except Exception as exc:  # noqa: BLE001 - surface to client
         logger.warning("competitor dashboard failed: %s", exc)
-        transient.delete()
+        if transient is not None and transient.pk:
+            transient.delete()
         return Response({"available": False, "error": str(exc)})
-    finally:
-        # Keep transient run as the audit log for this dashboard hit
-        # so users can replay; could be GC'd by a periodic job.
-        pass
+    # transient stays as audit log; periodic GC can prune later.
 
-    payload = facts.get("competitor", {})
+    payload = facts.get("competitor", {}) or {}
     payload["available"] = True
     payload["domain"] = domain
+
+    # Best-effort cache write. If write fails the response still returns;
+    # next request will just rebuild.
+    try:
+        cache_path.write_text(json.dumps(payload, default=str), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("competitor dashboard cache write failed: %s", exc)
+
+    payload["_cache"] = {"hit": False, "age_sec": 0, "ttl_sec": ttl_sec}
     return Response(payload)
 
 
@@ -1346,6 +1534,17 @@ def content_comparison(request: Request):
 # Django URL routing without needing query strings.
 
 
+def _headings_tree_for_sample(sample: dict) -> list:
+    """Compute the hierarchical headings tree on demand from a sample's
+    flat ``headings`` list. Pre-Phase-I samples have no ``headings``
+    field — return an empty tree without crashing."""
+    try:
+        from .services.custodian import headings_to_tree
+        return headings_to_tree(sample.get("headings") or [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _b64url_encode(url: str) -> str:
     """URL-safe base64 encoding without padding — used for per-URL
     routes. Padding-less keeps the URL slug shorter and avoids the `=`
@@ -1446,28 +1645,360 @@ def _slim_sample_for_index(sample: dict) -> dict:
     }
 
 
+# ── BUG-031 fix: read competitor detail from CrawlerPageResult ─────
+# Phase G's Scrapy walk writes to CrawlerPageResult / CompetitorPageHistory,
+# not to GapDeepCrawl. The helpers below let competitor_detail_view +
+# competitor_page_detail_view source from the live tables (5k+ rows)
+# instead of the orphan GapDeepCrawl table (~34 stale rows). GapDeepCrawl
+# remains the fallback when no CrawlerPageResult data exists for a domain,
+# so legacy gap-pipeline outputs still render.
+
+
+def _latest_competitor_snapshot_for(domain: str):
+    """Most-recent COMPLETE competitor snapshot with rows for `domain`.
+
+    Falls back to the latest complete snapshot regardless of pages_ok
+    when none have rows (so an empty crawl still surfaces metadata
+    instead of 404-ing). Returns None when nothing matches.
+    """
+    from apps.crawler.models import CrawlSnapshot
+
+    normalized = _normalize_competitor_domain(domain)
+    base = CrawlSnapshot.objects.filter(
+        kind=CrawlSnapshot.Kind.COMPETITOR,
+        status=CrawlSnapshot.Status.COMPLETE,
+        target_domain__iexact=normalized,
+    ).order_by("-started_at")
+    with_pages = base.filter(pages_ok__gt=0).first()
+    return with_pages or base.first()
+
+
+def _h1_text_from_headings(headings_json) -> str:
+    """First H1 text from the structural headings list, empty if none."""
+    if not headings_json:
+        return ""
+    for h in headings_json:
+        if isinstance(h, dict) and int(h.get("level") or 0) == 1:
+            return (h.get("text") or "").strip()
+    return ""
+
+
+def _profile_from_page_results(pages) -> dict:
+    """Aggregate CrawlerPageResult rows into the same profile shape that
+    GapDeepCrawl.profile carried, so the frontend sees a consistent payload
+    regardless of which storage track populated it."""
+    pages = list(pages)
+    n = len(pages)
+    if n == 0:
+        return {}
+
+    def _ok(p) -> bool:
+        try:
+            code = int(p.status_code or 0)
+        except (TypeError, ValueError):
+            return False
+        return 200 <= code < 400
+
+    ok = sum(1 for p in pages if _ok(p))
+    word_counts = [int(p.word_count or 0) for p in pages]
+    word_counts_sorted = sorted(word_counts)
+    response_times = [int(p.response_time_ms or 0) for p in pages if p.response_time_ms]
+    has_schema_pages = sum(1 for p in pages if (p.jsonld_count or 0) > 0)
+    h1_pages = sum(1 for p in pages if (p.h1_count or 0) > 0)
+
+    page_types: dict[str, int] = {}
+    schema_types_set: set[str] = set()
+    for p in pages:
+        pt = (p.page_type or "").strip() or "unknown"
+        page_types[pt] = page_types.get(pt, 0) + 1
+        for t in (p.jsonld_types or []):
+            if t:
+                schema_types_set.add(str(t))
+
+    # PSI / CWV — prefer mobile_* (CrUX-backed), fall back to legacy *_ms.
+    def _mobile_or_legacy(p, mobile_attr: str, legacy_attr: str):
+        v = getattr(p, mobile_attr, None)
+        if v is not None:
+            return v
+        return getattr(p, legacy_attr, None)
+
+    pagespeed_vals = [
+        _mobile_or_legacy(p, "mobile_pagespeed_score", "pagespeed_score")
+        for p in pages
+    ]
+    pagespeed_vals = [v for v in pagespeed_vals if v is not None]
+    lcp_vals = [_mobile_or_legacy(p, "mobile_lcp_ms", "lcp_ms") for p in pages]
+    lcp_vals = [v for v in lcp_vals if v is not None]
+    cls_vals = [_mobile_or_legacy(p, "mobile_cls", "cls") for p in pages]
+    cls_vals = [v for v in cls_vals if v is not None]
+    inp_vals = [_mobile_or_legacy(p, "mobile_inp_ms", "inp_ms") for p in pages]
+    inp_vals = [v for v in inp_vals if v is not None]
+
+    def _median(vs):
+        if not vs:
+            return 0
+        s = sorted(vs)
+        return s[len(s) // 2]
+
+    pricing_signals = [p for p in pages if "/pricing" in (p.url or "").lower()]
+    llms_signals = [p for p in pages if (p.url or "").lower().rstrip("/").endswith("/llms.txt")]
+
+    return {
+        "page_count": n,
+        "ok_count": ok,
+        "avg_word_count": round(sum(word_counts) / n) if n else 0,
+        "median_word_count": word_counts_sorted[n // 2] if n else 0,
+        "avg_response_ms": (
+            round(sum(response_times) / len(response_times))
+            if response_times else 0
+        ),
+        "schema_pct": round(100 * has_schema_pages / n) if n else 0,
+        "h1_pct": round(100 * h1_pages / n) if n else 0,
+        "page_types": page_types,
+        "schema_types": sorted(schema_types_set)[:20],
+        "has_pricing_page": bool(pricing_signals),
+        "has_llms_txt": bool(llms_signals),
+        # has_pricing_md isn't a direct CrawlerPageResult signal — preserve
+        # the field for shape parity but leave it False unless a future
+        # crawler stamps it explicitly.
+        "has_pricing_md": False,
+        # Simple AI-citability proxy: schema% + has_llms_txt + heading
+        # coverage, scaled to 100. The original GapDeepCrawl figure used
+        # a deeper scorer; this stand-in keeps the UI tile populated.
+        "ai_citability_score": min(
+            100,
+            round(
+                (has_schema_pages / n * 50 if n else 0)
+                + (h1_pages / n * 30 if n else 0)
+                + (20 if llms_signals else 0)
+            ),
+        ),
+        "cwv_pages_count": len(pagespeed_vals),
+        "avg_pagespeed_score": (
+            round(sum(pagespeed_vals) / len(pagespeed_vals))
+            if pagespeed_vals else 0
+        ),
+        "median_lcp_ms": _median(lcp_vals),
+        "median_cls": round(_median(cls_vals), 3) if cls_vals else 0,
+        "median_inp_ms": _median(inp_vals),
+    }
+
+
+def _slim_page_from_result(p) -> dict:
+    """Sample-page summary derived from a CrawlerPageResult row.
+
+    Mirrors the dict shape that _slim_sample_for_index used to build
+    from the GapDeepCrawl JSON blob.
+    """
+    h1_text = _h1_text_from_headings(p.headings_json)
+    return {
+        "url": p.url,
+        "url_b64": _b64url_encode(p.url or ""),
+        "title": p.title or "",
+        "meta_description": (p.meta_description or "")[:280],
+        "page_type": p.page_type or "",
+        "word_count": int(p.word_count or 0),
+        "has_schema": bool(p.jsonld_count or 0),
+        "schema_types": list(p.jsonld_types or []),
+        "response_time_ms": int(p.response_time_ms or 0),
+        "pagespeed_score": p.mobile_pagespeed_score or p.pagespeed_score,
+        "lcp_ms": p.mobile_lcp_ms or p.lcp_ms,
+        "cls": p.mobile_cls if p.mobile_cls is not None else p.cls,
+        "inp_ms": p.mobile_inp_ms or p.inp_ms,
+        "h1_text": h1_text,
+        "internal_link_count": len(p.internal_links_json or []),
+        "external_link_count": len(p.external_links_json or []),
+    }
+
+
+def _full_page_from_result(p, snap) -> dict:
+    """Full per-URL detail derived from a CrawlerPageResult row.
+
+    Mirrors the dict shape the legacy GapDeepCrawl-backed endpoint built.
+    """
+    headings = p.headings_json or []
+    h1_texts = [
+        (h.get("text") or "").strip()
+        for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 1
+    ]
+    h2_texts = [
+        (h.get("text") or "").strip()
+        for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 2
+    ]
+    sample_for_tree = {"headings": headings}
+    return {
+        "domain": snap.target_domain,
+        "url": p.url,
+        "url_b64": _b64url_encode(p.url or ""),
+        "title": p.title or "",
+        "meta_description": p.meta_description or "",
+        "h1_texts": h1_texts,
+        "h2_texts": h2_texts,
+        "schema_types": list(p.jsonld_types or []),
+        "word_count": int(p.word_count or 0),
+        "has_schema": bool(p.jsonld_count or 0),
+        "page_type": p.page_type or "",
+        "response_time_ms": int(p.response_time_ms or 0),
+        "internal_link_count": len(p.internal_links_json or []),
+        "external_link_count": len(p.external_links_json or []),
+        "last_modified": "",
+        "body_text": p.body_text or "",
+        "pagespeed_score": p.mobile_pagespeed_score or p.pagespeed_score,
+        "lcp_ms": p.mobile_lcp_ms or p.lcp_ms,
+        "cls": p.mobile_cls if p.mobile_cls is not None else p.cls,
+        "inp_ms": p.mobile_inp_ms or p.inp_ms,
+        "headings": headings,
+        "headings_tree": _headings_tree_for_sample(sample_for_tree),
+        "internal_links": p.internal_links_json or [],
+        "external_links": p.external_links_json or [],
+        "images": p.images_json or [],
+        "videos": getattr(p, "videos_json", None) or [],
+        "run_id": str(snap.id),
+        "run_started_at": (
+            snap.started_at.isoformat() if snap.started_at else None
+        ),
+    }
+
+
+@api_view(["GET"])
+def competitor_crawls_list_view(_request):
+    """List every competitor domain we've crawled (or are currently
+    crawling) via the Phase G Scrapy walk. One row per ``target_domain``,
+    freshest snapshot wins regardless of completion state.
+
+    Includes both ``status='running'`` and ``status='complete'`` so the
+    dashboard reflects live progress as pages stream in — the previous
+    behaviour required ``status='complete'`` and showed nothing during
+    active overnight crawls.
+
+    Each row carries the *live* page count from CrawlerPageResult (not
+    just ``snap.pages_attempted`` which only updates when the spider
+    closes) so the operator sees real-time growth.
+
+    Does NOT include the in-house Bajaj crawl (kind=BAJAJ).
+    """
+    from collections import defaultdict
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    from django.db.models import Count
+
+    from .models import CompetitorChangeEvent
+
+    # Latest snapshot per target_domain — running OR complete. Failed
+    # snapshots are excluded so a half-dead retry doesn't shadow a
+    # successful older crawl.
+    qs = (
+        CrawlSnapshot.objects
+        .filter(kind=CrawlSnapshot.Kind.COMPETITOR)
+        .exclude(status=CrawlSnapshot.Status.FAILED)
+        .order_by("-started_at")
+    )
+
+    latest_by_domain: dict[str, CrawlSnapshot] = {}
+    for snap in qs:
+        td = (snap.target_domain or "").strip().lower()
+        if not td or td in latest_by_domain:
+            continue
+        latest_by_domain[td] = snap
+
+    if not latest_by_domain:
+        return Response({"competitors": [], "count": 0})
+
+    snapshot_ids = [s.id for s in latest_by_domain.values()]
+
+    # Live page count per snapshot — updated row-by-row as the spider
+    # writes, so a running crawl ticks up in the UI poll.
+    page_counts = dict(
+        CrawlerPageResult.objects
+        .filter(snapshot_id__in=snapshot_ids)
+        .values_list("snapshot_id")
+        .annotate(n=Count("id"))
+    )
+
+    # Change-event totals per competitor (across snapshot history).
+    change_counts: dict[str, int] = defaultdict(int)
+    for row in (
+        CompetitorChangeEvent.objects
+        .filter(competitor_domain__in=list(latest_by_domain.keys()))
+        .values_list("competitor_domain")
+        .annotate(n=Count("id"))
+    ):
+        change_counts[row[0]] = row[1]
+
+    rows = []
+    for td, snap in sorted(latest_by_domain.items()):
+        rows.append({
+            "domain": td,
+            "snapshot_id": str(snap.id),
+            "status": snap.status,
+            "started_at": (
+                snap.started_at.isoformat() if snap.started_at else None
+            ),
+            "finished_at": (
+                snap.finished_at.isoformat()
+                if getattr(snap, "finished_at", None) else None
+            ),
+            "pages_attempted": snap.pages_attempted,
+            "pages_ok": snap.pages_ok,
+            "pages_in_db": page_counts.get(snap.id, 0),
+            "change_events": change_counts.get(td, 0),
+            "notes": (snap.notes or "")[:160],
+        })
+
+    return Response({"competitors": rows, "count": len(rows)})
+
+
 @api_view(["GET"])
 def competitor_detail_view(_request, domain: str):
     """Per-competitor landing page payload.
 
-    Returns:
-      - the normalized domain
-      - the deep-crawl profile summary (KPIs, page-type breakdown,
-        schema coverage, AI citability, CWV aggregates)
-      - a slim list of every sample page (URL, title, meta, page_type,
-        CWV, etc. — body_text excluded to keep the response under
-        ~50 KB even for the 25-page-per-competitor max)
-      - the run_id and started_at so the UI can show "based on crawl
-        from <date>"
+    Sources from CrawlerPageResult first (Phase G Scrapy walk output) and
+    falls back to the legacy GapDeepCrawl table when no CrawlerPageResult
+    snapshot exists for the domain. Either way the response shape is
+    identical so the frontend hook doesn't care which storage track served.
 
-    Returns 404 when we have no GapDeepCrawl for the domain.
+    Returns 404 only when neither storage has anything for the domain.
     """
+    from apps.crawler.models import CrawlerPageResult
+
+    snap = _latest_competitor_snapshot_for(domain)
+    if snap is not None:
+        pages = list(CrawlerPageResult.objects.filter(snapshot=snap))
+        if pages:
+            profile = _profile_from_page_results(pages)
+            return Response({
+                "domain": snap.target_domain,
+                "is_us": False,
+                "run_id": str(snap.id),
+                "run_started_at": (
+                    snap.started_at.isoformat() if snap.started_at else None
+                ),
+                "sitemap_url_count": (
+                    len(snap.allowed_domains or [])
+                    if hasattr(snap, "allowed_domains") else 0
+                ),
+                "pages_attempted": snap.pages_attempted,
+                "pages_ok": snap.pages_ok,
+                "profile_summary": profile,
+                "sample_pages": [_slim_page_from_result(p) for p in pages],
+                "sample_count": len(pages),
+                "error": "",
+            })
+
+    # Fallback — legacy GapDeepCrawl path. Kept so old gap-pipeline runs
+    # still render until they age out.
     crawl = _latest_deep_crawl_for(domain)
     if crawl is None:
         return Response(
             {
-                "error": f"no deep-crawl data for {domain}",
-                "hint": "run the gap pipeline first",
+                "error": f"no crawl data for {domain}",
+                "hint": (
+                    "no CrawlSnapshot or GapDeepCrawl rows match this "
+                    "domain — trigger the daily competitor walk or "
+                    "/api/v1/seo/gap-pipeline/start/ to populate"
+                ),
             },
             status=status.HTTP_404_NOT_FOUND,
         )
@@ -1494,16 +2025,12 @@ def competitor_detail_view(_request, domain: str):
 def competitor_page_detail_view(_request, domain: str, url_b64: str):
     """Per-URL detail view payload.
 
-    Returns the full sample-page dict including the body_text that the
-    landing endpoint omits. Title, meta, H1/H2 texts, schema types,
-    response time, per-URL CWV, internal/external link counts, and the
-    full visible body text captured by the competitor crawler.
-
-    404 when:
-      - the domain has no deep crawl (same as the landing endpoint)
-      - the base64 segment doesn't decode to a valid URL
-      - that URL isn't in this competitor's sample_pages
+    Sources from CrawlerPageResult first (matched on snapshot + url) and
+    falls back to GapDeepCrawl when no CrawlerPageResult exists for the
+    URL. Response shape is identical to the legacy path.
     """
+    from apps.crawler.models import CrawlerPageResult
+
     decoded = _b64url_decode(url_b64)
     if decoded is None:
         return Response(
@@ -1511,12 +2038,23 @@ def competitor_page_detail_view(_request, domain: str, url_b64: str):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    snap = _latest_competitor_snapshot_for(domain)
+    if snap is not None:
+        page = CrawlerPageResult.objects.filter(
+            snapshot=snap, url=decoded.strip(),
+        ).first()
+        if page is not None:
+            return Response(_full_page_from_result(page, snap))
+
     crawl = _latest_deep_crawl_for(domain)
     if crawl is None:
         return Response(
             {
-                "error": f"no deep-crawl data for {domain}",
-                "hint": "run the gap pipeline first",
+                "error": f"no crawl data for {domain}",
+                "hint": (
+                    "no CrawlSnapshot or GapDeepCrawl rows match this "
+                    "domain — trigger the daily competitor walk first"
+                ),
             },
             status=status.HTTP_404_NOT_FOUND,
         )
@@ -1553,6 +2091,17 @@ def competitor_page_detail_view(_request, domain: str, url_b64: str):
         "lcp_ms": sample.get("lcp_ms"),
         "cls": sample.get("cls"),
         "inp_ms": sample.get("inp_ms"),
+        # Phase 2A.5 — structural mirror payload for the Inspector UI.
+        # Empty arrays on legacy GapDeepCrawl rows (built before this
+        # field landed) — the UI is expected to gracefully degrade to
+        # "rerun the deep crawl to capture this" rather than 500.
+        "headings": sample.get("headings") or [],
+        # Phase I — hierarchical heading tree (h1>h2>h3 nested) so the
+        # UI can render the actual page outline, not just the flat list.
+        "headings_tree": _headings_tree_for_sample(sample),
+        "internal_links": sample.get("internal_links") or [],
+        "external_links": sample.get("external_links") or [],
+        "images": sample.get("images") or [],
         "run_id": str(crawl.run_id),
         "run_started_at": (
             crawl.run.started_at.isoformat() if crawl.run.started_at else None
@@ -1599,3 +2148,628 @@ def chat_stream(request):
     response["X-Accel-Buffering"] = "no"
     response["Cache-Control"] = "no-cache"
     return response
+
+
+# ── LLM pool monitoring ──────────────────────────────────────────────
+
+
+@api_view(["GET"])
+def llm_pool_stats(_request):
+    """GET /api/v1/seo/llm/pool-stats — health of the Groq key pool.
+
+    Returns one row per configured key with call count, 429 count,
+    and remaining cooldown. Used by ops to confirm the pool is
+    spreading load across keys (instead of hammering the first one).
+    Key values are masked to the last 6 chars so logs don't leak.
+    """
+    from .llm.key_pool import get_groq_pool
+    pool = get_groq_pool()
+    if pool is None:
+        return Response({
+            "enabled": False,
+            "message": (
+                "No Groq keys configured. Set GROQ_API_KEYS=k1,k2,... in .env "
+                "(or GROQ_API_KEY=k for a single-key fallback)."
+            ),
+        })
+    return Response({
+        "enabled": True,
+        "key_count": len(pool),
+        "keys": pool.stats(),
+    })
+
+
+# ── Content Writer ───────────────────────────────────────────────────
+
+
+def _serialize_proposal(p) -> dict:
+    """Wire shape for ContentRewriteProposal.
+
+    We deliberately *omit* ``raw_proposal`` from the list endpoint and
+    only include it on detail — the raw payload is ~5-10x the size of
+    the filtered version and the list view is purely for picking which
+    proposal to inspect.
+    """
+    return {
+        "id": str(p.id),
+        "our_url": p.our_url,
+        "competitor_urls": p.competitor_urls or [],
+        "target_keywords": p.target_keywords or [],
+        "evidence_dict": p.evidence_dict or {},
+        "generated_proposal": p.generated_proposal or {},
+        "raw_proposal": p.raw_proposal or {},
+        "critic_verdict": p.critic_verdict or {},
+        "model_used": p.model_used or "",
+        "tokens_in": p.tokens_in,
+        "tokens_out": p.tokens_out,
+        "cost_usd": p.cost_usd,
+        "error": p.error or "",
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@api_view(["GET"])
+def content_writer_our_pages(_request):
+    """List crawled URLs the writer can rewrite.
+
+    Sourced from the latest CrawlSnapshot's CrawlerPageResult rows so
+    the UI selector only shows URLs that actually have the structural
+    payload (headings_json, internal_links_json) the agent needs.
+    """
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    # Pick the most recent snapshot that has a meaningful number of
+    # rows — the very latest may still be mid-crawl with 0 or 1 row
+    # (Phase C full crawl in progress can take hours during PSI). We
+    # require ≥ 5 so we don't surface a single trailing PDF row from
+    # an aborted run as "the dataset".
+    snap = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(n__gte=5)
+        .order_by("-id")
+        .first()
+    )
+    if snap is None:
+        return Response({"snapshot_id": None, "pages": []})
+    rows = (
+        CrawlerPageResult.objects.filter(snapshot=snap)
+        .exclude(status_code__in=["404", "500", "0"])
+        .values("url", "title", "page_type", "word_count")
+        .order_by("url")[:5000]
+    )
+    pages = [
+        {
+            "url": r["url"],
+            "title": (r["title"] or "")[:200],
+            "page_type": r["page_type"] or "",
+            "word_count": r["word_count"] or 0,
+        }
+        for r in rows
+    ]
+    return Response({
+        "snapshot_id": snap.id,
+        "snapshot_date": (
+            snap.started_at.isoformat() if snap.started_at else None
+        ),
+        "pages": pages,
+    })
+
+
+@api_view(["POST"])
+def content_writer_generate(request: Request):
+    """POST /api/v1/seo/content-writer/generate.
+
+    Body:
+        {
+          "our_url": "https://.../...",
+          "competitor_urls": ["...", "..."],   # optional
+          "target_keywords": ["...", "..."]    # optional
+        }
+
+    Returns the full :class:`ContentRewriteProposal` serialisation
+    immediately (synchronous — one LLM call, completes in 5-15 s).
+
+    The proposal is persisted regardless of outcome: errors land in
+    ``error`` so the operator can see what failed without losing the
+    request context.
+    """
+    from .agents.content_writer import generate_rewrite
+    from .models import ContentRewriteProposal
+
+    body = request.data or {}
+    our_url = (body.get("our_url") or "").strip()
+    if not our_url:
+        return Response(
+            {"error": "our_url is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    competitor_urls = [
+        (u or "").strip() for u in (body.get("competitor_urls") or [])
+        if (u or "").strip()
+    ]
+    target_keywords = [
+        (k or "").strip() for k in (body.get("target_keywords") or [])
+        if (k or "").strip()
+    ]
+
+    result = generate_rewrite(
+        our_url=our_url,
+        competitor_urls=competitor_urls,
+        target_keywords=target_keywords,
+    )
+
+    proposal = ContentRewriteProposal.objects.create(
+        our_url=result.our_url,
+        competitor_urls=result.competitor_urls,
+        target_keywords=result.target_keywords,
+        evidence_dict=result.evidence_dict,
+        raw_proposal=result.raw_proposal,
+        generated_proposal=result.filtered_proposal,
+        critic_verdict=result.critic_verdict,
+        model_used=result.model_used,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        cost_usd=result.cost_usd,
+        error=result.error or "",
+    )
+    return Response(_serialize_proposal(proposal))
+
+
+@api_view(["GET"])
+def content_writer_proposal_detail(_request, proposal_id: str):
+    """GET /api/v1/seo/content-writer/proposals/<uuid>."""
+    from .models import ContentRewriteProposal
+
+    try:
+        proposal = ContentRewriteProposal.objects.get(id=proposal_id)
+    except ContentRewriteProposal.DoesNotExist:
+        return Response(
+            {"error": f"proposal {proposal_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    return Response(_serialize_proposal(proposal))
+
+
+@api_view(["GET"])
+def geo_score(request: Request):
+    """GET /api/v1/seo/geo/score/.
+
+    Unified Generative Engine Optimization rollup — citation density,
+    E-E-A-T markup, AI-bot hit count, llms.txt presence, Reddit /
+    Quora mentions, YouTube presence, Wikidata entity, brand-mention
+    feed — composed into one weighted 0-100 score with suggestions.
+
+    Query params:
+      * ``brand`` (default: "Bajaj Life Insurance")
+      * ``deep`` — set to ``false`` to skip the external SerpAPI +
+        Wikidata calls (faster, page-signals only).
+    """
+    from dataclasses import asdict
+
+    from .services.geo import compute_geo_score
+
+    brand = (
+        request.query_params.get("brand")
+        or "Bajaj Life Insurance"
+    ).strip()
+    deep = (
+        (request.query_params.get("deep") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    result = compute_geo_score(brand=brand, deep=deep)
+    return Response(asdict(result))
+
+
+@api_view(["POST"])
+def design_brief_compose(request: Request):
+    """POST /api/v1/seo/design-brief/compose.
+
+    Body: ``{"figma_url": "https://www.figma.com/design/<key>/...",
+              "frame_name": "Term Insurance Landing"}``.
+
+    Returns the deterministic brief with the designer's frame
+    summary (text + images + instances), competitor zone signals
+    drawn from the LayoutAgent diff, and rule-based recommendations.
+
+    Errors land in the ``error`` field so the UI degrades gracefully:
+      * Missing FIGMA_TOKEN env → "set FIGMA_TOKEN in .env".
+      * Bad Figma URL → "could not parse Figma file URL".
+      * Frame name not found → "frame '<x>' not found in file".
+    """
+    from dataclasses import asdict
+
+    from .services.design_brief import compose_brief
+
+    body = request.data or {}
+    figma_url = (body.get("figma_url") or "").strip()
+    frame_name = (body.get("frame_name") or "").strip()
+    if not figma_url:
+        return Response(
+            {"error": "figma_url required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    brief = compose_brief(figma_url=figma_url, frame_name=frame_name)
+    payload = asdict(brief)
+    return Response(payload)
+
+
+@api_view(["POST"])
+def visual_audit_capture(request: Request):
+    """POST /api/v1/seo/visual-audit/capture.
+
+    Body: ``{ "urls": ["https://...", ...], "snapshot_id": "manual",
+              "viewport": "desktop"|"mobile" }``.
+
+    Captures one PNG per URL via Playwright headless Chromium and
+    returns the manifest. URLs that 404/timeout/bot-detect end up in
+    the ``skipped`` list with their error reason.
+
+    Storage: ``BASE_DIR/data/screenshots/<snapshot_id>/<urlhash>.png``.
+    Subsequent captures of the same URL overwrite — dedupe by hash.
+    """
+    from dataclasses import asdict
+
+    from .services.visual_audit import capture_page_screenshots
+
+    body = request.data or {}
+    urls = [u.strip() for u in (body.get("urls") or []) if isinstance(u, str) and u.strip()]
+    if not urls:
+        return Response(
+            {"error": "urls (non-empty list) required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    snapshot_id = (body.get("snapshot_id") or "manual").strip()
+    vw = (body.get("viewport") or "desktop").strip().lower()
+    viewport = (375, 812) if vw == "mobile" else (1280, 800)
+
+    result = capture_page_screenshots(
+        urls,
+        snapshot_id=snapshot_id,
+        viewport=viewport,
+    )
+    return Response({
+        "captured": [asdict(r) for r in result.captured],
+        "skipped": result.skipped,
+        "elapsed_sec": result.elapsed_sec,
+        "error": result.error,
+        "snapshot_id": snapshot_id,
+        "viewport": f"{viewport[0]}x{viewport[1]}",
+    })
+
+
+@api_view(["GET"])
+def orchestrator_v2_run(request: Request):
+    """GET /api/v1/seo/orchestrate/.
+
+    Orchestrator V2 — runs the full custodian pyramid synchronously
+    and returns one unified report (~80-150 ms). The Custodians page
+    consumes this; the future Briefings page renders the ``headline``
+    block as a "this week's focus" card.
+
+    Query params:
+      * ``adobe`` — set to ``false`` to skip the Adobe call (use when
+        credentials aren't configured to save the ~200ms IMS round-
+        trip on every dashboard load).
+      * ``structure`` — set to ``false`` to skip StructureAgent
+        (no-op when competitor snapshots don't exist yet).
+    """
+    from .services.orchestrator_v2 import run_orchestration
+
+    include_adobe = (
+        (request.query_params.get("adobe") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    include_structure = (
+        (request.query_params.get("structure") or "true").lower()
+        not in ("0", "false", "no")
+    )
+    report = run_orchestration(
+        include_adobe=include_adobe,
+        include_structure_gaps=include_structure,
+    )
+    return Response(report)
+
+
+@api_view(["GET"])
+def custodian_structure_gaps(request: Request):
+    """GET /api/v1/seo/custodians/structure-gaps/.
+
+    StructureAgent output: internal-link patterns (page_type →
+    target_kind tuples) that competitors systematically use but we
+    don't. Lets the operator see "every ICICI term page links to a
+    calculator from the hero; we only do that on 12 % of ours".
+
+    Query params:
+      * ``min_pct`` — required competitor coverage to count as a
+        pattern (default 50.0).
+    """
+    from apps.crawler.models import CrawlSnapshot
+    from django.db.models import Count
+
+    from .services.custodian import link_pattern_gaps
+
+    try:
+        min_pct = float(request.query_params.get("min_pct") or 50.0)
+    except ValueError:
+        min_pct = 50.0
+
+    our_snap = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(kind="bajaj", n__gte=5)
+        .order_by("-started_at")
+        .first()
+    )
+    if our_snap is None:
+        return Response(
+            {"error": "no Bajaj crawl snapshot with data — crawl first"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Pick latest non-empty competitor snapshot per domain.
+    comp_snap_ids: list[str] = []
+    seen_domains: set[str] = set()
+    competitor_snaps = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(kind="competitor", n__gte=5)
+        .order_by("-started_at")
+    )
+    for s in competitor_snaps:
+        d = (s.target_domain or "").lower().lstrip("www.")
+        if d in seen_domains:
+            continue
+        seen_domains.add(d)
+        comp_snap_ids.append(str(s.id))
+
+    gaps = link_pattern_gaps(
+        our_snapshot_id=str(our_snap.id),
+        competitor_snapshot_ids=comp_snap_ids,
+        min_pct=min_pct,
+    )
+    return Response({
+        "our_snapshot_id": str(our_snap.id),
+        "competitor_snapshot_count": len(comp_snap_ids),
+        "min_pct": min_pct,
+        "gaps": gaps,
+    })
+
+
+@api_view(["GET"])
+def custodian_layout(request: Request):
+    """GET /api/v1/seo/custodians/layout/.
+
+    LayoutAgent output: per-landmark-zone aggregates (header / nav /
+    hero / main / aside / footer / other) for our latest Bajaj
+    snapshot, plus the zone-level diff against each competitor that
+    has a snapshot.
+
+    Query params:
+      * ``our_snapshot_id`` — override our snapshot (default = latest).
+
+    Existing pre-Phase-H rows have no ``zone`` field — those entries
+    appear in the ``unknown`` bucket. The 03:00 IST beat job
+    repopulates with proper zones.
+    """
+    from apps.crawler.models import CrawlSnapshot
+    from django.db.models import Count
+
+    from .services.custodian import layout_diff, summarise_layout
+
+    snap_override = request.query_params.get("our_snapshot_id")
+    if snap_override:
+        our_snap = CrawlSnapshot.objects.filter(id=snap_override).first()
+    else:
+        our_snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(kind="bajaj", n__gte=5)
+            .order_by("-started_at")
+            .first()
+        )
+    if our_snap is None:
+        return Response(
+            {"error": "no Bajaj snapshot with data"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Pick latest non-empty snapshot per competitor domain.
+    comp_snap_ids: list[str] = []
+    seen_domains: set[str] = set()
+    competitor_snaps = (
+        CrawlSnapshot.objects.annotate(n=Count("pages"))
+        .filter(kind="competitor", n__gte=5)
+        .order_by("-started_at")
+    )
+    for s in competitor_snaps:
+        d = (s.target_domain or "").lower().lstrip("www.")
+        if d in seen_domains:
+            continue
+        seen_domains.add(d)
+        comp_snap_ids.append(str(s.id))
+
+    layout = summarise_layout(snapshot_id=str(our_snap.id))
+    diff = layout_diff(str(our_snap.id), comp_snap_ids) if comp_snap_ids else {
+        "our_snapshot_id": str(our_snap.id),
+        "diffs_by_competitor": {},
+    }
+    return Response({
+        "our_snapshot_id": str(our_snap.id),
+        "competitor_snapshot_count": len(comp_snap_ids),
+        "layout": layout,
+        "diff": diff,
+    })
+
+
+@api_view(["GET"])
+def custodian_adobe(_request):
+    """GET /api/v1/seo/custodians/adobe/.
+
+    AdobeAgent service-layer output: dashboard payload shaped for the
+    custodian. Lookback defaults to 30 days. Returns
+    ``{available: false, error: ...}`` when Adobe credentials aren't
+    set — the UI degrades gracefully instead of 500-ing.
+    """
+    from .services.custodian import summarise_adobe_traffic
+
+    return Response(summarise_adobe_traffic())
+
+
+@api_view(["GET"])
+def custodian_summary(request: Request):
+    """GET /api/v1/seo/custodians/summary.
+
+    Returns the OurDataCustodian view of bajajlifeinsurance.com
+    side-by-side with TheirDataCustodian for every competitor in
+    ``settings.COMPETITOR["roster"]``, plus the SiteDiffer report.
+
+    No LLM is invoked — this is the data layer the LLM-driven agents
+    (ContentWriter, SiteDifferAgent, etc.) consume. The frontend
+    Custodians page renders the same JSON directly.
+
+    Query params:
+      * ``our`` — override the "our" domain (default
+        ``bajajlifeinsurance.com``). Useful when this is deployed
+        for another tenant.
+      * ``compute_diff`` — set to ``false`` to skip the SiteDiffer
+        block (saves ~5 ms on big rosters).
+    """
+    from dataclasses import asdict
+
+    from .services.custodian import (
+        compute_site_diff,
+        summarise_competitor,
+        summarise_our_domain,
+    )
+
+    our_domain = (
+        request.query_params.get("our") or "bajajlifeinsurance.com"
+    ).strip().lower()
+    compute_diff = (
+        request.query_params.get("compute_diff", "true").lower()
+        not in ("0", "false", "no")
+    )
+
+    from django.conf import settings as dj_settings
+
+    roster = list(getattr(dj_settings, "COMPETITOR", {}).get("roster") or [])
+    ours = summarise_our_domain(domain=our_domain)
+    theirs = [summarise_competitor(d) for d in roster]
+    payload = {
+        "our": asdict(ours),
+        "competitors": [asdict(t) for t in theirs],
+        "roster_size": len(roster),
+    }
+    if compute_diff:
+        diff = compute_site_diff(ours, theirs)
+        payload["diff"] = asdict(diff)
+    return Response(payload)
+
+
+@api_view(["GET"])
+def competitor_changes(request: Request):
+    """GET /api/v1/seo/competitor/changes — recent ChangeWatcher events.
+
+    Query params (all optional):
+      * ``domain`` — filter to one competitor (apex host).
+      * ``kind`` — filter to one event kind (``new``/``title``/
+        ``content``/``structure``/``removed``).
+      * ``limit`` — default 100, max 500.
+
+    The default 100-event feed is enough for the "what changed today"
+    operator dashboard. For analytical replays use the model directly.
+    """
+    from .models import CompetitorChangeEvent
+
+    qs = CompetitorChangeEvent.objects.all()
+    domain = (request.query_params.get("domain") or "").strip().lower()
+    if domain:
+        qs = qs.filter(competitor_domain=domain.lstrip("www."))
+    kind = (request.query_params.get("kind") or "").strip().lower()
+    if kind in {c[0] for c in CompetitorChangeEvent.ChangeKind.choices}:
+        qs = qs.filter(kind=kind)
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except ValueError:
+        limit = 100
+    limit = max(1, min(limit, 500))
+    rows = qs.order_by("-detected_at")[:limit]
+    return Response({
+        "count": len(rows),
+        "events": [
+            {
+                "id": ev.id,
+                "url": ev.url,
+                "competitor_domain": ev.competitor_domain,
+                "kind": ev.kind,
+                "detected_at": (
+                    ev.detected_at.isoformat() if ev.detected_at else None
+                ),
+                "delta": ev.delta or {},
+            }
+            for ev in rows
+        ],
+    })
+
+
+@api_view(["GET"])
+def competitor_page_history(request: Request):
+    """GET /api/v1/seo/competitor/history?url=... — revision timeline
+    for one URL. Used by the Inspector's "revisions" tab to show how a
+    competitor's page has shifted across crawls.
+    """
+    from .models import CompetitorPageHistory
+
+    url = (request.query_params.get("url") or "").strip()
+    if not url:
+        return Response(
+            {"error": "url query param required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    rows = CompetitorPageHistory.objects.filter(url=url).order_by("-seen_at")[:50]
+    return Response({
+        "url": url,
+        "revisions": [
+            {
+                "id": h.id,
+                "seen_at": h.seen_at.isoformat() if h.seen_at else None,
+                "title": h.title,
+                "meta_description": h.meta_description,
+                "word_count": h.word_count,
+                "heading_count": h.heading_count,
+                "internal_link_count": h.internal_link_count,
+                "image_count": h.image_count,
+                "title_hash": h.title_hash,
+                "content_hash": h.content_hash,
+                "structure_hash": h.structure_hash,
+                "delta": h.delta or {},
+            }
+            for h in rows
+        ],
+    })
+
+
+@api_view(["GET"])
+def content_writer_proposals_list(_request):
+    """GET /api/v1/seo/content-writer/proposals — recent rewrites."""
+    from .models import ContentRewriteProposal
+
+    rows = ContentRewriteProposal.objects.order_by("-created_at")[:50]
+    return Response({
+        "count": len(rows),
+        "proposals": [
+            {
+                "id": str(p.id),
+                "our_url": p.our_url,
+                "model_used": p.model_used,
+                "accepted": (p.critic_verdict or {}).get("accepted", 0),
+                "rejected": (p.critic_verdict or {}).get("rejected", 0),
+                "cost_usd": p.cost_usd,
+                "error": p.error,
+                "created_at": (
+                    p.created_at.isoformat() if p.created_at else None
+                ),
+            }
+            for p in rows
+        ],
+    })

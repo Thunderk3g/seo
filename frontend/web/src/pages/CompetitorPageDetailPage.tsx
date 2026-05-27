@@ -100,17 +100,48 @@ export default function CompetitorPageDetailPage() {
             </Card>
           )}
 
-          {(data.h1_texts.length > 0 || data.h2_texts.length > 0) && (
+          {/* Phase 2A.5 — full outline tree in document order.
+              Falls back to the legacy h1_texts/h2_texts when the
+              structural payload is empty (older GapDeepCrawl rows). */}
+          {data.headings && data.headings.length > 0 ? (
             <Card className="mb-4">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Headings</CardTitle>
+                <CardTitle className="text-sm">
+                  Page outline
+                  <span className="ml-2 text-xs font-normal text-brand-text-3">
+                    {data.headings.length} heading{data.headings.length === 1 ? '' : 's'}
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-1 text-sm">
+                  {data.headings.map((h) => {
+                    const indent = (h.level - 1) * 16;
+                    const color =
+                      h.level === 1 ? 'text-brand-text font-semibold' :
+                      h.level === 2 ? 'text-brand-text font-medium' :
+                      'text-brand-text-2';
+                    return (
+                      <li key={h.idx} style={{ paddingLeft: indent }} className={color}>
+                        <span className="mr-2 inline-block w-7 rounded bg-brand-surface-2 px-1.5 py-0.5 text-center text-[10px] font-mono uppercase text-brand-text-3">
+                          h{h.level}
+                        </span>
+                        {h.text}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </CardContent>
+            </Card>
+          ) : (data.h1_texts.length > 0 || data.h2_texts.length > 0) && (
+            <Card className="mb-4">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Headings (legacy)</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 {data.h1_texts.length > 0 && (
                   <div>
-                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand-text-3">
-                      H1
-                    </div>
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand-text-3">H1</div>
                     <ul className="space-y-1">
                       {data.h1_texts.map((h, i) => (
                         <li key={i} className="font-medium text-brand-text">{h}</li>
@@ -130,6 +161,121 @@ export default function CompetitorPageDetailPage() {
                     </ul>
                   </div>
                 )}
+                <div className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                  Re-run the gap pipeline to capture the full outline + link inventory + image audit.
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Internal link inventory — what the user explicitly asked for. */}
+          {data.internal_links && data.internal_links.length > 0 && (
+            <Card className="mb-4">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">
+                  Internal links
+                  <span className="ml-2 text-xs font-normal text-brand-text-3">
+                    {data.internal_links.length} ·{' '}
+                    {Object.entries(
+                      data.internal_links.reduce((a: Record<string, number>, l) => {
+                        a[l.kind] = (a[l.kind] || 0) + 1;
+                        return a;
+                      }, {})
+                    )
+                      .sort((a, b) => b[1] - a[1])
+                      .slice(0, 6)
+                      .map(([k, n]) => `${k}:${n}`)
+                      .join(' · ')}
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="max-h-96 overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-brand-surface text-left text-brand-text-3">
+                      <tr>
+                        <th className="px-2 py-1">Kind</th>
+                        <th className="px-2 py-1">Section</th>
+                        <th className="px-2 py-1">Anchor</th>
+                        <th className="px-2 py-1">Href</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.internal_links.map((l, i) => (
+                        <tr key={i} className="border-t border-brand-border">
+                          <td className="px-2 py-1 align-top">
+                            <Badge variant={l.kind === 'calculator' ? 'success' : 'outline'}>
+                              {l.kind}
+                            </Badge>
+                          </td>
+                          <td className="px-2 py-1 align-top text-brand-text-3 max-w-[12rem] truncate">
+                            {l.section || '—'}
+                          </td>
+                          <td className="px-2 py-1 align-top text-brand-text max-w-[18rem] truncate">
+                            {l.anchor || <span className="italic text-brand-text-3">— no anchor —</span>}
+                          </td>
+                          <td className="px-2 py-1 align-top font-mono">
+                            <a href={l.href} target="_blank" rel="noreferrer"
+                               className="text-brand-accent hover:underline break-all">
+                              {l.href}
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Image audit — per-image alt + dimensions. */}
+          {data.images && data.images.length > 0 && (
+            <Card className="mb-4">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">
+                  Images
+                  <span className="ml-2 text-xs font-normal text-brand-text-3">
+                    {data.images.length} · {data.images.filter((i) => i.alt).length} with alt
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="max-h-72 overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-brand-surface text-left text-brand-text-3">
+                      <tr>
+                        <th className="px-2 py-1">Alt</th>
+                        <th className="px-2 py-1">Dim</th>
+                        <th className="px-2 py-1">Loading</th>
+                        <th className="px-2 py-1">Src</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.images.map((img, i) => (
+                        <tr key={i} className="border-t border-brand-border">
+                          <td className="px-2 py-1 align-top max-w-[16rem] truncate">
+                            {img.alt || (
+                              <span className="italic text-severity-error">— missing alt —</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 align-top font-mono text-brand-text-3">
+                            {img.width && img.height ? `${img.width}×${img.height}` : '—'}
+                          </td>
+                          <td className="px-2 py-1 align-top font-mono text-brand-text-3">
+                            {img.loading || '—'}
+                          </td>
+                          <td className="px-2 py-1 align-top font-mono">
+                            <a href={img.src} target="_blank" rel="noreferrer"
+                               className="text-brand-accent hover:underline break-all">
+                              {img.src}
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </CardContent>
             </Card>
           )}

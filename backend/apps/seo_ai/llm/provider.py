@@ -111,6 +111,11 @@ _GROQ_PRICING: dict[str, tuple[float, float]] = {
     "openai/gpt-oss-120b": (0.15, 0.75),
     "openai/gpt-oss-20b": (0.10, 0.50),
     "llama-3.3-70b-versatile": (0.59, 0.79),
+    # Models the 413-fallback chain may swap to. Cost stays accurate
+    # mid-stream even after a downshift.
+    "llama-3.1-70b-versatile": (0.59, 0.79),
+    "llama-3.1-8b-instant": (0.05, 0.08),
+    "mixtral-8x7b-32768": (0.24, 0.24),
 }
 
 
@@ -169,6 +174,22 @@ class GroqProvider(LLMProvider):
             )
         http_client = httpx.Client(verify=verify, timeout=60.0)
 
+        # Key pool: when GROQ_API_KEYS env carries multiple comma-
+        # separated keys (free tier with 7-8 keys is common), we
+        # round-robin them and back off the offending key on 429s
+        # instead of hammering one budget. ``cfg['api_key']`` stays
+        # in use as the bootstrap key for the OpenAI client init;
+        # we swap ``self._client.api_key`` per-request inside complete().
+        from .key_pool import get_groq_pool
+
+        self._pool = get_groq_pool()  # None when GROQ_API_KEYS unset
+
+        # Store the bound http_client + base_url so we can rebuild the
+        # OpenAI client with a fresh key per request without re-creating
+        # the underlying httpx connection pool each time.
+        self._http_client = http_client
+        self._base_url = cfg["base_url"]
+
         self._client = OpenAI(
             api_key=cfg["api_key"],
             base_url=cfg["base_url"],
@@ -177,6 +198,12 @@ class GroqProvider(LLMProvider):
         self.model = cfg["model"]
         self._default_max_tokens = cfg["max_tokens"]
         self._default_temperature = cfg["temperature"]
+        # 413 ("request too large") fallback chain — primary first,
+        # then progressively smaller / higher-TPM models. Pre-cleaned.
+        raw_fb = (cfg.get("fallback_models") or "").strip()
+        self._fallback_models: list[str] = [
+            m.strip() for m in raw_fb.split(",") if m.strip()
+        ]
 
     def complete(
         self,
@@ -203,35 +230,92 @@ class GroqProvider(LLMProvider):
         if response_format:
             kwargs["response_format"] = response_format
 
-        # Groq free tier is rate-limited per minute. A 413/429 on a
-        # 4k-token prompt almost always means "another concurrent
-        # request just ate your budget" — backing off briefly and
-        # retrying once typically clears it without bothering the user.
+        # Per-request key acquisition when a pool is configured. Each
+        # attempt acquires a fresh key from the pool — if the prior
+        # attempt 429-ed, that key is now cooling and we'll get a
+        # different one. With N keys the effective TPM is N×ACROSS
+        # CALLS — a single request still has to fit one key's TPM
+        # bucket. When a single request is too big for the current
+        # model's bucket the API returns 413; we downshift to the
+        # next model in the fallback chain instead of cooling a key
+        # (413 is not a key-state problem).
         import time as _time
+        from .key_pool import PoolExhaustedError
+
+        model_chain = [kwargs["model"], *self._fallback_models]
+        model_idx = 0
 
         last_exc: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(max(3, len(self._pool) if self._pool else 3)):
+            # Acquire-and-bind a key for this attempt.
+            current_key: str | None = None
+            if self._pool is not None:
+                try:
+                    current_key = self._pool.acquire()
+                except PoolExhaustedError as pex:
+                    # Every key cooling. Sleep precisely the time the
+                    # pool reports, then try again on next loop iter.
+                    sleep_for = max(1.0, min(pex.wait_seconds, 60.0))
+                    logger.warning(
+                        "groq pool exhausted; sleeping %.1fs", sleep_for,
+                    )
+                    _time.sleep(sleep_for)
+                    continue
+                # OpenAI client's api_key is read on every request from
+                # the instance attribute — safe to mutate.
+                self._client.api_key = current_key
+
             try:
                 resp = self._client.chat.completions.create(**kwargs)
+                if self._pool is not None and current_key is not None:
+                    self._pool.report_success(current_key)
                 break
             except Exception as exc:  # pragma: no cover - network errors
                 msg = str(exc).lower()
                 last_exc = exc
-                retryable = (
+                # 413 = request too large for this model's TPM bucket.
+                # Rotating keys won't help (same bucket per model);
+                # swap to the next fallback model and retry.
+                is_413 = (
+                    "413" in msg
+                    or "request too large" in msg
+                    or "request_too_large" in msg
+                )
+                if is_413 and model_idx + 1 < len(model_chain):
+                    prev_model = model_chain[model_idx]
+                    model_idx += 1
+                    next_model = model_chain[model_idx]
+                    kwargs["model"] = next_model
+                    logger.warning(
+                        "groq 413 on %s — downshifting to %s (request too "
+                        "large for prior model's TPM bucket)",
+                        prev_model,
+                        next_model,
+                    )
+                    # 413 isn't a key problem — don't cool the key.
+                    continue
+                # 429 / TPM exhausted on the current model. Same model,
+                # different key (or backoff if no pool).
+                is_429 = (
                     "rate_limit" in msg
                     or "tokens per minute" in msg
                     or "429" in msg
-                    or "413" in msg
                 )
-                if retryable and attempt < 2:
-                    wait = 30 if "tokens per minute" in msg else 5 * (attempt + 1)
-                    logger.warning(
-                        "groq retrying after %ss (attempt %d): %s",
-                        wait,
-                        attempt + 1,
-                        exc,
-                    )
-                    _time.sleep(wait)
+                if is_429 and self._pool is not None and current_key is not None:
+                    self._pool.report_429(current_key)
+                if is_429 and attempt < (len(self._pool) if self._pool else 2):
+                    if self._pool is None:
+                        wait = (
+                            30 if "tokens per minute" in msg
+                            else 5 * (attempt + 1)
+                        )
+                        logger.warning(
+                            "groq retrying after %ss (attempt %d): %s",
+                            wait,
+                            attempt + 1,
+                            exc,
+                        )
+                        _time.sleep(wait)
                     continue
                 logger.error("groq.complete failed: %s", exc)
                 raise
@@ -277,6 +361,26 @@ class GroqProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> Iterator[StreamChunk]:
+        """Streaming completion with the same resilience envelope as
+        :meth:`complete`:
+
+          * Per-attempt key acquisition from the GroqKeyPool — 429 on
+            one key rotates to the next.
+          * 413 (request too large) downshifts to the next model in
+            ``GROQ_FALLBACK_MODELS``.
+          * Up to ``max(3, len(pool))`` total attempts before giving up.
+
+        Important detail for streaming: the OpenAI SDK only raises the
+        provider error when you START iterating the stream. That means
+        we have to wrap the FIRST chunk fetch in a try/except so a
+        rate-limit reply can still be caught and rotated. Once the
+        stream has yielded any chunk, we trust it (mid-stream failures
+        are rare; treating them as terminal is safer than re-trying
+        partial deltas).
+        """
+        import time as _time
+        from .key_pool import PoolExhaustedError
+
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -300,7 +404,90 @@ class GroqProvider(LLMProvider):
         last_finish_reason = ""
         final_usage: Any = None
 
-        stream = self._client.chat.completions.create(**kwargs)
+        # ── Retry envelope identical to complete() ──────────────────
+        model_chain = [kwargs["model"], *self._fallback_models]
+        model_idx = 0
+        max_attempts = max(3, len(self._pool) if self._pool else 3)
+        stream = None
+        last_exc: Exception | None = None
+
+        for attempt in range(max_attempts):
+            current_key: str | None = None
+            if self._pool is not None:
+                try:
+                    current_key = self._pool.acquire()
+                except PoolExhaustedError as pex:
+                    sleep_for = max(1.0, min(pex.wait_seconds, 60.0))
+                    logger.warning(
+                        "groq stream pool exhausted; sleeping %.1fs", sleep_for,
+                    )
+                    _time.sleep(sleep_for)
+                    continue
+                self._client.api_key = current_key
+
+            try:
+                stream = self._client.chat.completions.create(**kwargs)
+                # Force the first chunk to land — OpenAI SDK only raises
+                # on iteration, not on .create(). Peek by reading the
+                # iterator once, then prepend that chunk back via
+                # itertools.chain so the main loop sees the full stream.
+                import itertools
+                stream_iter = iter(stream)
+                first = next(stream_iter)
+                stream = itertools.chain([first], stream_iter)
+                if self._pool is not None and current_key is not None:
+                    self._pool.report_success(current_key)
+                break
+            except StopIteration:
+                # Empty stream — treat as success (no content).
+                stream = iter([])
+                if self._pool is not None and current_key is not None:
+                    self._pool.report_success(current_key)
+                break
+            except Exception as exc:  # pragma: no cover - network errors
+                msg = str(exc).lower()
+                last_exc = exc
+                is_413 = (
+                    "413" in msg
+                    or "request too large" in msg
+                    or "request_too_large" in msg
+                )
+                if is_413 and model_idx + 1 < len(model_chain):
+                    prev_model = model_chain[model_idx]
+                    model_idx += 1
+                    next_model = model_chain[model_idx]
+                    kwargs["model"] = next_model
+                    self.model = next_model  # update for cost estimation
+                    logger.warning(
+                        "groq stream 413 on %s — downshifting to %s",
+                        prev_model, next_model,
+                    )
+                    continue
+                is_429 = (
+                    "rate_limit" in msg
+                    or "tokens per minute" in msg
+                    or "429" in msg
+                )
+                if is_429 and self._pool is not None and current_key is not None:
+                    self._pool.report_429(current_key)
+                if is_429 and attempt < max_attempts - 1:
+                    if self._pool is None:
+                        wait = 30 if "tokens per minute" in msg else 5 * (attempt + 1)
+                        logger.warning(
+                            "groq stream retrying after %ss (attempt %d): %s",
+                            wait, attempt + 1, exc,
+                        )
+                        _time.sleep(wait)
+                    continue
+                logger.error("groq.stream_complete failed: %s", exc)
+                raise
+        else:
+            if last_exc is not None:
+                raise last_exc
+
+        if stream is None:
+            return  # defensive — shouldn't happen
+
         for chunk in stream:
             usage = getattr(chunk, "usage", None)
             if usage is not None:
@@ -438,7 +625,24 @@ _singleton: LLMProvider | None = None
 
 
 def get_provider() -> LLMProvider:
-    """Return the configured provider (lazy, cached for the process)."""
+    """Return the configured provider (lazy, cached for the process).
+
+    Currently shipped:
+      * ``groq`` — production-ready, multi-key pool with 429 backoff
+      * ``stub`` — offline / test mode
+
+    Deferred (prod-cutover work — tracked separately):
+      * ``openai``   → add OpenAIProvider class + config section in
+                       settings/base.py LLM dict (uses OPENAI_API_KEY)
+      * ``anthropic``→ add AnthropicProvider class + config section
+                       (uses ANTHROPIC_API_KEY)
+
+    The OPENAI_API_KEY / ANTHROPIC_API_KEY env vars are already used by
+    apps.seo_ai.adapters.ai_visibility.* probes (independent subsystem).
+
+    Apify (Meta Ads ingestion via apps.seo_ai.adapters.apify_meta_ads)
+    is NOT an LLM provider — it lives outside this factory.
+    """
     global _singleton
     if _singleton is not None:
         return _singleton

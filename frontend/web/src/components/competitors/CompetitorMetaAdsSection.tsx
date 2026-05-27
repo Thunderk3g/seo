@@ -28,12 +28,22 @@ export default function CompetitorMetaAdsSection({
   displayName,
 }: Props) {
   const [count, setCount] = useState(25);
+  // includeOurs:false explicitly — competitor sections must NOT render
+  // Bajaj's own ads underneath a competitor's name (the backend
+  // defaulted to prepending Bajaj when include_ours wasn't set, which
+  // made kotaklife.com / hdfclife.com / etc. show Bajaj ads as their
+  // first result). Our own ads live on /meta-ads.
   const { data, isLoading, isError, error, refetch, isFetching } = useMetaAds(
     [competitor],
-    { count, country: 'IN' },
+    { count, country: 'IN', includeOurs: false },
   );
 
-  const summary = data?.competitors?.[0];
+  // Belt-and-braces: filter the returned competitors to ONLY the one
+  // we asked for. Protects against any future backend change that
+  // re-introduces Bajaj into the response.
+  const summary = (data?.competitors ?? []).find(
+    (c) => (c.competitor || '').toLowerCase() === competitor.toLowerCase(),
+  ) ?? data?.competitors?.[0];
 
   return (
     <section className="mt-10">

@@ -51,12 +51,16 @@ INFORMATIONAL: list[str] = [
 ]
 
 BRAND_COMPARISON: list[str] = [
-    "Bajaj Allianz Life vs HDFC Life",
-    "Bajaj Allianz Life vs ICICI Prudential Life",
-    "Bajaj Allianz Life vs LIC",
-    "Bajaj Allianz Life vs Max Life",
-    "Bajaj Allianz Life vs SBI Life",
-    "Bajaj Allianz Life term insurance review",
+    # Brand was renamed from "Bajaj Allianz Life" to "Bajaj Life Insurance".
+    # Queries use the new name; legacy-name long-tail searches are tracked
+    # separately by the brand_mentions adapter (apps/seo_ai/adapters/
+    # brand_mentions/) which keys off brand_tokens_old in settings.
+    "Bajaj Life Insurance vs HDFC Life",
+    "Bajaj Life Insurance vs ICICI Prudential Life",
+    "Bajaj Life Insurance vs LIC",
+    "Bajaj Life Insurance vs Max Life",
+    "Bajaj Life Insurance vs SBI Life",
+    "Bajaj Life Insurance term insurance review",
 ]
 
 LONG_TAIL: list[str] = [

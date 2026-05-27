@@ -118,6 +118,12 @@ SEO_AI = {
     ),
     "max_findings_per_agent": int(os.environ.get("SEO_AI_MAX_FINDINGS_PER_AGENT", "20")),
     "budget_usd_per_run": float(os.environ.get("SEO_AI_BUDGET_USD_PER_RUN", "2.00")),
+    # competitor_dashboard cold-call (SEMrush + 500-page rival crawl) is
+    # 3–7 minutes; serve a cached payload for this many seconds before
+    # rebuilding. ?refresh=true on the view bypasses.
+    "competitor_dashboard_cache_ttl_sec": int(
+        os.environ.get("COMPETITOR_DASHBOARD_CACHE_TTL_SEC", str(7 * 24 * 60 * 60))
+    ),
 }
 
 LLM = {
@@ -128,12 +134,35 @@ LLM = {
     #   "/path/to/ca.pem"    → custom CA bundle, e.g. corporate root CA
     "ssl_verify": os.environ.get("LLM_SSL_VERIFY", "").strip(),
     "groq": {
+        # NOTE: this single-key value is the back-compat fallback only.
+        # The production path is the multi-key pool in
+        # ``apps.seo_ai.llm.key_pool.get_groq_pool`` which reads
+        # ``GROQ_API_KEYS`` (comma-separated) first and falls back to
+        # ``GROQ_API_KEY`` here when only one key is configured. Setting
+        # both is harmless; the pool dedupes.
         "api_key": os.environ.get("GROQ_API_KEY", ""),
         "base_url": os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
         "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "max_tokens": int(os.environ.get("GROQ_MAX_TOKENS", "4096")),
         "temperature": float(os.environ.get("GROQ_TEMPERATURE", "0.2")),
+        # 413 fallback chain — GPT-family only by default. Per operator
+        # direction: when the primary model 413s, downshift to the
+        # smaller GPT model rather than swapping over to Llama (which
+        # changes voice / style and has even smaller TPM buckets on
+        # free tier — landed us in an 8b-instant 6k-TPM trap on the
+        # chat assistant). The real second-line defence is the chat
+        # router's tool-result truncation, NOT this list.
+        # Comma-separated. Empty = no model fallback at all.
+        "fallback_models": os.environ.get(
+            "GROQ_FALLBACK_MODELS",
+            "openai/gpt-oss-20b",
+        ),
     },
+    # TODO(prod-cutover): OpenAI + Anthropic provider config sections.
+    # Concrete provider classes still need to be added to
+    # apps.seo_ai.llm.provider.py — see the get_provider() factory.
+    # Apify (Meta Ads adapter at apps.seo_ai.adapters.apify_meta_ads) is
+    # a separate subsystem and does NOT use this LLM dict.
 }
 
 SEMRUSH = {
@@ -158,6 +187,20 @@ SEMRUSH = {
 COMPETITOR = {
     "enabled": os.environ.get("COMPETITOR_ENABLED", "true").lower()
     in ("1", "true", "yes", "on"),
+    # Roster — domains the Celery beat ``walk_competitor_roster`` task
+    # re-crawls every day. Comma-separated env var; defaults to the
+    # Indian life-insurance peer set Bajaj cares about. Apex hosts
+    # only (no scheme, no www) — the walker handles canonicalisation.
+    "roster": [
+        d.strip().lower().lstrip("www.")
+        for d in os.environ.get(
+            "COMPETITOR_ROSTER",
+            "iciciprulife.com,hdfclife.com,maxlifeinsurance.com,"
+            "tataaia.com,sbilife.co.in,kotaklife.com,pnbmetlife.com,"
+            "adityabirlasunlifeinsurance.com",
+        ).split(",")
+        if d.strip()
+    ],
     "top_n": int(os.environ.get("COMPETITOR_TOP_N", "10")),
     "pages_per_competitor": int(os.environ.get("COMPETITOR_PAGES_PER_COMP", "50")),
     "keywords_per_competitor": int(os.environ.get("COMPETITOR_KW_PER_COMP", "100")),
@@ -228,14 +271,17 @@ COMPETITOR = {
     # is dropped. It also runs the audit detectors against the
     # competitor's snapshot, so each domain ends up with a Health
     # Score visible via /api/v1/crawler/competitors/<domain>/health.
-    "engine": os.environ.get("COMPETITOR_ENGINE", "legacy").strip().lower(),
-    # When the Scrapy engine is active, this toggles the Playwright
-    # JS-rendering gate (same middleware used by BajajSpider). Off by
-    # default because Playwright adds ~3s/page; flip on for SPA-heavy
-    # competitor rosters (ICICI Pru, Tata AIA) where the static fetch
-    # returns thin HTML.
+    # Default flipped to "scrapy" so competitor crawls go through the
+    # same Scrapy + Playwright + dual-write stack as the in-house
+    # BajajSpider. Set COMPETITOR_ENGINE=legacy to revert.
+    "engine": os.environ.get("COMPETITOR_ENGINE", "scrapy").strip().lower(),
+    # Default flipped to TRUE so SPA competitors (ICICI Pru, Tata AIA,
+    # Max Life — all React/Next.js shells) get their JS-rendered HTML
+    # captured. The gate middleware only invokes Playwright when the
+    # static body looks thin (<200 visible chars or matches SPA
+    # heuristics), so the cost is bounded.
     "use_playwright_fallback": os.environ.get(
-        "COMPETITOR_USE_PLAYWRIGHT_FALLBACK", "false",
+        "COMPETITOR_USE_PLAYWRIGHT_FALLBACK", "true",
     ).strip().lower() in ("1", "true", "yes", "on"),
 }
 
@@ -498,7 +544,11 @@ SERP_API = {
     # SerpAPI call is billed the same whether we ask for 10 or 100 —
     # only the response payload grows. Defaults to 25 so each query
     # surfaces a broader competitor set in the report.
-    "results_per_query": int(os.environ.get("SERP_API_RESULTS_PER_QUERY", "25")),
+    # 30 by default so brands ranking around position 11-18 are still
+    # captured in a single SerpAPI call (Google's first page typically
+    # shows 10; positions 11-30 are page 2+). Cost is the same regardless
+    # — SerpAPI bills per search, not per result row.
+    "results_per_query": int(os.environ.get("SERP_API_RESULTS_PER_QUERY", "30")),
     "request_timeout_sec": int(
         os.environ.get("SERP_API_REQUEST_TIMEOUT_SEC", "30")
     ),

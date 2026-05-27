@@ -56,3 +56,385 @@ def run_gap_pipeline_task(
         return "not_found"
     GapPipelineOrchestrator(run).execute(top_n=top_n, query_count=query_count)
     return str(run.status)
+
+
+# ── Periodic tasks (Celery beat) ─────────────────────────────────────
+
+
+@shared_task(
+    name="seo_ai.walk_competitor",
+    bind=True,
+    max_retries=0,
+    time_limit=4 * 3600,
+    soft_time_limit=4 * 3600 - 60,
+)
+def walk_competitor_task(
+    self,
+    domain: str,
+    seeds: list[str] | None = None,
+    *,
+    mode: str = "sitemap",
+    max_depth: int = 0,
+    max_pages: int = 0,
+    sitemap_url_cap: int = 5000,
+) -> dict:
+    """Re-crawl one competitor domain.
+
+    Three modes:
+
+      * ``mode='sitemap'`` (default, recommended) — fetch every URL in
+        the competitor's ``/sitemap.xml`` + ``/sitemap_index.xml`` and
+        crawl them all. ``max_depth=0`` (no link-walking; the sitemap
+        is already authoritative). ``sitemap_url_cap`` bounds how many
+        URLs we'll seed from the sitemap (default 5000 — covers most
+        Indian insurer sites in full).
+
+      * ``mode='walk'`` — start from ``seeds`` (default homepage) and
+        follow internal links up to ``max_depth`` / ``max_pages``. Use
+        when a competitor's sitemap is missing or stale.
+
+      * ``mode='urls'`` — fetch exactly the URLs in ``seeds``, no
+        following. Used by the gap-pipeline path that already knows
+        which URLs it wants.
+
+    The CompetitorDualWritePipeline's close_spider hook invokes
+    ChangeWatcher, so this task's side-effects are:
+
+      * Fresh CrawlerPageResult rows for the competitor (kind='competitor').
+      * Append-only CompetitorPageHistory revisions.
+      * CompetitorChangeEvent rows for every title/content/structure
+        flip + new + removed URL.
+    """
+    from .adapters.competitor_crawler import CompetitorCrawler
+    from .adapters.competitor_crawler_scrapy import CompetitorCrawlerScrapy
+    from .adapters.sitemap_xml import SitemapXMLAdapter
+
+    domain = (domain or "").strip().lower().lstrip("www.")
+    if not domain:
+        return {"ok": False, "error": "domain required"}
+    mode = (mode or "sitemap").lower()
+
+    # Resolve seeds based on mode. Sitemap mode discovers them; the
+    # other modes use whatever the caller passed (or the homepage).
+    sitemap_count = 0
+    if mode == "sitemap":
+        try:
+            urls = SitemapXMLAdapter().discover_urls(
+                domain, limit=int(sitemap_url_cap),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sitemap discover failed for %s (%s)", domain, exc)
+            urls = []
+        if not urls:
+            # No sitemap → fall back to homepage walk so we still pull
+            # *something*. Operator can see "0 sitemap URLs, fell back
+            # to walk" in the return dict and dig in.
+            logger.info(
+                "%s: no sitemap URLs found, falling back to walk mode", domain,
+            )
+            mode = "walk"
+            seeds = seeds or [f"https://{domain}/"]
+            max_depth = max_depth or 2
+            max_pages = max_pages or 500
+        else:
+            sitemap_count = len(urls)
+            seeds = urls
+            max_depth = 0    # sitemap is authoritative; no link-following
+            max_pages = 0    # unlimited — we have the exact seed list
+            logger.info(
+                "walk_competitor: domain=%s mode=sitemap seeds=%d",
+                domain, sitemap_count,
+            )
+    else:
+        if not seeds:
+            seeds = [f"https://{domain}/"]
+        logger.info(
+            "walk_competitor: domain=%s mode=%s seeds=%d max_depth=%d max_pages=%d",
+            domain, mode, len(seeds), max_depth, max_pages,
+        )
+
+    crawler = CompetitorCrawler()
+    if not isinstance(crawler, CompetitorCrawlerScrapy):
+        return {
+            "ok": False,
+            "error": "walk requires COMPETITOR_ENGINE=scrapy",
+        }
+    pages = crawler.walk_domain(
+        domain=domain,
+        seeds=seeds,
+        max_depth=max_depth,
+        max_pages=max_pages,
+    )
+    ok = sum(1 for p in pages if (p.status_code or 0) == 200)
+
+    # Chain follow-ups: find the just-created snapshot for this domain
+    # and kick off PSI enrichment + content-map refresh. Both are
+    # best-effort — failures here log but don't fail the crawl result.
+    follow_ups: dict[str, str] = {}
+    try:
+        from apps.crawler.models import CrawlSnapshot
+        snap = (
+            CrawlSnapshot.objects
+            .filter(kind="competitor", target_domain__iexact=domain)
+            .order_by("-started_at")
+            .first()
+        )
+        if snap is not None:
+            try:
+                psi_task = psi_enrich_snapshot_task.delay(str(snap.id))
+                follow_ups["psi_task"] = psi_task.id
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("psi follow-up enqueue failed: %s", exc)
+            try:
+                map_task = refresh_content_map_task.delay(
+                    competitor_domain=domain,
+                )
+                follow_ups["content_map_task"] = map_task.id
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("content-map follow-up enqueue failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("walk_competitor follow-up lookup failed: %s", exc)
+
+    return {
+        "ok": True,
+        "domain": domain,
+        "mode": mode,
+        "sitemap_seed_count": sitemap_count,
+        "pages": len(pages),
+        "ok_pages": ok,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "follow_ups": follow_ups,
+    }
+
+
+@shared_task(
+    name="seo_ai.walk_competitor_roster",
+    bind=True,
+    max_retries=0,
+    time_limit=8 * 3600,
+)
+def walk_competitor_roster_task(
+    self,
+    domains: list[str] | None = None,
+    *,
+    mode: str = "sitemap",
+    sitemap_url_cap: int = 5000,
+) -> dict:
+    """Fan out walks across the configured competitor roster.
+
+    Default ``mode='sitemap'`` pulls every URL in each competitor's
+    sitemap. ``sitemap_url_cap`` defaults to 5000 per competitor —
+    covers most Indian life-insurance sites in full.
+
+    Runs sequentially (not via ``.delay()`` fan-out) so the worker
+    doesn't open eight Playwright browsers at once — Scrapy already
+    concurrent-crawls within a single domain.
+    """
+    from django.conf import settings as dj_settings
+
+    if domains is None:
+        cfg = getattr(dj_settings, "COMPETITOR", {}) or {}
+        domains = list(cfg.get("roster") or [])
+    if not domains:
+        return {"ok": False, "error": "no domains configured"}
+
+    results: list[dict] = []
+    for d in domains:
+        try:
+            res = walk_competitor_task.run(
+                d, None, mode=mode, sitemap_url_cap=sitemap_url_cap,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("walk_competitor failed for %s", d)
+            res = {"ok": False, "domain": d, "error": str(exc)}
+        results.append(res)
+    return {"ok": True, "domains": len(results), "results": results}
+
+
+@shared_task(
+    name="seo_ai.refresh_content_map",
+    bind=True,
+    max_retries=0,
+    time_limit=2 * 60 * 60,  # 2h envelope — competitor refresh adds time
+)
+def refresh_content_map_task(
+    self,
+    *,
+    snapshot_id: str = "",
+    include_competitors: bool = True,
+    competitor_domain: str = "",
+) -> dict:
+    """Re-embed + re-project snapshot(s) for the 3D content map.
+
+    Defaults to refreshing the latest Bajaj snapshot AND every
+    competitor snapshot (one map per competitor). Pass
+    ``competitor_domain='hdfclife.com'`` to refresh just one.
+
+    Scheduled to fire ~30 min after the daily Bajaj crawl. Each
+    competitor's embeddings live under its own snapshot_id so per-
+    competitor content maps stay isolated.
+    """
+    from django.core.management import call_command
+
+    args = []
+    if snapshot_id:
+        args.extend(["--snapshot", snapshot_id])
+    if competitor_domain:
+        args.extend(["--competitor-domain", competitor_domain])
+    elif include_competitors:
+        args.append("--include-competitors")
+    try:
+        call_command("refresh_content_map", *args)
+        return {
+            "ok": True,
+            "snapshot_id": snapshot_id or "latest",
+            "competitor_domain": competitor_domain or None,
+            "include_competitors": include_competitors and not competitor_domain,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("refresh_content_map_task failed")
+        return {"ok": False, "error": str(exc)}
+
+
+@shared_task(
+    name="seo_ai.psi_enrich_snapshot",
+    bind=True,
+    max_retries=0,
+    time_limit=2 * 60 * 60,
+)
+def psi_enrich_snapshot_task(
+    self,
+    snapshot_id: str,
+    *,
+    max_urls: int = 25,
+    strategies: tuple[str, ...] = ("mobile", "desktop"),
+) -> dict:
+    """Enrich every page in ``snapshot_id`` with Core Web Vitals via PSI.
+
+    Designed for the Scrapy-walked competitor flow which writes
+    structural data but skips CWV. Picks the top ``max_urls`` pages of
+    the snapshot (ordered by word_count desc — proxies "important"
+    pages) and calls PSI mobile + desktop for each, writing back to
+    CrawlerPageResult's mobile_* / desktop_* columns.
+
+    Best-effort: per-page PSI failures are logged and skipped; the task
+    never raises so it can be chained from walk_competitor_task without
+    breaking the crawl envelope.
+    """
+    from apps.crawler.models import CrawlerPageResult, CrawlSnapshot
+
+    from .adapters.cwv_psi import AdapterDisabledError, PSIAdapter
+
+    snap = CrawlSnapshot.objects.filter(id=snapshot_id).first()
+    if snap is None:
+        return {"ok": False, "error": "snapshot not found"}
+
+    try:
+        psi = PSIAdapter()
+    except AdapterDisabledError as exc:
+        logger.info("psi disabled: %s", exc)
+        return {"ok": False, "skipped": True, "reason": str(exc)}
+
+    pages = list(
+        CrawlerPageResult.objects.filter(
+            snapshot=snap, status_code="200",
+        )
+        .order_by("-word_count")[:max_urls]
+    )
+    enriched = errors = 0
+    for page in pages:
+        for strategy in strategies:
+            try:
+                record = psi.fetch(page.url, strategy=strategy)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "psi %s for %s failed: %s", strategy, page.url, exc,
+                )
+                errors += 1
+                continue
+            if record.error:
+                continue
+            prefix = "mobile_" if strategy == "mobile" else "desktop_"
+            for fld in (
+                "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+                "fcp_ms", "ttfb_ms", "tbt_ms", "si_ms",
+            ):
+                val = getattr(record, fld, None)
+                if val is not None:
+                    setattr(page, f"{prefix}{fld}", val)
+            for fld in ("lcp_category", "cls_category", "inp_category", "has_field_data"):
+                val = getattr(record, fld, None)
+                if val is not None:
+                    setattr(page, f"{prefix}{fld}", val)
+            # Legacy mirror columns (mobile-only)
+            if strategy == "mobile":
+                for fld in ("pagespeed_score", "lcp_ms", "cls", "inp_ms"):
+                    val = getattr(record, fld, None)
+                    if val is not None:
+                        setattr(page, fld, val)
+            enriched += 1
+        try:
+            page.save(update_fields=[
+                "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+                "mobile_pagespeed_score", "mobile_lcp_ms", "mobile_cls",
+                "mobile_inp_ms", "mobile_fcp_ms", "mobile_ttfb_ms",
+                "mobile_tbt_ms", "mobile_si_ms",
+                "mobile_lcp_category", "mobile_cls_category",
+                "mobile_inp_category", "mobile_has_field_data",
+                "desktop_pagespeed_score", "desktop_lcp_ms", "desktop_cls",
+                "desktop_inp_ms", "desktop_fcp_ms", "desktop_ttfb_ms",
+                "desktop_tbt_ms", "desktop_si_ms",
+                "desktop_lcp_category", "desktop_cls_category",
+                "desktop_inp_category", "desktop_has_field_data",
+            ])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("psi save for %s failed: %s", page.url, exc)
+    return {
+        "ok": True,
+        "snapshot_id": str(snap.id),
+        "domain": snap.target_domain,
+        "pages_attempted": len(pages),
+        "enriched_strategy_count": enriched,
+        "errors": errors,
+    }
+
+
+@shared_task(
+    name="seo_ai.gc_competitor_history",
+    bind=True,
+    max_retries=0,
+    time_limit=600,
+)
+def gc_competitor_history_task(self, *, retain_days: int = 90) -> dict:
+    """Prune CompetitorPageHistory + CompetitorChangeEvent rows older
+    than ``retain_days``.
+
+    History is append-only and grows roughly linearly with crawl
+    frequency × URL count × competitor count. 90 days is plenty for
+    the operator-visible "what changed" timeline; longer-horizon
+    analysis can ship to a warehouse on its own cadence.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone as dj_tz
+
+    from .models import CompetitorChangeEvent, CompetitorPageHistory
+
+    cutoff = dj_tz.now() - timedelta(days=int(retain_days))
+    deleted_events, _ = CompetitorChangeEvent.objects.filter(
+        detected_at__lt=cutoff,
+    ).delete()
+    deleted_history, _ = CompetitorPageHistory.objects.filter(
+        seen_at__lt=cutoff,
+    ).delete()
+    logger.info(
+        "gc_competitor_history: pruned %d events, %d history rows older than %dd",
+        deleted_events, deleted_history, retain_days,
+    )
+    return {
+        "ok": True,
+        "retain_days": retain_days,
+        "deleted_events": deleted_events,
+        "deleted_history": deleted_history,
+    }

@@ -112,6 +112,18 @@ PHASE_E_FIELDS = [
 ]
 
 
+# ── Phase 2A.5 — structural mirror parity ────────────────────────
+# Per-page heading / link / image inventory built by parser._extract_structured()
+# and stamped by fetcher.py:256-259. Previously DB-only (DictWriter dropped
+# them with extrasaction='ignore'); now present in the CSV schema too so
+# `load_csv_to_db` round-trip preserves them. Serialized as JSON strings
+# inside append() so DictWriter doesn't write Python repr.
+PHASE_2A_FIELDS = [
+    "headings_json", "internal_links_json",
+    "external_links_json", "images_json",
+]
+
+
 # ── Phase D — cookies + AMP + accessibility ──────────────────────
 PHASE_D_FIELDS = [
     # D.1 cookies
@@ -146,6 +158,8 @@ RESULTS_FIELDS = [
     *PHASE_D_FIELDS,
     # Phase E — LanguageTool grammar + AXE color contrast.
     *PHASE_E_FIELDS,
+    # Phase 2A.5 — structural mirror (headings/links/images JSON).
+    *PHASE_2A_FIELDS,
 ]
 ERROR_FIELDS = ["timestamp", "url", "error_type", "error_message",
                 *_ENRICH_FIELDS]
@@ -366,7 +380,16 @@ def append(stream: str, row: dict) -> None:
         if h is None:
             return
         _, writer = h
-        writer.writerow(row)
+        # csv.DictWriter str()-ifies list/dict values as Python repr, which
+        # is not valid JSON and breaks CSV round-trip (load_csv_to_db reads
+        # the column back with json.loads). Serialize structured values to
+        # JSON strings just for the CSV; dual-write below still sees the
+        # original row dict with native types.
+        csv_row = {
+            k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v)
+            for k, v in row.items()
+        }
+        writer.writerow(csv_row)
         _writes_since_flush += 1
         if _writes_since_flush >= _FLUSH_EVERY:
             for f, _ in _handles.values():
@@ -430,6 +453,24 @@ def _dual_write_pageresult(row: dict) -> None:
             s = str(v or "").strip().lower()
             return s in ("1", "true", "yes", "t", "y")
 
+        def _s(v, max_len: int | None = None) -> str:
+            """Defensive string coercion + optional max-length slice.
+
+            Replaces the brittle `(row.get(k) or "")[:N]` pattern that
+            blows up with ``'int' object is not subscriptable`` whenever
+            the engine path passes a native int (e.g. status_code=200,
+            response_time_ms=125) instead of the CSV-serialised string.
+
+            ``None``/``""`` → ``""``. Everything else stringifies via
+            ``str()`` then slices.
+            """
+            if v is None:
+                return ""
+            s = v if isinstance(v, str) else str(v)
+            if max_len is not None:
+                return s[:max_len]
+            return s
+
         def _row_json(v, *, default=None):
             """Phase A JSONField values may arrive as native Python
             (Scrapy spider) or as JSON-encoded strings (CSV path).
@@ -487,19 +528,22 @@ def _dual_write_pageresult(row: dict) -> None:
             snapshot_id=snap_id,
             url=url[:2048],
             defaults={
-                "status_code": (row.get("status_code") or "")[:4],
-                "status": (row.get("status") or "")[:64],
-                "content_type": (row.get("content_type") or "")[:128],
+                # _s() coerces native types (int/bool/None) to safe strings
+                # before slicing — prevents "'int' object is not
+                # subscriptable" when engine passes raw ints in.
+                "status_code": _s(row.get("status_code"), 4),
+                "status": _s(row.get("status"), 64),
+                "content_type": _s(row.get("content_type"), 128),
                 "response_time_ms": _i(row.get("response_time_ms")),
-                "title": (row.get("title") or "")[:1024],
+                "title": _s(row.get("title"), 1024),
                 "word_count": _i(row.get("word_count")),
-                "error_type": (row.get("error_type") or "")[:64],
-                "error_message": (row.get("error_message") or "")[:4000],
-                "subdomain": (row.get("subdomain") or "")[:64],
-                "page_type": (row.get("page_type") or "")[:64],
-                "category_key": (row.get("category_key") or "")[:128],
-                "from_sitemap": (row.get("from_sitemap") or "0") == "1",
-                "indexed_status": (row.get("indexed_status") or "unknown")[:16],
+                "error_type": _s(row.get("error_type"), 64),
+                "error_message": _s(row.get("error_message"), 4000),
+                "subdomain": _s(row.get("subdomain"), 64),
+                "page_type": _s(row.get("page_type"), 64),
+                "category_key": _s(row.get("category_key"), 128),
+                "from_sitemap": _s(row.get("from_sitemap"), 1) in ("1", "True", "true"),
+                "indexed_status": _s(row.get("indexed_status") or "unknown", 16),
                 # Legacy headline columns (mobile aliases for back-compat).
                 "pagespeed_score": _opt_i(row.get("pagespeed_score")),
                 "lcp_ms": _opt_i(row.get("lcp_ms")),
@@ -514,22 +558,22 @@ def _dual_write_pageresult(row: dict) -> None:
                 "rendered_word_count": _opt_i(row.get("rendered_word_count")),
                 "playwright_used": playwright_used,
                 # ── Phase A — Screaming Frog parity ──────────────
-                "hsts": (row.get("hsts") or "")[:512],
+                "hsts": _s(row.get("hsts"), 512),
                 "csp": (row.get("csp") or ""),
-                "x_frame_options": (row.get("x_frame_options") or "")[:128],
-                "x_content_type_options": (row.get("x_content_type_options") or "")[:64],
-                "referrer_policy": (row.get("referrer_policy") or "")[:128],
+                "x_frame_options": _s(row.get("x_frame_options"), 128),
+                "x_content_type_options": _s(row.get("x_content_type_options"), 64),
+                "referrer_policy": _s(row.get("referrer_policy"), 128),
                 "permissions_policy": (row.get("permissions_policy") or ""),
                 "has_mixed_content": _row_bool(row.get("has_mixed_content")),
                 "has_insecure_form": _row_bool(row.get("has_insecure_form")),
                 "redirect_hops": _i(row.get("redirect_hops")),
                 "redirect_chain": _row_json(row.get("redirect_chain")),
-                "redirect_final_url": (row.get("redirect_final_url") or "")[:2048],
+                "redirect_final_url": _s(row.get("redirect_final_url"), 2048),
                 "redirect_loop": _row_bool(row.get("redirect_loop")),
                 "title_pixel_width": _i(row.get("title_pixel_width")),
                 "meta_description_pixel_width": _i(row.get("meta_description_pixel_width")),
-                "canonical_html": (row.get("canonical_html") or "")[:2048],
-                "canonical_http": (row.get("canonical_http") or "")[:2048],
+                "canonical_html": _s(row.get("canonical_html"), 2048),
+                "canonical_http": _s(row.get("canonical_http"), 2048),
                 "canonical_mismatch": _row_bool(row.get("canonical_mismatch")),
                 "multiple_canonicals": _row_bool(row.get("multiple_canonicals")),
                 "canonical_chain_length": _i(row.get("canonical_chain_length")),
@@ -561,11 +605,11 @@ def _dual_write_pageresult(row: dict) -> None:
                 "link_delta_ratio": _opt_f(row.get("link_delta_ratio")) or 0.0,
                 "jsonld_delta_ratio": _opt_f(row.get("jsonld_delta_ratio")) or 0.0,
                 # ── Phase C.2 PDF ──
-                "pdf_title": (row.get("pdf_title") or "")[:512],
-                "pdf_author": (row.get("pdf_author") or "")[:256],
-                "pdf_subject": (row.get("pdf_subject") or "")[:512],
+                "pdf_title": _s(row.get("pdf_title"), 512),
+                "pdf_author": _s(row.get("pdf_author"), 256),
+                "pdf_subject": _s(row.get("pdf_subject"), 512),
                 "pdf_page_count": _i(row.get("pdf_page_count")),
-                "pdf_language": (row.get("pdf_language") or "")[:32],
+                "pdf_language": _s(row.get("pdf_language"), 32),
                 "pdf_has_text_layer": _row_bool(row.get("pdf_has_text_layer")),
                 "pdf_is_encrypted": _row_bool(row.get("pdf_is_encrypted")),
                 "pdf_byte_size": _i(row.get("pdf_byte_size")),
@@ -590,12 +634,12 @@ def _dual_write_pageresult(row: dict) -> None:
                 # ── Phase D.2 AMP ──
                 "is_amp_page": _row_bool(row.get("is_amp_page")),
                 "has_amp_alternate": _row_bool(row.get("has_amp_alternate")),
-                "amp_alternate_url": (row.get("amp_alternate_url") or "")[:2048],
-                "amp_canonical_target": (row.get("amp_canonical_target") or "")[:2048],
+                "amp_alternate_url": _s(row.get("amp_alternate_url"), 2048),
+                "amp_canonical_target": _s(row.get("amp_canonical_target"), 2048),
                 "amp_required_missing": _row_json(row.get("amp_required_missing"), default=[]),
                 "amp_invalid": _row_bool(row.get("amp_invalid")),
                 # ── Phase D.3 accessibility ──
-                "html_lang": (row.get("html_lang") or "")[:16],
+                "html_lang": _s(row.get("html_lang"), 16),
                 "h1_count": _i(row.get("h1_count")),
                 "heading_skip_count": _i(row.get("heading_skip_count")),
                 "form_inputs_no_label": _i(row.get("form_inputs_no_label")),
@@ -607,12 +651,28 @@ def _dual_write_pageresult(row: dict) -> None:
                 "grammar_error_count": _i(row.get("grammar_error_count")),
                 "grammar_errors": _row_json(row.get("grammar_errors"), default=[]),
                 "grammar_categories": _row_json(row.get("grammar_categories"), default={}),
-                "grammar_lang_detected": (row.get("grammar_lang_detected") or "")[:16],
-                "grammar_tool_used": (row.get("grammar_tool_used") or "")[:24],
+                "grammar_lang_detected": _s(row.get("grammar_lang_detected"), 16),
+                "grammar_tool_used": _s(row.get("grammar_tool_used"), 24),
                 # ── Phase E AXE color contrast ──
                 "color_contrast_violations_count": _i(row.get("color_contrast_violations_count")),
                 "color_contrast_violations": _row_json(row.get("color_contrast_violations"), default=[]),
-                "axe_tool_used": (row.get("axe_tool_used") or "")[:24],
+                "axe_tool_used": _s(row.get("axe_tool_used"), 24),
+                # ── Phase 2A.5 — Structural mirror parity ──
+                # Persists the per-page heading/link/image inventory the
+                # parser builds via _extract_structured(). Required by the
+                # ContentWriter + LayoutAgent + StructureAgent. Defaults
+                # to [] so older crawls without these row keys don't fail.
+                "headings_json": _row_json(row.get("headings_json"), default=[]),
+                "internal_links_json": _row_json(row.get("internal_links_json"), default=[]),
+                "external_links_json": _row_json(row.get("external_links_json"), default=[]),
+                "images_json": _row_json(row.get("images_json"), default=[]),
+                # Page-level scalars the in-house parser collects but the
+                # legacy CSV path didn't persist to DB. Adding here closes
+                # the audit_completeness gap for meta_description/canonical.
+                "meta_description": _s(row.get("meta_description"), 1024),
+                "canonical": _s(row.get("canonical"), 2048),
+                "meta_robots": _s(row.get("meta_robots"), 256),
+                "body_text": (row.get("body_text") or ""),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

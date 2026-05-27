@@ -60,6 +60,31 @@ _MAX_DEPTH = 3
 # capping worst-case memory at ~6 MB of strings per call.
 _MAX_URLS_RETURNED = 30_000
 
+# Default sitemap paths to try when robots.txt has no Sitemap: directive.
+# Ordered by frequency in the wild — most common CMS / SEO-plugin
+# conventions first.
+_DEFAULT_SITEMAP_PATHS = (
+    "/sitemap.xml",                 # default everywhere
+    "/sitemap_index.xml",           # Yoast SEO
+    "/wp-sitemap.xml",              # WordPress 5.5+ core (replaces Yoast on new installs)
+    "/sitemap1.xml",                # Yoast paginated index entry
+    "/sitemap.xml.gz",              # gzip-compressed sitemap (some CDNs)
+    "/post-sitemap.xml",            # WordPress per-content-type
+    "/page-sitemap.xml",            # WordPress per-content-type
+    "/news-sitemap.xml",            # Google News
+    "/sitemap-index.xml",           # alternate spelling
+    "/sitemaps/sitemap.xml",        # subdir convention
+    "/sitemap/sitemap.xml",         # subdir convention
+)
+
+
+def _default_sitemap_candidates(bare_host: str) -> list[str]:
+    """Build the fallback sitemap-URL list for one host (no robots.txt hit).
+    Tries every known CMS / SEO-plugin path before giving up — handles
+    WP / Yoast / Drupal / handcrafted sitemap conventions in one pass.
+    """
+    return [f"https://{bare_host}{p}" for p in _DEFAULT_SITEMAP_PATHS]
+
 
 @dataclass
 class SitemapSummary:
@@ -128,15 +153,14 @@ class SitemapXMLAdapter:
             fetched_at=_now_iso(),
         )
 
-        # 1. robots.txt
+        # Discovery chain — robots.txt directive first (canonical), then
+        # well-known framework paths. Order matters: try the most likely
+        # locations first so we don't burn round-trips on dead URLs.
         sitemap_candidates = self._candidates_from_robots(bare)
         if sitemap_candidates:
             summary.discovered_via = "robots.txt"
         else:
-            sitemap_candidates = [
-                f"https://{bare}/sitemap.xml",
-                f"https://{bare}/sitemap_index.xml",
-            ]
+            sitemap_candidates = _default_sitemap_candidates(bare)
             summary.discovered_via = "default-paths"
 
         seen: set[str] = set()
@@ -178,10 +202,7 @@ class SitemapXMLAdapter:
         # discover()'s SitemapSummary because that one only counts.
         sitemap_candidates = self._candidates_from_robots(bare)
         if not sitemap_candidates:
-            sitemap_candidates = [
-                f"https://{bare}/sitemap.xml",
-                f"https://{bare}/sitemap_index.xml",
-            ]
+            sitemap_candidates = _default_sitemap_candidates(bare)
 
         urls: list[str] = []
         seen_sitemaps: set[str] = set()
