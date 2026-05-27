@@ -81,3 +81,18 @@ Thumbs.db
 
 # ── Claude Code session cache ─────────────────────────
 .claude/
+
+# ── Corporate root CAs for Docker build TLS ───────────
+# Each dev's network (Bajaj intranet, Cisco Umbrella SIG, home, etc.) has
+# different intercepting CAs. Don't ship them — devs export their own from
+# Cert:\LocalMachine\Root into backend/certs/*.crt and the Dockerfile folds
+# them into the image's system trust bundle before pip install.
+backend/certs/*.crt
+!backend/certs/.gitkeep
+
+# ── Local-only buy-journey scraper (Playwright form-walker) ───
+# Tests the term-plan buy flow end to end up to (but not including)
+# the payment step. Output is fake-data-driven and lives entirely
+# under this dir — runs/, captured HARs, screenshots, request logs.
+# Keep local so we don't ship fake PII or live response captures.
+test_script_buy_journey/

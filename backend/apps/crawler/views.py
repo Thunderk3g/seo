@@ -949,11 +949,10 @@ def content_map_3d_view(request):
       1. ?snapshot=<uuid>  — exact match
       2. ?domain=<host>    — latest non-empty COMPLETE competitor
                              snapshot for that target_domain
-      3. (default)         — latest snapshot of any kind
-
-    Each competitor gets its own content map because every
-    PageEmbedding row carries snapshot_id; there's no cross-domain
-    bleed. Returns 404 only when no snapshot at all can be resolved.
+      3. (default)         — latest non-empty BAJAJ snapshot. Never
+                             latest-overall: that lets a competitor crawl
+                             bleed onto the ours-side page when it ran
+                             more recently than the last Bajaj crawl.
     """
     from django.db.models import Count
 
@@ -978,7 +977,12 @@ def content_map_3d_view(request):
             .first()
         )
     else:
-        snap = CrawlSnapshot.objects.order_by("-started_at").first()
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(kind="bajaj", n__gte=1)
+            .order_by("-started_at")
+            .first()
+        )
     if snap is None:
         return Response(
             {"error": "no snapshot", "domain": domain or None},
@@ -1066,22 +1070,54 @@ def snapshots_list_view(_request):
 @api_view(["GET"])
 def content_clusters_view(request):
     """GET /api/v1/crawler/content/clusters
-    Params: snapshot=<id> (optional, defaults to latest),
-            mode=primary|multi (default primary).
+    Params:
+      snapshot=<id>   — exact snapshot UUID
+      domain=<host>   — latest non-empty COMPLETE competitor snapshot for host
+      mode=primary|multi (default primary).
 
     Returns the hierarchical Product → Page-type → pages tree, plus an
     `uncertain` bucket. Pure rule-based — no LLM, no embeddings required.
+
+    When neither snapshot nor domain is given, defaults to the latest
+    Bajaj snapshot — NOT the latest snapshot overall. Without that scope
+    a competitor crawl that ran more recently than the last Bajaj crawl
+    would bleed competitor URLs into the ours-side cluster tree (the
+    "tataaia URLs showing under Bajaj's clusters" bug).
     """
+    from django.db.models import Count
+
     from .models import CrawlSnapshot
     from .content.clusters import build_clusters
 
-    snap_id = request.GET.get("snapshot", "")
-    snap = (
-        CrawlSnapshot.objects.filter(id=snap_id).first()
-        if snap_id else CrawlSnapshot.objects.order_by("-started_at").first()
-    )
+    snap_id = (request.GET.get("snapshot") or "").strip()
+    domain = (request.GET.get("domain") or "").strip().lower()
+    snap = None
+    if snap_id:
+        snap = CrawlSnapshot.objects.filter(id=snap_id).first()
+    elif domain:
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(
+                kind="competitor",
+                status="complete",
+                target_domain__iexact=domain,
+                n__gte=1,
+            )
+            .order_by("-started_at")
+            .first()
+        )
+    else:
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(kind="bajaj", n__gte=1)
+            .order_by("-started_at")
+            .first()
+        )
     if snap is None:
-        return Response({"error": "no snapshot"}, status=404)
+        return Response(
+            {"error": "no snapshot", "domain": domain or None},
+            status=404,
+        )
 
     mode = request.GET.get("mode", "primary").lower()
     if mode not in ("primary", "multi"):

@@ -16,6 +16,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import CompetitorMetaAdsSection from '../components/competitors/CompetitorMetaAdsSection';
 import CompetitorContentMapSection from '../components/competitors/CompetitorContentMapSection';
+import CompetitorContentClusterSection from '../components/competitors/CompetitorContentClusterSection';
 
 export default function CompetitorDetailPage() {
   const params = useParams<{ domain: string }>();
@@ -116,6 +117,14 @@ export default function CompetitorDetailPage() {
           projection, isolated from Bajaj's map. Renders page-type +
           product breakdown derived from the embedded pages. */}
       <CompetitorContentMapSection domain={data.domain} />
+
+      {/* Per-competitor content CLUSTER tree — rule-based, no embeddings
+          needed, so it renders straight after a crawl even when the 3D
+          map above is still empty (refresh_content_map hasn't run for
+          this domain yet). Diagram + text views of Product → Page-type
+          → URLs. Shares the same /content/clusters endpoint as ours,
+          scoped via ?domain=. */}
+      <CompetitorContentClusterSection domain={data.domain} />
 
       {/* Meta Ad Library — competitor ad intel via Apify scraper. Caches
           on the backend for 24h so this doesn't burn Apify credit on

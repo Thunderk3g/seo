@@ -521,9 +521,12 @@ export const crawlerApi = {
   // Phase 1c — Hierarchical content cluster tree (Product → Page-type → pages).
   // Pure rule-based; works without embeddings. `mode` toggles between
   // single-primary-product and multi-label assignment.
-  contentClusters: (params: { snapshot?: string; mode?: 'primary' | 'multi' } = {}) => {
+  // `domain` resolves to the latest non-empty competitor snapshot for that
+  // host. No domain + no snapshot = latest Bajaj (ours-side default).
+  contentClusters: (params: { snapshot?: string; domain?: string; mode?: 'primary' | 'multi' } = {}) => {
     const qs = new URLSearchParams();
     if (params.snapshot) qs.set('snapshot', params.snapshot);
+    if (params.domain) qs.set('domain', params.domain);
     if (params.mode) qs.set('mode', params.mode);
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{
