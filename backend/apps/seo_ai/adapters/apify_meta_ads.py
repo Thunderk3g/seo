@@ -81,6 +81,12 @@ class MetaAdCard:
     cta_text: str = ""
     image_url: str = ""
     video_url: str = ""
+    # Poster frame for video ads. FB returns ``video_preview_image_url``
+    # in the snapshot; without this, video-ad cards render as "No image"
+    # tiles on the dashboard because ``image_url`` is empty for videos.
+    # Falls back to ``watermarked_resized_image_url`` (smaller, low-res
+    # thumbnail FB stamps with the Ad Library mark).
+    thumbnail_url: str = ""
 
 
 @dataclass
@@ -475,10 +481,22 @@ class ApifyMetaAdsAdapter:
                     or c.get("video_sd_url")
                     or ""
                 )[:2048],
+                # Poster for video ads + last-resort still thumbnail.
+                # Order matters: video_preview_image_url is the real
+                # frame FB chose; the watermarked variant is smaller and
+                # carries the "Ad Library" overlay.
+                thumbnail_url=(
+                    c.get("video_preview_image_url")
+                    or c.get("watermarked_resized_image_url")
+                    or c.get("resized_image_url")
+                    or ""
+                )[:2048],
             ))
 
         # Fallback to top-level snapshot fields when card list is empty.
         if not cards:
+            first_image = (snap.get("images") or [{}])[0] if isinstance(snap.get("images"), list) else {}
+            first_video = (snap.get("videos") or [{}])[0] if isinstance(snap.get("videos"), list) else {}
             cards.append(MetaAdCard(
                 title=(snap.get("title") or "")[:512],
                 body=(snap.get("body", {}) or {}).get("text", "")[:2048] if isinstance(snap.get("body"), dict) else (snap.get("body") or "")[:2048],
@@ -486,9 +504,20 @@ class ApifyMetaAdsAdapter:
                 cta_text=(snap.get("cta_text") or "")[:64],
                 image_url=(
                     snap.get("image_url")
-                    or (snap.get("images") or [{}])[0].get("original_image_url", "")
+                    or first_image.get("original_image_url", "")
+                    or first_image.get("resized_image_url", "")
                 )[:2048],
-                video_url="",
+                video_url=(
+                    first_video.get("video_hd_url")
+                    or first_video.get("video_sd_url")
+                    or ""
+                )[:2048],
+                thumbnail_url=(
+                    first_video.get("video_preview_image_url")
+                    or first_image.get("watermarked_resized_image_url")
+                    or first_image.get("resized_image_url")
+                    or ""
+                )[:2048],
             ))
 
         primary_link = next(
