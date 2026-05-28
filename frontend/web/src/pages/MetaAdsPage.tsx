@@ -299,7 +299,13 @@ function AdGallery({ ads }: { ads: MetaAd[] }) {
 
 function AdCard({ ad }: { ad: MetaAd }) {
   const card = ad.cards?.[0];
-  const img = card?.image_url || ad.page_profile_picture_url;
+  // Fallback chain matches CompetitorMetaAdsSection: image_url (image
+  // ads) → thumbnail_url (FB video_preview_image_url poster for video
+  // ads, or watermarked_resized_image_url) → page profile pic. Without
+  // thumbnail_url every video ad rendered as the small profile dot in
+  // a big "No image" tile.
+  const img = card?.image_url || card?.thumbnail_url || ad.page_profile_picture_url;
+  const isVideoAd = Boolean(card?.video_url);
   const dateRange =
     ad.start_date_iso && ad.end_date_iso
       ? `${ad.start_date_iso} → ${ad.end_date_iso}`
@@ -330,6 +336,15 @@ function AdCard({ ad }: { ad: MetaAd }) {
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-brand-text-3">
             No image
+          </div>
+        )}
+        {isVideoAd && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/55 text-white shadow-lg">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </span>
           </div>
         )}
         {ad.is_active && (
