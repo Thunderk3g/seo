@@ -13,8 +13,12 @@ from .views import (
     competitor_crawls_list_view,
     competitor_detail_view,
     competitor_gap_detection,
+    competitor_keywords_content_view,
+    competitor_keywords_semrush_view,
     competitor_page_detail_view,
     competitor_page_history,
+    competitor_walk_pause_view,
+    page_detail_view,
     content_comparison,
     content_comparison_our_pages,
     content_writer_generate,
@@ -194,6 +198,36 @@ urlpatterns = [
         "competitor/<str:domain>/pages/<str:url_b64>/",
         competitor_page_detail_view,
         name="competitor-page-detail",
+    ),
+    # Snapshot-explicit per-URL detail — works for Bajaj, competitor, and
+    # ad-hoc snapshots. Same response shape as competitor-page-detail.
+    # Used by the unified PageDetailPage component on the frontend so all
+    # three sources render with one layout. Phase 2.
+    path(
+        "page/<uuid:snapshot_id>/<str:url_b64>/",
+        page_detail_view,
+        name="page-detail",
+    ),
+    # Pause toggle for the 03:00 IST walk-competitors-daily cron.
+    # GET returns current state; POST {paused: bool} flips it.
+    path(
+        "competitor/walk/pause/",
+        competitor_walk_pause_view,
+        name="competitor-walk-pause",
+    ),
+    # Phase 7 — per-competitor keyword intelligence. Two sources:
+    # Semrush organic ranking keywords (authoritative, cached on disk),
+    # and in-house TF-IDF over the crawl corpus ("what they write
+    # about" — free, no API quota).
+    path(
+        "competitor/<str:domain>/keywords/semrush/",
+        competitor_keywords_semrush_view,
+        name="competitor-keywords-semrush",
+    ),
+    path(
+        "competitor/<str:domain>/keywords/content/",
+        competitor_keywords_content_view,
+        name="competitor-keywords-content",
     ),
     path("chat/stream/", chat_stream, name="chat-stream"),
     # LLM pool monitoring — Groq key pool health.

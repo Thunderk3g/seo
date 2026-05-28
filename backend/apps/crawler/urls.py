@@ -44,6 +44,10 @@ urlpatterns = [
     # can switch between the latest Bajaj snapshot and any competitor
     # snapshot the link-walker has populated.
     path("snapshots", views.snapshots_list_view, name="snapshots-list"),
+    # Ad-hoc URL crawler — quick fetch + parse of any URL into a
+    # singleton "adhoc" snapshot, so the dashboard can route the user
+    # to the unified PageDetailPage with full structured data.
+    path("adhoc", views.adhoc_crawl_view, name="adhoc-crawl"),
     # Compliance dashboard — WCAG / GDPR / OWASP aggregated view.
     path("compliance", views.compliance_view, name="compliance"),
     path("compliance.csv", views.compliance_csv_view, name="compliance-csv"),

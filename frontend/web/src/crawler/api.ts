@@ -233,8 +233,27 @@ function filterQuery(filters?: ReportFilters): string {
   return s ? `?${s}` : '';
 }
 
+export interface AdhocCrawlResponse {
+  snapshot_id: string;
+  url_b64: string;
+  url: string;
+  final_url: string;
+  status_code: number;
+  host: string;
+  parent_domain: string;
+  error?: string;
+}
+
 export const crawlerApi = {
   status: () => request<CrawlerStatus>('/status'),
+  // Ad-hoc URL crawler — synchronous fetch + parse of one URL into a
+  // singleton "adhoc" snapshot. Returns the IDs the unified
+  // PageDetailPage needs to render the structured detail view.
+  adhocCrawl: (url: string) =>
+    request<AdhocCrawlResponse>('/adhoc', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
   summary: () => request<CrawlerSummary>('/summary'),
   breakdown: () => request<SummaryBreakdown>('/summary/breakdown'),
   tables: () => request<TablesResponse>('/tables'),

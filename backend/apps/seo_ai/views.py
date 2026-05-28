@@ -1863,6 +1863,201 @@ def _full_page_from_result(p, snap) -> dict:
 
 
 @api_view(["GET"])
+def competitor_keywords_semrush_view(_request, domain: str):
+    """Authoritative ranking keywords for a competitor — pulled from
+    Semrush ``domain_organic`` and disk-cached so repeat dashboard
+    visits don't burn API credit.
+
+    Returns ``{available, count, keywords: [{keyword, position, ...}]}``.
+    Graceful on missing API key / Semrush outage — sets
+    ``available: false`` with an explanatory ``error`` field instead of
+    500-ing the dashboard tile.
+    """
+    from .adapters.semrush import SemrushAdapter, SemrushError
+
+    target = _normalize_competitor_domain(domain)
+    if not target:
+        return Response({"error": "invalid domain"}, status=400)
+
+    try:
+        adapter = SemrushAdapter()
+    except Exception as exc:  # noqa: BLE001 — config / key missing
+        return Response({
+            "available": False,
+            "domain": target,
+            "count": 0,
+            "keywords": [],
+            "error": f"semrush unavailable: {exc}",
+        })
+
+    try:
+        rows = adapter.organic_keywords(target, limit=100)
+    except SemrushError as exc:
+        return Response({
+            "available": False,
+            "domain": target,
+            "count": 0,
+            "keywords": [],
+            "error": f"semrush call failed: {exc}",
+        })
+    except Exception as exc:  # noqa: BLE001
+        return Response({
+            "available": False,
+            "domain": target,
+            "count": 0,
+            "keywords": [],
+            "error": f"semrush call crashed: {exc}",
+        })
+
+    keywords = [
+        {
+            "keyword": k.keyword,
+            "position": k.position,
+            "previous_position": k.previous_position,
+            "search_volume": k.search_volume,
+            "cpc": k.cpc,
+            "competition": k.competition,
+            "traffic_pct": k.traffic_pct,
+            "url": k.url,
+        }
+        for k in rows
+    ]
+    return Response({
+        "available": True,
+        "domain": target,
+        "count": len(keywords),
+        "keywords": keywords,
+    })
+
+
+@api_view(["GET"])
+def competitor_keywords_content_view(_request, domain: str):
+    """Derived "what this competitor writes about" keywords — TF-IDF
+    over their latest snapshot's CrawlerPageResult rows (plus rows from
+    every subdomain that shares the same registrable parent, so the
+    rollup matches the consolidated Crawled-competitors table).
+
+    No external API. Pure rule-based / sklearn. Reasonable for first-
+    minute dashboard loads — TF-IDF over 2000 pages runs in ~300ms.
+    """
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    from apps.crawler.util.host import apex
+    from .keywords.content_keywords import extract_content_keywords
+
+    target = _normalize_competitor_domain(domain)
+    if not target:
+        return Response({"error": "invalid domain"}, status=400)
+    parent = apex(target)
+
+    # Collect every competitor snapshot under the same parent brand. For
+    # each subdomain, take only its latest snapshot so we don't double-
+    # count historical revisions.
+    candidates = (
+        CrawlSnapshot.objects
+        .filter(kind="competitor", parent_domain=parent)
+        .exclude(status="failed")
+        .order_by("target_domain", "-started_at")
+    )
+    seen_subs: set[str] = set()
+    snapshot_ids: list[str] = []
+    for snap in candidates:
+        sub = (snap.target_domain or "").lower()
+        if not sub or sub in seen_subs:
+            continue
+        seen_subs.add(sub)
+        snapshot_ids.append(snap.id)
+
+    if not snapshot_ids:
+        return Response({
+            "available": False,
+            "domain": target,
+            "parent_domain": parent,
+            "count": 0,
+            "keywords": [],
+            "error": (
+                "no snapshot found for this brand — run the competitor "
+                "walk first"
+            ),
+        })
+
+    rows_qs = (
+        CrawlerPageResult.objects
+        .filter(snapshot_id__in=snapshot_ids, status_code="200")
+        .only(
+            "url", "title", "meta_description",
+            "headings_json", "body_text",
+        )
+    )
+    rows = [
+        {
+            "url": r.url,
+            "title": r.title or "",
+            "meta_description": r.meta_description or "",
+            "headings_json": r.headings_json or [],
+            "body_text": r.body_text or "",
+        }
+        for r in rows_qs.iterator()
+    ]
+
+    try:
+        keywords = extract_content_keywords(rows, top_k=50)
+    except RuntimeError as exc:
+        return Response({
+            "available": False,
+            "domain": target,
+            "parent_domain": parent,
+            "count": 0,
+            "keywords": [],
+            "error": f"content TF-IDF unavailable: {exc}",
+        })
+
+    return Response({
+        "available": True,
+        "domain": target,
+        "parent_domain": parent,
+        "subdomain_count": len(seen_subs),
+        "page_count": len(rows),
+        "count": len(keywords),
+        "keywords": keywords,
+    })
+
+
+@api_view(["GET", "POST"])
+def competitor_walk_pause_view(request):
+    """GET/POST the competitor-walk pause toggle.
+
+    GET returns ``{paused: bool, updated_at: <iso>}``. POST with body
+    ``{"paused": true|false}`` flips the toggle. When paused, the
+    03:00 IST ``walk_competitor_roster_task`` returns early instead of
+    walking the roster — the dashboard "Pause crawls" switch hits this.
+    """
+    from apps.crawler.models import SystemSetting
+
+    if request.method == "GET":
+        row = SystemSetting.objects.filter(pk="competitor_walk_paused").first()
+        paused = SystemSetting.get_bool(
+            "competitor_walk_paused", default=False,
+        )
+        return Response({
+            "paused": paused,
+            "updated_at": (
+                row.updated_at.isoformat() if row and row.updated_at else None
+            ),
+        })
+
+    # POST — flip the flag.
+    raw = request.data.get("paused")
+    if raw is None:
+        return Response(
+            {"error": "body must include 'paused': true|false"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    new_value = bool(raw)
+    SystemSetting.set_value("competitor_walk_paused", new_value)
+    return Response({"paused": new_value})
+
+
+@api_view(["GET"])
 def competitor_crawls_list_view(_request):
     """List every competitor domain we've crawled (or are currently
     crawling) via the Phase G Scrapy walk. One row per ``target_domain``,
@@ -1927,10 +2122,19 @@ def competitor_crawls_list_view(_request):
     ):
         change_counts[row[0]] = row[1]
 
+    # Apex helper so the frontend can group `auth.hdfclife.com` etc. under
+    # the parent `hdfclife.com`. Prefer the denormalized column written by
+    # CrawlSnapshot.save(); fall back to recomputing for rows older than
+    # the 0014 migration (defensive — the migration backfills, but a row
+    # that hasn't been saved since could lag).
+    from apps.crawler.util.host import apex
+
     rows = []
     for td, snap in sorted(latest_by_domain.items()):
+        parent = (snap.parent_domain or "").strip().lower() or apex(td)
         rows.append({
             "domain": td,
+            "parent_domain": parent,
             "snapshot_id": str(snap.id),
             "status": snap.status,
             "started_at": (
@@ -2019,6 +2223,58 @@ def competitor_detail_view(_request, domain: str):
         "sample_count": len(samples),
         "error": crawl.error or "",
     })
+
+
+@api_view(["GET"])
+def page_detail_view(_request, snapshot_id: str, url_b64: str):
+    """Per-URL detail by snapshot — works for any kind (Bajaj / competitor / ad-hoc).
+
+    The competitor variant (``competitor_page_detail_view``) carries the
+    legacy GapDeepCrawl fallback and resolves "latest snapshot for this
+    domain" by itself. This view is the snapshot-explicit cousin: the
+    caller already knows the exact ``CrawlSnapshot.id`` (because they
+    just listed the snapshot, or just kicked off an ad-hoc crawl), so
+    we skip domain → snapshot resolution and the GapDeepCrawl fallback.
+
+    Used by:
+      * Bajaj Page Explorer (each row links here with the live Bajaj
+        snapshot id) — same layout as the competitor page detail.
+      * Phase 3 ad-hoc URL crawler — singleton ad-hoc snapshot per host.
+      * Any future caller that wants "URL X from snapshot Y, full payload".
+    """
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    snap = CrawlSnapshot.objects.filter(id=snapshot_id).first()
+    if snap is None:
+        return Response(
+            {"error": f"snapshot {snapshot_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    decoded = _b64url_decode(url_b64)
+    if decoded is None:
+        return Response(
+            {"error": "invalid base64url segment"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    page = CrawlerPageResult.objects.filter(
+        snapshot=snap, url=decoded.strip(),
+    ).first()
+    if page is None:
+        return Response(
+            {
+                "error": f"URL {decoded} not in snapshot {snapshot_id}",
+                "snapshot_kind": snap.kind,
+                "snapshot_domain": snap.target_domain or "",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    payload = _full_page_from_result(page, snap)
+    # Decorate with snapshot kind so the frontend can swap breadcrumb
+    # + brand badge between Bajaj / competitor / ad-hoc modes without
+    # making a second request to look the snapshot up.
+    payload["snapshot_kind"] = snap.kind
+    payload["snapshot_domain"] = snap.target_domain or ""
+    return Response(payload)
 
 
 @api_view(["GET"])

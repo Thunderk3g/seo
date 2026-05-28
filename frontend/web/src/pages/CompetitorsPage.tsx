@@ -26,6 +26,7 @@ import CompetitorOverviewTab from '../components/competitors/CompetitorOverviewT
 import CrawledCompetitorsTab from '../components/competitors/CrawledCompetitorsTab';
 import GapDetectionPipelineSection from '../components/competitors/GapDetectionPipelineSection';
 import GapDetectionSection from '../components/competitors/GapDetectionSection';
+import QuickUrlCrawl from '../components/competitors/QuickUrlCrawl';
 import UnifiedKpiStrip from '../components/competitors/UnifiedKpiStrip';
 
 type TabId = 'overview' | 'crawled' | 'pipeline' | 'findings';
@@ -77,6 +78,8 @@ export default function CompetitorsPage() {
           </div>
         </div>
       </header>
+
+      <QuickUrlCrawl />
 
       <UnifiedKpiStrip
         dashboard={dashboard.data}

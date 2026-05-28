@@ -97,3 +97,11 @@ sentence-transformers>=2.5
 # UMAP reduces 384-dim chunk embeddings to 3D coords for the scatter
 # plot in the content-map UI. numba pulled in transitively for speed.
 umap-learn>=0.5
+
+# ── Subdomain → parent-brand consolidation ────────────────────────
+# tldextract uses the Public Suffix List to derive the registrable
+# domain (`auth.hdfclife.com` -> `hdfclife.com`). We pin the bundled
+# snapshot via suffix_list_urls=() in apps.crawler.util.host so it
+# never reaches out to the network at import time — the Bajaj corp
+# proxy will block the publicsuffix.org fetch otherwise.
+tldextract>=5.1
