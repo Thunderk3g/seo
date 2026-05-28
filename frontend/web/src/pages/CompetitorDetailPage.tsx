@@ -8,7 +8,7 @@
  *
  * Bajaj brand via shadcn primitives; scoped under `.bajaj-ui`.
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useParams } from 'wouter';
 import { useCompetitorDetail } from '../api/hooks/useCompetitorDetail';
 import { Badge } from '../components/ui/badge';
@@ -247,6 +247,17 @@ function SamplePagesTable({
     response_time_ms: number;
   }>;
 }) {
+  // Client-side pagination — competitors with 3000+ pages would render
+  // as one giant scrolling table otherwise. 250 rows per page is the
+  // sweet spot: enough to scan a product section in one chunk, small
+  // enough that the DOM stays fast on slow machines.
+  const [pageSize, setPageSize] = useState(250);
+  const [pageIdx, setPageIdx] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(pages.length / pageSize));
+  const safePageIdx = Math.min(pageIdx, totalPages - 1);
+  const start = safePageIdx * pageSize;
+  const visiblePages = pages.slice(start, start + pageSize);
+
   if (pages.length === 0) {
     return (
       <Card>
@@ -258,6 +269,23 @@ function SamplePagesTable({
   }
   return (
     <div className="overflow-hidden rounded-md border border-brand-border bg-card shadow-e1">
+      {pages.length > pageSize && (
+        <PageControls
+          pageIdx={safePageIdx}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          totalRows={pages.length}
+          rangeStart={start + 1}
+          rangeEnd={Math.min(start + pageSize, pages.length)}
+          onPrev={() => setPageIdx((p) => Math.max(0, p - 1))}
+          onNext={() => setPageIdx((p) => Math.min(totalPages - 1, p + 1))}
+          onJump={(i) => setPageIdx(i)}
+          onPageSizeChange={(s) => {
+            setPageSize(s);
+            setPageIdx(0);
+          }}
+        />
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="border-b border-brand-border bg-brand-surface-2 text-left">
@@ -287,7 +315,7 @@ function SamplePagesTable({
             </tr>
           </thead>
           <tbody>
-            {pages.map((page, idx) => {
+            {visiblePages.map((page, idx) => {
               const target = `/competitors/${encodeURIComponent(domain)}/pages/${page.url_b64}`;
               return (
                 <tr
@@ -338,6 +366,125 @@ function SamplePagesTable({
             })}
           </tbody>
         </table>
+      </div>
+      {pages.length > pageSize && (
+        <PageControls
+          pageIdx={safePageIdx}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          totalRows={pages.length}
+          rangeStart={start + 1}
+          rangeEnd={Math.min(start + pageSize, pages.length)}
+          onPrev={() => setPageIdx((p) => Math.max(0, p - 1))}
+          onNext={() => setPageIdx((p) => Math.min(totalPages - 1, p + 1))}
+          onJump={(i) => setPageIdx(i)}
+          onPageSizeChange={(s) => {
+            setPageSize(s);
+            setPageIdx(0);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PageControls({
+  pageIdx,
+  totalPages,
+  pageSize,
+  totalRows,
+  rangeStart,
+  rangeEnd,
+  onPrev,
+  onNext,
+  onJump,
+  onPageSizeChange,
+}: {
+  pageIdx: number;
+  totalPages: number;
+  pageSize: number;
+  totalRows: number;
+  rangeStart: number;
+  rangeEnd: number;
+  onPrev: () => void;
+  onNext: () => void;
+  onJump: (i: number) => void;
+  onPageSizeChange: (size: number) => void;
+}) {
+  // Show first / last / pageIdx-1 / pageIdx / pageIdx+1 with ellipses.
+  const pageNumbers: (number | 'ellipsis-left' | 'ellipsis-right')[] = [];
+  if (totalPages <= 7) {
+    for (let i = 0; i < totalPages; i++) pageNumbers.push(i);
+  } else {
+    pageNumbers.push(0);
+    if (pageIdx > 2) pageNumbers.push('ellipsis-left');
+    const mid = [pageIdx - 1, pageIdx, pageIdx + 1].filter(
+      (i) => i > 0 && i < totalPages - 1,
+    );
+    for (const m of mid) pageNumbers.push(m);
+    if (pageIdx < totalPages - 3) pageNumbers.push('ellipsis-right');
+    pageNumbers.push(totalPages - 1);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-brand-border bg-brand-surface-2 px-3 py-2 text-xs last:border-b-0 last:border-t">
+      <div className="text-brand-text-3">
+        Showing <span className="font-semibold text-brand-text">{rangeStart}</span>
+        –<span className="font-semibold text-brand-text">{rangeEnd}</span> of{' '}
+        <span className="font-semibold text-brand-text">{totalRows.toLocaleString()}</span> pages
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 text-brand-text-3">
+          Rows
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(parseInt(e.target.value, 10))}
+            className="rounded border border-brand-border bg-white px-1.5 py-0.5 text-brand-text"
+          >
+            <option value={100}>100</option>
+            <option value={250}>250</option>
+            <option value={500}>500</option>
+            <option value={1000}>1000</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={onPrev}
+          disabled={pageIdx === 0}
+          className="rounded border border-brand-border bg-white px-2 py-1 text-brand-text disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          ← Prev
+        </button>
+        <div className="flex items-center gap-1">
+          {pageNumbers.map((n, i) =>
+            typeof n === 'string' ? (
+              <span key={`${n}-${i}`} className="text-brand-text-3">
+                …
+              </span>
+            ) : (
+              <button
+                key={n}
+                type="button"
+                onClick={() => onJump(n)}
+                className={
+                  n === pageIdx
+                    ? 'rounded bg-brand-accent px-2 py-1 font-semibold text-white'
+                    : 'rounded border border-brand-border bg-white px-2 py-1 text-brand-text hover:bg-brand-accent-soft'
+                }
+              >
+                {n + 1}
+              </button>
+            ),
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={pageIdx >= totalPages - 1}
+          className="rounded border border-brand-border bg-white px-2 py-1 text-brand-text disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Next →
+        </button>
       </div>
     </div>
   );

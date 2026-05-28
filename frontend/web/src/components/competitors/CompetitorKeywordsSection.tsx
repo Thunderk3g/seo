@@ -131,12 +131,12 @@ function RankingTab({
           </tr>
         </thead>
         <tbody>
-          {data.keywords.map((k) => {
+          {data.keywords.map((k, idx) => {
             const delta = k.previous_position
               ? k.previous_position - k.position
               : 0;
             return (
-              <tr key={`${k.keyword}-${k.url}`} className="border-t border-brand-border">
+              <tr key={`${idx}-${k.keyword}-${k.url}`} className="border-t border-brand-border">
                 <td className="px-2 py-1 align-top font-medium text-brand-text">
                   {k.keyword}
                 </td>

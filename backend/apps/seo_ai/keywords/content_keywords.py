@@ -30,22 +30,60 @@ from typing import Iterable
 
 
 # Vertical-noise terms that are present on nearly every insurance page
-# and dominate any naive TF-IDF if we don't strip them. Keep tight —
-# anything genuinely discriminating (e.g. ``ulip``, ``riders``, ``annuity``)
-# should NOT be in this list because operators want to spot those topics.
+# and dominate any naive TF-IDF if we don't strip them.
 DOMAIN_STOPWORDS: frozenset[str] = frozenset(
     {
-        "insurance", "insurer", "insurers",
-        "policy", "policies",
-        "plan", "plans",
-        "online", "india", "indian",
+        "insurer", "insurers",
         "company", "companies",
-        "buy", "buying", "purchase", "purchasing",
-        "today", "now", "best", "top", "compare", "comparison",
+        "buying", "purchase", "purchasing",
+        "today", "now",
         "read", "more", "click", "here", "view", "see",
         "details", "detail", "page", "pages", "site", "website",
         "year", "years", "month", "months", "day", "days",
         "rs", "inr", "lakh", "lakhs", "crore", "crores",
+    },
+)
+
+
+# Search-intent allowlist — n-grams must contain AT LEAST ONE of these
+# tokens to surface as a "content keyword". This is what turns a
+# vanilla TF-IDF output (which surfaces product names like ``raksha``,
+# ``shubh``, ``supreme`` — the most-frequent discriminative single
+# words on a competitor's site) into something SEO/GEO-relevant: only
+# phrases that look like real search queries. Operator-tunable.
+#
+# Categories:
+#   * Generic insurance query nouns — what users search for.
+#   * Cost / numeric intent — "premium", "cost", "rate", etc.
+#   * Tool intent — "calculator", "estimator".
+#   * Action intent — "buy", "compare", "renew", "claim".
+#   * Vertical / product type — "term", "ulip", "endowment", etc.
+#     (these are *category* nouns, not product names — and they are
+#     what people search for).
+#   * Geographic intent — "india", "online", "near", "best".
+SEARCH_INTENT_TERMS: frozenset[str] = frozenset(
+    {
+        # Generic insurance / SEO nouns
+        "insurance", "policy", "policies", "plan", "plans", "coverage",
+        "premium", "premiums", "sum", "assured", "benefit", "benefits",
+        "claim", "claims", "rider", "riders", "maturity", "death",
+        "settlement", "ratio",
+        # Cost / numeric intent
+        "cost", "price", "fee", "rate", "rates", "tax", "savings",
+        "save", "deduction", "80c", "80d", "section",
+        # Tool intent
+        "calculator", "calc", "estimator", "calculate",
+        # Action intent
+        "buy", "renew", "compare", "comparison", "review", "reviews",
+        "best", "top",
+        # Product categories (these ARE search queries)
+        "term", "ulip", "endowment", "retirement", "pension", "annuity",
+        "child", "wealth", "health", "savings", "investment", "investments",
+        "moneyback", "money-back",
+        # Geographic / context modifiers
+        "online", "india", "indian", "near",
+        # Question intent
+        "how", "what", "why", "when", "which", "guide", "tips",
     },
 )
 
@@ -83,9 +121,13 @@ def extract_content_keywords(
     rows: Iterable[dict],
     *,
     top_k: int = 50,
-    ngram_range: tuple[int, int] = (1, 2),
+    # Bigrams + trigrams only. Unigrams overwhelmingly surface product
+    # names (e.g. tataaia's "raksha", "shubh") which are not
+    # search-intent terms. 2-3 word n-grams correspond to real search
+    # queries ("term insurance calculator", "income tax savings").
+    ngram_range: tuple[int, int] = (2, 3),
     min_df: int = 2,
-    max_df: float = 0.6,
+    max_df: float = 0.7,
 ) -> list[dict]:
     """Run TF-IDF over the supplied rows and return the top ``top_k``
     terms with their score + the URLs they appear on.
@@ -157,12 +199,23 @@ def extract_content_keywords(
     binarized = (tfidf > 0).astype(int)
     page_counts = binarized.sum(axis=0).A1
 
-    # For sample-pages: pre-index docs by term presence. Cheap because we
-    # only iterate the top_k rows of the matrix at the end, not full N×T.
-    ranked = sorted(
+    # Filter to n-grams that contain at least one SEARCH_INTENT_TERM —
+    # this is what excludes product-name n-grams ("life protect supreme")
+    # and keeps SEO-relevant phrases ("term insurance calculator").
+    # Take a generous candidate pool (top_k * 3) BEFORE the filter, then
+    # cut to top_k AFTER, so the filter doesn't starve the result list
+    # for crawl corpora dominated by product copy.
+    pool = sorted(
         zip(terms, summed.tolist(), page_counts.tolist()),
         key=lambda x: -x[1],
-    )[:top_k]
+    )[: top_k * 3]
+    ranked: list[tuple[str, float, int]] = []
+    for term, score, page_count in pool:
+        tokens = term.split()
+        if any(t in SEARCH_INTENT_TERMS for t in tokens):
+            ranked.append((term, score, page_count))
+            if len(ranked) >= top_k:
+                break
 
     # Build sample-page lookup only for the selected terms (top_k * 3
     # URLs at most). Iterate the sparse matrix column-wise via tocsc().

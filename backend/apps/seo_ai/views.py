@@ -2084,10 +2084,15 @@ def competitor_crawls_list_view(_request):
     # Latest snapshot per target_domain — running OR complete. Failed
     # snapshots are excluded so a half-dead retry doesn't shadow a
     # successful older crawl.
+    # Also exclude any row whose target_domain is bajajlifeinsurance.com
+    # (or a subdomain of it) — historical crawls misclassified our own
+    # site as kind='competitor', and the operator doesn't want to see
+    # Bajaj in the competitor list.
     qs = (
         CrawlSnapshot.objects
         .filter(kind=CrawlSnapshot.Kind.COMPETITOR)
         .exclude(status=CrawlSnapshot.Status.FAILED)
+        .exclude(parent_domain="bajajlifeinsurance.com")
         .order_by("-started_at")
     )
 

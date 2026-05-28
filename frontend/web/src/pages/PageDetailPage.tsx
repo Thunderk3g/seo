@@ -14,16 +14,21 @@
  * The breadcrumb + back-link swap based on `data.snapshot_kind`, which
  * the backend returns alongside the page payload.
  */
+import { useState } from 'react';
 import { Link, useParams } from 'wouter';
 import { usePageDetail } from '../api/hooks/useCompetitorDetail';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PageReaderView from '../components/competitors/PageReaderView';
+
+type ViewMode = 'reader' | 'detail';
 
 export default function PageDetailPage() {
+  const [view, setView] = useState<ViewMode>('reader');
   const params = useParams<{ snapshotId: string; b64: string }>();
-  const snapshotId = params.snapshotId || null;
-  const urlB64 = params.b64 || null;
+  const snapshotId = params.snapshotId ?? null;
+  const urlB64 = params.b64 ?? null;
   const { data, isLoading, isError, error } = usePageDetail(snapshotId, urlB64);
 
   if (isLoading) {
@@ -132,9 +137,28 @@ export default function PageDetailPage() {
               modified {new Date(data.last_modified).toLocaleDateString()}
             </Badge>
           )}
+          <div className="ml-auto inline-flex overflow-hidden rounded border border-brand-border">
+            <button
+              type="button"
+              onClick={() => setView('reader')}
+              className={`px-3 py-1 text-xs font-semibold ${view === 'reader' ? 'bg-brand-accent text-white' : 'bg-white text-brand-text-2'}`}
+            >
+              Reader
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('detail')}
+              className={`border-l border-brand-border px-3 py-1 text-xs font-semibold ${view === 'detail' ? 'bg-brand-accent text-white' : 'bg-white text-brand-text-2'}`}
+            >
+              Detail
+            </button>
+          </div>
         </div>
       </header>
 
+      {view === 'reader' && <PageReaderView data={data} />}
+
+      {view === 'detail' && (
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {data.meta_description && (
@@ -460,6 +484,7 @@ export default function PageDetailPage() {
           )}
         </aside>
       </div>
+      )}
     </div>
   );
 }

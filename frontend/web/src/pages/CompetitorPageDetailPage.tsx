@@ -12,13 +12,18 @@
  * Body text comes from the competitor crawler's full-body capture
  * (commit 1f78935 onwards). No emojis. Bajaj brand throughout.
  */
+import { useState } from 'react';
 import { Link, useParams } from 'wouter';
 import { useCompetitorPageDetail } from '../api/hooks/useCompetitorDetail';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PageReaderView from '../components/competitors/PageReaderView';
+
+type ViewMode = 'reader' | 'detail';
 
 export default function CompetitorPageDetailPage() {
+  const [view, setView] = useState<ViewMode>('reader');
   const params = useParams<{ domain: string; b64: string }>();
   const domain = params.domain ? decodeURIComponent(params.domain) : null;
   const urlB64 = params.b64 || null;
@@ -84,9 +89,28 @@ export default function CompetitorPageDetailPage() {
               modified {new Date(data.last_modified).toLocaleDateString()}
             </Badge>
           )}
+          <div className="ml-auto inline-flex overflow-hidden rounded border border-brand-border">
+            <button
+              type="button"
+              onClick={() => setView('reader')}
+              className={`px-3 py-1 text-xs font-semibold ${view === 'reader' ? 'bg-brand-accent text-white' : 'bg-white text-brand-text-2'}`}
+            >
+              Reader
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('detail')}
+              className={`border-l border-brand-border px-3 py-1 text-xs font-semibold ${view === 'detail' ? 'bg-brand-accent text-white' : 'bg-white text-brand-text-2'}`}
+            >
+              Detail
+            </button>
+          </div>
         </div>
       </header>
 
+      {view === 'reader' && <PageReaderView data={data} />}
+
+      {view === 'detail' && (
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {data.meta_description && (
@@ -352,6 +376,7 @@ export default function CompetitorPageDetailPage() {
           )}
         </aside>
       </div>
+      )}
     </div>
   );
 }

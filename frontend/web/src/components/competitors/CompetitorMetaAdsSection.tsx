@@ -464,16 +464,28 @@ function AdCard({ ad }: { ad: MetaAd }) {
   );
 
   if (!detailHref) return cardBody;
+  // Outer card is a clickable div, not an <a>, so the inner PlatformChip
+  // <a> tags don't trigger React's "<a> cannot appear as a descendant
+  // of <a>" DOM-nesting warning. Card opens the Meta Ad Library; chips
+  // open the per-platform sub-page; chip clicks stop propagation so the
+  // card click doesn't also fire.
+  const openCard = () => window.open(detailHref, '_blank', 'noopener,noreferrer');
   return (
-    <a
-      href={detailHref}
-      target="_blank"
-      rel="noreferrer"
-      className="block no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent rounded-xl"
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={openCard}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openCard();
+        }
+      }}
+      className="block cursor-pointer rounded-xl no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent"
       title="Open in Meta Ad Library"
     >
       {cardBody}
-    </a>
+    </div>
   );
 }
 
