@@ -18,6 +18,7 @@ from .views import (
     competitor_page_detail_view,
     competitor_page_history,
     competitor_walk_pause_view,
+    page_clusters_view,
     page_detail_view,
     content_comparison,
     content_comparison_our_pages,
@@ -207,6 +208,16 @@ urlpatterns = [
         "page/<uuid:snapshot_id>/<str:url_b64>/",
         page_detail_view,
         name="page-detail",
+    ),
+    # Per-URL content cluster view — scoped counterpart of the corpus-
+    # wide content map. Returns this single page's PageEmbedding chunks
+    # grouped by classified page_type + product so the operator can see
+    # how the page's content distributes (e.g. 60% product info, 25% FAQ,
+    # 15% calculator-CTA). Used by the Clusters tab on PageDetailPage.
+    path(
+        "page/<uuid:snapshot_id>/<str:url_b64>/clusters/",
+        page_clusters_view,
+        name="page-clusters",
     ),
     # Pause toggle for the 03:00 IST walk-competitors-daily cron.
     # GET returns current state; POST {paused: bool} flips it.

@@ -2231,6 +2231,138 @@ def competitor_detail_view(_request, domain: str):
 
 
 @api_view(["GET"])
+def page_clusters_view(_request, snapshot_id: str, url_b64: str):
+    """Per-URL content clusters — how this single page's chunks distribute
+    across page-types + products. Counterpart to the corpus-wide content
+    map (/content/map/3d), scoped to one URL.
+
+    Reads PageEmbedding rows for the (snapshot, url) pair, groups by
+    classified page_type and product, and returns:
+      - chunks: [{chunk_idx, text, page_type, products, confidence,
+                  coord_x, coord_y, coord_z}]
+      - page_type_breakdown: [{page_type, label, count, pct}]
+      - product_breakdown:   [{product, label, count, pct}]
+
+    Returns 404 if the URL has no PageEmbedding rows yet (operator needs
+    to run refresh_content_map for that snapshot first).
+    """
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult, PageEmbedding
+    from apps.crawler.content.taxonomy import (
+        PAGE_TYPE_LABELS, PRODUCT_LABELS,
+    )
+
+    snap = CrawlSnapshot.objects.filter(id=snapshot_id).first()
+    if snap is None:
+        return Response(
+            {"error": f"snapshot {snapshot_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    decoded = _b64url_decode(url_b64)
+    if decoded is None:
+        return Response(
+            {"error": "invalid base64url segment"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    page = CrawlerPageResult.objects.filter(
+        snapshot=snap, url=decoded.strip(),
+    ).first()
+    if page is None:
+        return Response(
+            {"error": f"URL {decoded} not in snapshot {snapshot_id}"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    chunks_qs = (
+        PageEmbedding.objects
+        .filter(page=page)
+        .only(
+            "chunk_idx", "chunk_text", "products", "page_type",
+            "confidence", "coord_x", "coord_y", "coord_z",
+        )
+        .order_by("chunk_idx")
+    )
+
+    chunks: list[dict] = []
+    pt_counter: dict[str, int] = {}
+    prod_counter: dict[str, int] = {}
+    for c in chunks_qs:
+        # Truncate chunk_text in the response (the full text is rarely
+        # needed for a cluster view; ~280 chars is one tweet's worth).
+        text_preview = (c.chunk_text or "")[:280]
+        products = list(c.products or [])
+        chunks.append({
+            "chunk_idx": c.chunk_idx,
+            "text": text_preview,
+            "page_type": c.page_type or "other",
+            "products": products,
+            "confidence": float(c.confidence or 0.0),
+            "coord_x": c.coord_x,
+            "coord_y": c.coord_y,
+            "coord_z": c.coord_z,
+        })
+        pt_counter[c.page_type or "other"] = (
+            pt_counter.get(c.page_type or "other", 0) + 1
+        )
+        for prod in products:
+            # Products come through as either ["term"] or
+            # [{"key":"term","label":"Term Insurance",...}] depending on
+            # which embedder version wrote the row. Handle both.
+            if isinstance(prod, dict):
+                key = (prod.get("key") or prod.get("label") or "").strip().lower()
+            else:
+                key = str(prod).strip().lower()
+            if key:
+                prod_counter[key] = prod_counter.get(key, 0) + 1
+
+    if not chunks:
+        return Response(
+            {
+                "error": (
+                    "No PageEmbedding rows for this URL yet. Run "
+                    "`python manage.py refresh_content_map` for snapshot "
+                    f"{snapshot_id} to populate."
+                ),
+                "url": decoded,
+                "snapshot_id": str(snap.id),
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    total = len(chunks)
+    page_type_breakdown = [
+        {
+            "page_type": pt,
+            "label": PAGE_TYPE_LABELS.get(pt, pt),
+            "count": cnt,
+            "pct": round(100.0 * cnt / total, 1),
+        }
+        for pt, cnt in sorted(pt_counter.items(), key=lambda x: -x[1])
+    ]
+    product_breakdown = [
+        {
+            "product": p,
+            "label": PRODUCT_LABELS.get(p, p),
+            "count": cnt,
+            "pct": round(100.0 * cnt / total, 1),
+        }
+        for p, cnt in sorted(prod_counter.items(), key=lambda x: -x[1])
+    ]
+
+    return Response({
+        "snapshot_id": str(snap.id),
+        "snapshot_kind": snap.kind,
+        "snapshot_domain": snap.target_domain or "",
+        "url": decoded,
+        "url_b64": url_b64,
+        "page_title": page.title or "",
+        "total_chunks": total,
+        "chunks": chunks,
+        "page_type_breakdown": page_type_breakdown,
+        "product_breakdown": product_breakdown,
+    })
+
+
+@api_view(["GET"])
 def page_detail_view(_request, snapshot_id: str, url_b64: str):
     """Per-URL detail by snapshot — works for any kind (Bajaj / competitor / ad-hoc).
 
