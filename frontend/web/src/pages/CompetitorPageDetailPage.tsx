@@ -18,9 +18,10 @@ import { useCompetitorPageDetail } from '../api/hooks/useCompetitorDetail';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PageClustersView from '../components/competitors/PageClustersView';
 import PageReaderView from '../components/competitors/PageReaderView';
 
-type ViewMode = 'reader' | 'detail';
+type ViewMode = 'reader' | 'detail' | 'clusters';
 
 export default function CompetitorPageDetailPage() {
   const [view, setView] = useState<ViewMode>('reader');
@@ -104,11 +105,25 @@ export default function CompetitorPageDetailPage() {
             >
               Detail
             </button>
+            <button
+              type="button"
+              onClick={() => setView('clusters')}
+              className={`border-l border-brand-border px-3 py-1 text-xs font-semibold ${view === 'clusters' ? 'bg-brand-accent text-white' : 'bg-white text-brand-text-2'}`}
+            >
+              Clusters
+            </button>
           </div>
         </div>
       </header>
 
       {view === 'reader' && <PageReaderView data={data} />}
+
+      {view === 'clusters' && (
+        <PageClustersView
+          snapshotId={data.run_id || null}
+          urlB64={urlB64}
+        />
+      )}
 
       {view === 'detail' && (
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">

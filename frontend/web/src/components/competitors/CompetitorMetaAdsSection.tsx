@@ -345,7 +345,13 @@ function AdGallery({ ads }: { ads: MetaAd[] }) {
 
 function AdCard({ ad }: { ad: MetaAd }) {
   const card = ad.cards?.[0];
-  const img = card?.image_url || ad.page_profile_picture_url;
+  // Resolution order: image_url (image ads) → thumbnail_url (FB's
+  // video_preview_image_url for video ads, or watermarked still for
+  // anything else) → page profile pic. Without thumbnail_url, video
+  // ads rendered as "No image" tiles. The page profile pic is a last-
+  // resort filler so the card never looks empty.
+  const img = card?.image_url || card?.thumbnail_url || ad.page_profile_picture_url;
+  const isVideoAd = Boolean(card?.video_url);
   const dateRange = useMemo(() => {
     if (ad.start_date_iso && ad.end_date_iso) {
       return `${ad.start_date_iso} → ${ad.end_date_iso}`;
@@ -367,7 +373,7 @@ function AdCard({ ad }: { ad: MetaAd }) {
 
   const cardBody = (
     <div className="group flex h-full flex-col overflow-hidden rounded-xl border border-brand-border bg-white transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-accent hover:shadow-[0_10px_24px_-12px_rgba(0,114,206,0.25)]">
-      {/* Image */}
+      {/* Image / video poster */}
       <div className="relative aspect-[16/10] w-full overflow-hidden bg-brand-surface-2">
         {img ? (
           <img
@@ -382,6 +388,17 @@ function AdCard({ ad }: { ad: MetaAd }) {
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-brand-text-3">
             No image
+          </div>
+        )}
+        {/* Play-icon overlay when this card has a video — signals the
+            operator can click through to the Meta Ad Library to watch. */}
+        {isVideoAd && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/55 text-white shadow-lg">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </span>
           </div>
         )}
         {ad.is_active && (

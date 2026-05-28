@@ -18,6 +18,11 @@ export interface MetaAdCard {
   cta_text: string;
   image_url: string;
   video_url: string;
+  // Poster frame for video ads (FB returns video_preview_image_url),
+  // and a watermarked-thumbnail fallback for everything else. Without
+  // this, video-ad cards render as "No image" tiles since image_url is
+  // empty for videos.
+  thumbnail_url: string;
 }
 
 export interface MetaAd {

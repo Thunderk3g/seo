@@ -106,15 +106,20 @@ class Command(BaseCommand):
         # ── Competitor snapshots ──────────────────────────────────
         if include_competitors:
             self.stdout.write(self.style.NOTICE("\n── Competitor content maps ──"))
-            domains = (
+            # Iterate by parent brand (hdfclife.com), not raw target_domain.
+            # Otherwise www.hdfclife.com and auth.hdfclife.com get picked
+            # twice — and the operator's "for hdfclife.com" intent matches
+            # the brand, not one specific subdomain string.
+            parents = (
                 CrawlSnapshot.objects
                 .filter(kind="competitor", status="complete")
-                .values_list("target_domain", flat=True)
+                .exclude(parent_domain="")
+                .values_list("parent_domain", flat=True)
                 .distinct()
             )
-            for td in sorted(d for d in domains if d):
+            for brand in sorted(set(parents)):
                 self._refresh_one_competitor(
-                    td, CrawlSnapshot, embed_snapshot, project_snapshot_3d,
+                    brand, CrawlSnapshot, embed_snapshot, project_snapshot_3d,
                     options,
                 )
 
@@ -123,14 +128,20 @@ class Command(BaseCommand):
         options,
     ) -> None:
         """Pick the latest non-empty snapshot for ``domain`` and refresh
-        its content map. Each competitor's map is isolated from the
+        its content map. ``domain`` is the parent brand (e.g. hdfclife.com);
+        we match by ``parent_domain`` so www.hdfclife.com and any other
+        subdomain snapshot for the same brand are eligible — whichever
+        is freshest wins. Each competitor's map is isolated from the
         others because every PageEmbedding row carries snapshot_id."""
+        from apps.crawler.util.host import apex
+
+        target_apex = apex(domain) or domain
         snap = (
             CrawlSnapshot.objects.annotate(n=Count("pages"))
             .filter(
                 kind="competitor",
                 status="complete",
-                target_domain__iexact=domain,
+                parent_domain=target_apex,
                 n__gte=3,
             )
             .order_by("-started_at")

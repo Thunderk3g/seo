@@ -196,6 +196,59 @@ export function usePageDetail(
   });
 }
 
+// Per-URL content cluster view — counterpart of the corpus-wide content
+// map, scoped to one page. Shows how this page's chunks distribute across
+// classified page_type + product.
+export interface PageClusterChunk {
+  chunk_idx: number;
+  text: string;
+  page_type: string;
+  products: string[];
+  confidence: number;
+  coord_x: number | null;
+  coord_y: number | null;
+  coord_z: number | null;
+}
+
+export interface PageClusterBreakdownRow {
+  label: string;
+  count: number;
+  pct: number;
+  page_type?: string;
+  product?: string;
+}
+
+export interface PageClustersResponse {
+  snapshot_id: string;
+  snapshot_kind: string;
+  snapshot_domain: string;
+  url: string;
+  url_b64: string;
+  page_title: string;
+  total_chunks: number;
+  chunks: PageClusterChunk[];
+  page_type_breakdown: PageClusterBreakdownRow[];
+  product_breakdown: PageClusterBreakdownRow[];
+  error?: string;
+}
+
+export function usePageClusters(
+  snapshotId: string | null,
+  urlB64: string | null,
+) {
+  return useQuery({
+    queryKey: ['seo-page-clusters', { snapshotId, urlB64 }],
+    queryFn: () =>
+      api.get<PageClustersResponse>(
+        `/seo/page/${snapshotId || ''}/${urlB64 || ''}/clusters/`,
+      ),
+    enabled: Boolean(snapshotId && urlB64),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}
+
 // Phase 7 — competitor keyword intelligence.
 export interface SemrushKeywordRow {
   keyword: string;
