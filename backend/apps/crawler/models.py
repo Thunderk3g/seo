@@ -63,6 +63,11 @@ class CrawlSnapshot(models.Model):
     class Kind(models.TextChoices):
         BAJAJ = "bajaj", "Bajaj (own site)"
         COMPETITOR = "competitor", "Competitor"
+        # Ad-hoc dashboard URL — synchronous fetch + parse on demand,
+        # used by the Quick URL Crawl card. One singleton snapshot per
+        # host so repeated ad-hoc fetches of the same site aggregate
+        # naturally (instead of one snapshot per URL).
+        ADHOC = "adhoc", "Ad-hoc URL"
 
     class Status(models.TextChoices):
         RUNNING = "running", "Running"
@@ -85,6 +90,14 @@ class CrawlSnapshot(models.Model):
         help_text="Primary host being crawled — equals urlparse(seed_url).netloc "
                   "for Bajaj, and the competitor's apex domain for competitor crawls. "
                   "Indexed for per-domain Health Score lookups.",
+    )
+    # Registrable parent of target_domain (e.g. `auth.hdfclife.com` ->
+    # `hdfclife.com`). Auto-computed in save() from target_domain via
+    # apps.crawler.util.host.apex. Denormalized so the Crawled-competitors
+    # UI can group rows without recomputing the PSL match on every read.
+    parent_domain = models.CharField(
+        max_length=255, blank=True, default="", db_index=True,
+        help_text="Registrable apex of target_domain — set automatically.",
     )
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.RUNNING,
@@ -111,6 +124,68 @@ class CrawlSnapshot(models.Model):
 
     def __str__(self) -> str:
         return f"{self.engine}@{self.started_at.isoformat() if self.started_at else 'pending'}"
+
+    def save(self, *args, **kwargs):
+        # Keep parent_domain in lockstep with target_domain. Recomputes
+        # every save (cheap, ~µs) so legacy rows that had a stale value
+        # before this column existed get corrected the next time anything
+        # touches them. apex() is import-cycle-safe (no Django imports).
+        if self.target_domain:
+            from .util.host import apex
+            self.parent_domain = apex(self.target_domain)
+        super().save(*args, **kwargs)
+
+
+class SystemSetting(models.Model):
+    """Operator-tunable singleton flags + values.
+
+    Used for things that need to persist across container restarts but
+    don't justify their own model + admin surface. Today: the
+    ``competitor_walk_paused`` boolean — flipping it stops the 03:00 IST
+    cron from invoking the per-domain walks without touching code or
+    the Celery beat schedule.
+
+    Read via ``SystemSetting.get_bool(key, default)`` /
+    ``SystemSetting.get_value(key, default)``. Writes use the standard
+    ``update_or_create`` upsert.
+    """
+
+    key = models.CharField(max_length=128, primary_key=True)
+    value = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("key",)
+
+    def __str__(self) -> str:
+        return f"SystemSetting({self.key}={self.value!r})"
+
+    @classmethod
+    def get_value(cls, key: str, default=None):
+        try:
+            row = cls.objects.filter(pk=key).first()
+        except Exception:  # noqa: BLE001
+            return default
+        if row is None:
+            return default
+        # JSONField stores `{"v": <anything>}` so the column shape stays
+        # uniform across types. Old rows that wrote raw values still work
+        # because the column accepts any JSON.
+        v = row.value
+        if isinstance(v, dict) and "v" in v:
+            return v["v"]
+        return v
+
+    @classmethod
+    def get_bool(cls, key: str, default: bool = False) -> bool:
+        v = cls.get_value(key, default)
+        return bool(v)
+
+    @classmethod
+    def set_value(cls, key: str, value) -> None:
+        cls.objects.update_or_create(
+            pk=key, defaults={"value": {"v": value}},
+        )
 
 
 class CrawlerPageResult(models.Model):

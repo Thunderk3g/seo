@@ -74,20 +74,61 @@ services:
       - ./backend/models:/app/models
     depends_on: [db, redis]
 
+  # ── Celery workers (Phase 5 queue isolation) ──────────────────────────
+  # Three queues so RAM-hungry crawl tasks can't starve the fast LLM /
+  # ad-hoc / grade tasks that share the default queue. Each container
+  # runs the same image but listens on a different `-Q`. Queue routing
+  # is defined in backend/config/celery.py::task_routes.
+  #
+  # Service name `worker` (singular) is kept as an alias for the default
+  # queue so existing `docker compose exec worker …` muscle-memory
+  # continues to work.
   worker:
     build: { context: ./backend }
-    # Celery app lives at backend/config/celery.py and is exported as
-    # `celery_app` from backend/config/__init__.py — `-A config` resolves it.
-    command: celery -A config worker -l info
+    command: celery -A config worker -l info -Q default --concurrency=4
     env_file: [.env]
     environment:
       DB_HOST: db
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
-      # Scrapy-playwright runs on AsyncioSelectorReactor; the spider
-      # pipeline does sync Django ORM writes from worker threads off
-      # that reactor. Django's async-detection raises
-      # SynchronousOnlyOperation unless we set the escape hatch here.
+      DJANGO_ALLOW_ASYNC_UNSAFE: "true"
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+      - ./backend/reports:/app/reports
+      - ./backend/models:/app/models
+    depends_on: [db, redis]
+
+  worker_bajaj:
+    build: { context: ./backend }
+    # Bajaj nightly crawl: Playwright drives Chromium → RAM-heavy. One
+    # task at a time. Restarts every 20 tasks to recycle Chromium
+    # subprocesses (see worker_max_tasks_per_child in celery.py).
+    command: celery -A config worker -l info -Q bajaj_crawl --concurrency=1
+    env_file: [.env]
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_ALLOW_ASYNC_UNSAFE: "true"
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+      - ./backend/reports:/app/reports
+      - ./backend/models:/app/models
+    depends_on: [db, redis]
+
+  worker_comp:
+    build: { context: ./backend }
+    # Competitor walks + content-map refresh. Scrapy already concurrent-
+    # crawls within a single domain; we run two workers so two domains
+    # walk in parallel without RAM blow-up.
+    command: celery -A config worker -l info -Q comp_crawl --concurrency=2
+    env_file: [.env]
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
       DJANGO_ALLOW_ASYNC_UNSAFE: "true"
     volumes:
       - ./backend:/app

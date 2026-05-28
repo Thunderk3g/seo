@@ -949,11 +949,10 @@ def content_map_3d_view(request):
       1. ?snapshot=<uuid>  — exact match
       2. ?domain=<host>    — latest non-empty COMPLETE competitor
                              snapshot for that target_domain
-      3. (default)         — latest snapshot of any kind
-
-    Each competitor gets its own content map because every
-    PageEmbedding row carries snapshot_id; there's no cross-domain
-    bleed. Returns 404 only when no snapshot at all can be resolved.
+      3. (default)         — latest non-empty BAJAJ snapshot. Never
+                             latest-overall: that lets a competitor crawl
+                             bleed onto the ours-side page when it ran
+                             more recently than the last Bajaj crawl.
     """
     from django.db.models import Count
 
@@ -978,7 +977,12 @@ def content_map_3d_view(request):
             .first()
         )
     else:
-        snap = CrawlSnapshot.objects.order_by("-started_at").first()
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(kind="bajaj", n__gte=1)
+            .order_by("-started_at")
+            .first()
+        )
     if snap is None:
         return Response(
             {"error": "no snapshot", "domain": domain or None},
@@ -1066,22 +1070,54 @@ def snapshots_list_view(_request):
 @api_view(["GET"])
 def content_clusters_view(request):
     """GET /api/v1/crawler/content/clusters
-    Params: snapshot=<id> (optional, defaults to latest),
-            mode=primary|multi (default primary).
+    Params:
+      snapshot=<id>   — exact snapshot UUID
+      domain=<host>   — latest non-empty COMPLETE competitor snapshot for host
+      mode=primary|multi (default primary).
 
     Returns the hierarchical Product → Page-type → pages tree, plus an
     `uncertain` bucket. Pure rule-based — no LLM, no embeddings required.
+
+    When neither snapshot nor domain is given, defaults to the latest
+    Bajaj snapshot — NOT the latest snapshot overall. Without that scope
+    a competitor crawl that ran more recently than the last Bajaj crawl
+    would bleed competitor URLs into the ours-side cluster tree (the
+    "tataaia URLs showing under Bajaj's clusters" bug).
     """
+    from django.db.models import Count
+
     from .models import CrawlSnapshot
     from .content.clusters import build_clusters
 
-    snap_id = request.GET.get("snapshot", "")
-    snap = (
-        CrawlSnapshot.objects.filter(id=snap_id).first()
-        if snap_id else CrawlSnapshot.objects.order_by("-started_at").first()
-    )
+    snap_id = (request.GET.get("snapshot") or "").strip()
+    domain = (request.GET.get("domain") or "").strip().lower()
+    snap = None
+    if snap_id:
+        snap = CrawlSnapshot.objects.filter(id=snap_id).first()
+    elif domain:
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(
+                kind="competitor",
+                status="complete",
+                target_domain__iexact=domain,
+                n__gte=1,
+            )
+            .order_by("-started_at")
+            .first()
+        )
+    else:
+        snap = (
+            CrawlSnapshot.objects.annotate(n=Count("pages"))
+            .filter(kind="bajaj", n__gte=1)
+            .order_by("-started_at")
+            .first()
+        )
     if snap is None:
-        return Response({"error": "no snapshot"}, status=404)
+        return Response(
+            {"error": "no snapshot", "domain": domain or None},
+            status=404,
+        )
 
     mode = request.GET.get("mode", "primary").lower()
     if mode not in ("primary", "multi"):
@@ -1231,4 +1267,135 @@ def backlinks_view(request):
     return Response({
         "summary": summary(),
         "backlinks": recent_backlinks(max(1, min(limit, 500))),
+    })
+
+
+# ── Ad-hoc URL crawler ─────────────────────────────────────────────
+
+
+@api_view(["POST"])
+def adhoc_crawl_view(request):
+    """POST /api/v1/crawler/adhoc — quick-fetch one URL and return its
+    snapshot+url_b64 so the dashboard can route to /adhoc/pages/<id>/<b64>.
+
+    Synchronous (the operator clicks "Quick crawl" and waits 5-30 s).
+    Reuses the competitor crawler's ``fetch_one`` so the parser is
+    identical to what the nightly competitor walk produces — H1s,
+    internal links, image audit, JSON-LD, body text. One singleton
+    ``CrawlSnapshot(kind='adhoc', target_domain=<host>)`` per host so
+    repeated fetches of the same site aggregate naturally; URL-level
+    rows are unique per (snapshot, url).
+
+    Request body: ``{"url": "https://example.com/page"}``
+    Response: ``{"snapshot_id": "<uuid>", "url_b64": "<b64>", "url": "<final_url>"}``
+    """
+    from urllib.parse import urlparse
+    import base64 as _b64
+
+    from apps.seo_ai.adapters.competitor_crawler import CompetitorCrawler
+    from .models import CrawlSnapshot, CrawlerPageResult
+    from .util.host import apex
+
+    raw_url = (request.data.get("url") or "").strip()
+    if not raw_url:
+        return Response(
+            {"error": "url required"}, status=400,
+        )
+    if "://" not in raw_url:
+        raw_url = "https://" + raw_url
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return Response(
+            {"error": "invalid url — must be http(s) with a host"},
+            status=400,
+        )
+    host = parsed.netloc.lower()
+    parent = apex(host)
+
+    # Singleton snapshot per host: get_or_create keyed on (kind, target_domain).
+    snap, _ = CrawlSnapshot.objects.get_or_create(
+        kind=CrawlSnapshot.Kind.ADHOC,
+        target_domain=host,
+        defaults={
+            "engine": CrawlSnapshot.Engine.LEGACY,
+            "status": CrawlSnapshot.Status.COMPLETE,
+            "seed_url": raw_url,
+            "allowed_domains": [host],
+            "notes": "Ad-hoc URL crawl singleton — one row per host.",
+        },
+    )
+    # parent_domain auto-fills via save() override; nothing to set here.
+
+    # Synchronous fetch. CompetitorCrawler.__new__ dispatches to the
+    # Scrapy subclass when COMPETITOR_ENGINE=scrapy, but Scrapy's
+    # fetch_one spawns a per-call subprocess that's too slow for an
+    # interactive dashboard click. Bypass __new__ to get the legacy
+    # requests-based path which uses a single HTTP call and returns in
+    # 1-3 s for typical pages.
+    crawler = object.__new__(CompetitorCrawler)
+    CompetitorCrawler.__init__(crawler)
+    page = crawler.fetch_one(raw_url)
+    if page is None or page.error:
+        err = (page.error if page is not None else "fetch returned None")
+        return Response(
+            {
+                "error": f"fetch failed: {err}",
+                "url": raw_url,
+                "status_code": page.status_code if page else 0,
+            },
+            status=502,
+        )
+
+    # Map CompetitorPage dataclass → CrawlerPageResult row. Mirrors the
+    # mapping in apps.seo_ai.pipelines.competitor_postgres.process_item
+    # so the unified page-detail serializer renders identically.
+    final_url = (page.final_url or raw_url)[:2048]
+    page_url = (page.url or raw_url)[:2048]
+    CrawlerPageResult.objects.update_or_create(
+        snapshot=snap,
+        url=page_url,
+        defaults={
+            "final_url": final_url,
+            "status_code": str(page.status_code or "")[:4],
+            "status": "ok" if (page.status_code or 0) == 200 else "non-200",
+            "content_type": "text/html",
+            "response_time_ms": int(page.response_time_ms or 0),
+            "title": (page.title or "")[:1024],
+            "word_count": int(page.word_count or 0),
+            "body_text": page.body_text or "",
+            "meta_description": (page.meta_description or "")[:1024],
+            "canonical": (page.canonical or "")[:2048],
+            "meta_robots": (page.meta_robots or "")[:256],
+            "subdomain": "adhoc",
+            "page_type": "",
+            "from_sitemap": False,
+            "indexed_status": CrawlerPageResult.IndexedStatus.UNKNOWN,
+            "headings_json": list(page.headings or []),
+            "internal_links_json": list(page.internal_links or []),
+            "external_links_json": list(page.external_links or []),
+            "images_json": list(page.images or []),
+            "videos_json": list(page.videos or []),
+            "jsonld_types": list(page.schema_types or []),
+            "jsonld_count": len(page.schema_types or []),
+        },
+    )
+
+    # Update snapshot counters (simple +1; not idempotent across re-fetches
+    # of the same URL, but ad-hoc snapshots are operator-driven and the
+    # counters are advisory only).
+    from django.db.models import F
+    CrawlSnapshot.objects.filter(id=snap.id).update(
+        pages_attempted=F("pages_attempted") + 1,
+        pages_ok=F("pages_ok") + (1 if (page.status_code or 0) == 200 else 0),
+    )
+
+    url_b64 = _b64.urlsafe_b64encode(page_url.encode("utf-8")).decode("ascii").rstrip("=")
+    return Response({
+        "snapshot_id": str(snap.id),
+        "url_b64": url_b64,
+        "url": page_url,
+        "final_url": final_url,
+        "status_code": page.status_code or 0,
+        "host": host,
+        "parent_domain": parent,
     })

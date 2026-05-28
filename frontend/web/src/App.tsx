@@ -33,6 +33,7 @@ import CompareCrawlsPage from './crawler/pages/CompareCrawlsPage';
 import GeoDashboard from './crawler/pages/GeoDashboard';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
+import PageDetailPage from './pages/PageDetailPage';
 import ContentWriterPage from './pages/ContentWriterPage';
 import CustodiansPage from './pages/CustodiansPage';
 import BriefingsPage from './pages/BriefingsPage';
@@ -68,6 +69,19 @@ export default function App() {
               component={CompetitorPageDetailPage}
             />
             <Route path="/competitors/:domain" component={CompetitorDetailPage} />
+
+            {/* Snapshot-explicit per-URL detail — same layout as the
+                competitor route, but driven by an explicit snapshot ID.
+                Used by Bajaj Page Explorer and the ad-hoc URL crawler so
+                all three sources render with one component. */}
+            <Route
+              path="/crawler/pages/:snapshotId/:b64"
+              component={PageDetailPage}
+            />
+            <Route
+              path="/adhoc/pages/:snapshotId/:b64"
+              component={PageDetailPage}
+            />
 
             {/* ── Crawler Engine (v2) ─────────────────────────── */}
             {/* /crawler/settings removed per request — to restore, re-add  */}

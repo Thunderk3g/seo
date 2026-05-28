@@ -233,8 +233,27 @@ function filterQuery(filters?: ReportFilters): string {
   return s ? `?${s}` : '';
 }
 
+export interface AdhocCrawlResponse {
+  snapshot_id: string;
+  url_b64: string;
+  url: string;
+  final_url: string;
+  status_code: number;
+  host: string;
+  parent_domain: string;
+  error?: string;
+}
+
 export const crawlerApi = {
   status: () => request<CrawlerStatus>('/status'),
+  // Ad-hoc URL crawler — synchronous fetch + parse of one URL into a
+  // singleton "adhoc" snapshot. Returns the IDs the unified
+  // PageDetailPage needs to render the structured detail view.
+  adhocCrawl: (url: string) =>
+    request<AdhocCrawlResponse>('/adhoc', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
   summary: () => request<CrawlerSummary>('/summary'),
   breakdown: () => request<SummaryBreakdown>('/summary/breakdown'),
   tables: () => request<TablesResponse>('/tables'),
@@ -521,9 +540,12 @@ export const crawlerApi = {
   // Phase 1c — Hierarchical content cluster tree (Product → Page-type → pages).
   // Pure rule-based; works without embeddings. `mode` toggles between
   // single-primary-product and multi-label assignment.
-  contentClusters: (params: { snapshot?: string; mode?: 'primary' | 'multi' } = {}) => {
+  // `domain` resolves to the latest non-empty competitor snapshot for that
+  // host. No domain + no snapshot = latest Bajaj (ours-side default).
+  contentClusters: (params: { snapshot?: string; domain?: string; mode?: 'primary' | 'multi' } = {}) => {
     const qs = new URLSearchParams();
     if (params.snapshot) qs.set('snapshot', params.snapshot);
+    if (params.domain) qs.set('domain', params.domain);
     if (params.mode) qs.set('mode', params.mode);
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{

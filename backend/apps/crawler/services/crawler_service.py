@@ -76,10 +76,12 @@ def start() -> tuple[bool, str]:
     log_bus.reset()
 
     # Prefer Celery so the crawl survives WSGI worker recycles in prod.
-    # Fall back to a daemon thread when:
-    #  - The broker is unreachable (dev without Redis), or
-    #  - CRAWLER_USE_CELERY=false is set explicitly (debugging / local
-    #    runs where you want stack traces in the request shell).
+    # When CRAWLER_USE_CELERY=false is set explicitly (local dev without
+    # Redis), use a daemon thread. Otherwise: if Celery enqueue fails,
+    # surface the error to the caller as HTTP 503 instead of silently
+    # spinning up an in-process thread in the gunicorn worker — that
+    # thread dies on the next worker recycle and the crawl is lost
+    # without any signal to the operator. (Phase 5 resilience.)
     use_celery = os.environ.get("CRAWLER_USE_CELERY", "true").lower() in (
         "1", "true", "yes", "on",
     )
@@ -87,18 +89,25 @@ def start() -> tuple[bool, str]:
         try:
             from ..tasks import run_crawl_task
             run_crawl_task.delay()
-            log.info("Crawl queued on Celery")
+            log.info("Crawl queued on Celery (queue=bajaj_crawl)")
             return True, "Crawl queued on Celery."
-        except Exception as exc:  # noqa: BLE001 — broker may be down in dev
-            log.warning(
-                "celery enqueue failed (%s) — falling back to in-process thread",
-                exc,
+        except Exception as exc:  # noqa: BLE001 — broker may be down
+            log.error(
+                "celery enqueue failed (%s) — refusing to silently fall back "
+                "to an in-process thread; check Redis broker", exc,
+            )
+            return False, (
+                f"Celery broker unavailable ({exc}). Crawls are not queued "
+                "in-process by design — fix the broker, or set "
+                "CRAWLER_USE_CELERY=false to opt into the in-process thread "
+                "explicitly (dev only)."
             )
 
+    # Explicit dev path: CRAWLER_USE_CELERY=false. Operator-acknowledged.
     t = threading.Thread(target=run_crawl, daemon=True, name="crawl-engine")
     t.start()
-    log.info("Crawl thread started (in-process fallback)")
-    return True, "Crawl started (in-process)."
+    log.info("Crawl thread started (CRAWLER_USE_CELERY=false; in-process)")
+    return True, "Crawl started (in-process — dev mode)."
 
 
 def _thread_alive(name: str) -> bool:

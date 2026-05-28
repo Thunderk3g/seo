@@ -85,3 +85,23 @@ pyspellchecker>=0.8
 
 # Phase E — vendored axe-core for offline accessibility checks.
 axe-core-python>=0.1.0
+
+# ── Content map: semantic embeddings + 3D projection ──────────────
+# MiniLM sentence-transformer powers apps.crawler.content.embedder
+# (one 384-dim vector per ~500-char chunk). Pulls in torch (~800MB
+# wheel) — the heaviest dep in the image, kept here intentionally
+# because UI surfaces (3D content map, competitor content maps,
+# embedding-based classifier tier 3) all depend on it.
+# CPU-only torch is fine; we do not GPU-accelerate.
+sentence-transformers>=2.5
+# UMAP reduces 384-dim chunk embeddings to 3D coords for the scatter
+# plot in the content-map UI. numba pulled in transitively for speed.
+umap-learn>=0.5
+
+# ── Subdomain → parent-brand consolidation ────────────────────────
+# tldextract uses the Public Suffix List to derive the registrable
+# domain (`auth.hdfclife.com` -> `hdfclife.com`). We pin the bundled
+# snapshot via suffix_list_urls=() in apps.crawler.util.host so it
+# never reaches out to the network at import time — the Bajaj corp
+# proxy will block the publicsuffix.org fetch otherwise.
+tldextract>=5.1

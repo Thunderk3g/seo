@@ -11,6 +11,7 @@ import { api } from '../client';
 
 export interface CompetitorCrawlRow {
   domain: string;
+  parent_domain: string;
   snapshot_id: string;
   started_at: string | null;
   finished_at: string | null;

@@ -117,6 +117,7 @@ def walk_competitor_task(
     # Resolve seeds based on mode. Sitemap mode discovers them; the
     # other modes use whatever the caller passed (or the homepage).
     sitemap_count = 0
+    fallback_path = ""
     if mode == "sitemap":
         try:
             urls = SitemapXMLAdapter().discover_urls(
@@ -127,13 +128,24 @@ def walk_competitor_task(
             urls = []
         if not urls:
             # No sitemap → fall back to homepage walk so we still pull
-            # *something*. Operator can see "0 sitemap URLs, fell back
-            # to walk" in the return dict and dig in.
+            # *something*. We try a few common homepage variants because
+            # some sites only respond to one (e.g. an apex-only host
+            # refuses the www subdomain, or vice versa). The Scrapy walk
+            # filters non-host links anyway, so a couple of extra seeds
+            # is cheap insurance against a single 404 wiping the run.
             logger.info(
                 "%s: no sitemap URLs found, falling back to walk mode", domain,
             )
             mode = "walk"
-            seeds = seeds or [f"https://{domain}/"]
+            fallback_path = "sitemap_empty"
+            candidate_seeds = seeds or [
+                f"https://{domain}/",
+                f"https://www.{domain}/" if not domain.startswith("www.") else f"https://{domain.removeprefix('www.')}/",
+                f"https://{domain}/index.html",
+            ]
+            # De-duplicate while preserving order — set() would scramble it.
+            seen: set[str] = set()
+            seeds = [s for s in candidate_seeds if s and not (s in seen or seen.add(s))]
             max_depth = max_depth or 2
             max_pages = max_pages or 500
         else:
@@ -199,6 +211,7 @@ def walk_competitor_task(
         "ok": True,
         "domain": domain,
         "mode": mode,
+        "fallback_path": fallback_path,
         "sitemap_seed_count": sitemap_count,
         "pages": len(pages),
         "ok_pages": ok,
@@ -230,8 +243,27 @@ def walk_competitor_roster_task(
     Runs sequentially (not via ``.delay()`` fan-out) so the worker
     doesn't open eight Playwright browsers at once — Scrapy already
     concurrent-crawls within a single domain.
+
+    Operator pause toggle: if SystemSetting('competitor_walk_paused')
+    is true, the task returns early without doing anything. Lets the
+    dashboard freeze the 03:00 IST cron during incidents (e.g. a
+    competitor's WAF is throwing 429s and we don't want to keep
+    hammering them) without re-deploying or editing the beat schedule.
     """
     from django.conf import settings as dj_settings
+
+    from apps.crawler.models import SystemSetting
+
+    if SystemSetting.get_bool("competitor_walk_paused", default=False):
+        logger.info(
+            "walk_competitor_roster: paused via SystemSetting toggle "
+            "— skipping this run",
+        )
+        return {
+            "ok": True,
+            "paused": True,
+            "reason": "competitor_walk_paused setting is True",
+        }
 
     if domains is None:
         cfg = getattr(dj_settings, "COMPETITOR", {}) or {}

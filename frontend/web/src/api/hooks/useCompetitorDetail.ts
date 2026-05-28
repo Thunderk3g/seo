@@ -164,3 +164,100 @@ export function useCompetitorPageDetail(
     retry: false,
   });
 }
+
+// Snapshot-explicit per-URL detail. Same payload shape as
+// CompetitorPageDetail but works for any CrawlSnapshot kind
+// (Bajaj / competitor / ad-hoc). Backend adds snapshot_kind +
+// snapshot_domain so the page can swap its breadcrumb without a
+// second request.
+export interface PageDetailResponse extends CompetitorPageDetail {
+  snapshot_kind: 'bajaj' | 'competitor' | 'adhoc' | string;
+  snapshot_domain: string;
+}
+
+export function pageDetailKey(snapshotId: string, urlB64: string) {
+  return ['seo-page-detail', { snapshotId, urlB64 }] as const;
+}
+
+export function usePageDetail(
+  snapshotId: string | null,
+  urlB64: string | null,
+) {
+  return useQuery({
+    queryKey: pageDetailKey(snapshotId || '', urlB64 || ''),
+    queryFn: () =>
+      api.get<PageDetailResponse>(
+        `/seo/page/${snapshotId || ''}/${urlB64 || ''}/`,
+      ),
+    enabled: Boolean(snapshotId && urlB64),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}
+
+// Phase 7 — competitor keyword intelligence.
+export interface SemrushKeywordRow {
+  keyword: string;
+  position: number;
+  previous_position: number;
+  search_volume: number;
+  cpc: number;
+  competition: number;
+  traffic_pct: number;
+  url: string;
+}
+
+export interface ContentKeywordRow {
+  keyword: string;
+  score: number;
+  page_count: number;
+  sample_pages: Array<{ url: string; title: string }>;
+}
+
+export interface SemrushKeywordsResponse {
+  available: boolean;
+  domain: string;
+  count: number;
+  keywords: SemrushKeywordRow[];
+  error?: string;
+}
+
+export interface ContentKeywordsResponse {
+  available: boolean;
+  domain: string;
+  parent_domain?: string;
+  subdomain_count?: number;
+  page_count?: number;
+  count: number;
+  keywords: ContentKeywordRow[];
+  error?: string;
+}
+
+export function useCompetitorKeywordsSemrush(domain: string | null) {
+  return useQuery({
+    queryKey: ['competitor-keywords-semrush', { domain }],
+    queryFn: () =>
+      api.get<SemrushKeywordsResponse>(
+        `/seo/competitor/${encodeURIComponent(domain || '')}/keywords/semrush/`,
+      ),
+    enabled: Boolean(domain),
+    staleTime: 30 * 60_000, // Semrush data barely moves; cache 30 min
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}
+
+export function useCompetitorKeywordsContent(domain: string | null) {
+  return useQuery({
+    queryKey: ['competitor-keywords-content', { domain }],
+    queryFn: () =>
+      api.get<ContentKeywordsResponse>(
+        `/seo/competitor/${encodeURIComponent(domain || '')}/keywords/content/`,
+      ),
+    enabled: Boolean(domain),
+    staleTime: 10 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}

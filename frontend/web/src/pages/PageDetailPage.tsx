@@ -1,20 +1,22 @@
 /**
- * CompetitorPageDetailPage — `/competitors/<domain>/pages/<b64url>`.
+ * PageDetailPage — snapshot-explicit per-URL detail.
  *
- * Full per-URL detail. Replaces the raw-text body dump that lived
- * inside the DeepCrawlPanel expandable rows. Renders:
+ * Mirror of CompetitorPageDetailPage's layout, but driven by an explicit
+ * snapshot ID instead of (domain → latest snapshot) resolution. Used by:
+ *   - Bajaj Page Explorer rows → /crawler/pages/:snapshotId/:b64
+ *   - Phase 3 ad-hoc URL crawler → /adhoc/pages/:snapshotId/:b64
+ *   - (Future) any caller that knows the exact snapshot.
  *
- *   * Page header with domain breadcrumb + external link + KPIs
- *   * Schema-type chips, meta description, H1/H2 lists
- *   * Body text in a readable typographic block (whitespace preserved)
- *   * Sidebar with CWV grid + link counts
+ * The render is identical to the competitor variant — operator gets the
+ * same H1 tree, internal-link inventory, image audit, body, sidebar
+ * CWV for Bajaj URLs as they already do for competitor URLs.
  *
- * Body text comes from the competitor crawler's full-body capture
- * (commit 1f78935 onwards). No emojis. Bajaj brand throughout.
+ * The breadcrumb + back-link swap based on `data.snapshot_kind`, which
+ * the backend returns alongside the page payload.
  */
 import { useState } from 'react';
 import { Link, useParams } from 'wouter';
-import { useCompetitorPageDetail } from '../api/hooks/useCompetitorDetail';
+import { usePageDetail } from '../api/hooks/useCompetitorDetail';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -22,16 +24,18 @@ import PageReaderView from '../components/competitors/PageReaderView';
 
 type ViewMode = 'reader' | 'detail';
 
-export default function CompetitorPageDetailPage() {
+export default function PageDetailPage() {
   const [view, setView] = useState<ViewMode>('reader');
-  const params = useParams<{ domain: string; b64: string }>();
-  const domain = params.domain ? decodeURIComponent(params.domain) : null;
-  const urlB64 = params.b64 || null;
-  const { data, isLoading, isError, error } = useCompetitorPageDetail(domain, urlB64);
+  const params = useParams<{ snapshotId: string; b64: string }>();
+  const snapshotId = params.snapshotId ?? null;
+  const urlB64 = params.b64 ?? null;
+  const { data, isLoading, isError, error } = usePageDetail(snapshotId, urlB64);
 
   if (isLoading) {
     return (
-      <div className="bajaj-ui p-6 text-sm text-brand-text-3">Loading page detail…</div>
+      <div className="bajaj-ui p-6 text-sm text-brand-text-3">
+        Loading page detail…
+      </div>
     );
   }
 
@@ -41,37 +45,80 @@ export default function CompetitorPageDetailPage() {
         <Card className="border-severity-error">
           <CardContent className="py-4">
             <div className="text-severity-error">
-              {error instanceof Error ? error.message : 'Failed to load page detail'}
+              {error instanceof Error
+                ? error.message
+                : 'Failed to load page detail'}
             </div>
-            {domain && (
-              <Link href={`/competitors/${encodeURIComponent(domain)}`}>
-                <Button variant="outline" size="sm" className="mt-3">
-                  Back to {domain}
-                </Button>
-              </Link>
-            )}
+            <Link href="/crawler">
+              <Button variant="outline" size="sm" className="mt-3">
+                Back to crawler
+              </Button>
+            </Link>
           </CardContent>
         </Card>
       </div>
     );
   }
 
+  const kind = data.snapshot_kind || 'bajaj';
+  const breadcrumb =
+    kind === 'competitor' ? (
+      <>
+        <Link href="/competitors">
+          <span className="cursor-pointer hover:underline">Competitors</span>
+        </Link>
+        <span className="mx-2">/</span>
+        <Link
+          href={`/competitors/${encodeURIComponent(data.snapshot_domain || data.domain)}`}
+        >
+          <span className="cursor-pointer hover:underline">
+            {data.snapshot_domain || data.domain}
+          </span>
+        </Link>
+        <span className="mx-2">/</span>
+        <span>page detail</span>
+      </>
+    ) : kind === 'adhoc' ? (
+      <>
+        <Link href="/">
+          <span className="cursor-pointer hover:underline">Dashboard</span>
+        </Link>
+        <span className="mx-2">/</span>
+        <span>Ad-hoc crawl</span>
+        <span className="mx-2">/</span>
+        <span>page detail</span>
+      </>
+    ) : (
+      <>
+        <Link href="/crawler">
+          <span className="cursor-pointer hover:underline">Bajaj crawler</span>
+        </Link>
+        <span className="mx-2">/</span>
+        <Link href="/crawler/pages">
+          <span className="cursor-pointer hover:underline">Page Explorer</span>
+        </Link>
+        <span className="mx-2">/</span>
+        <span>page detail</span>
+      </>
+    );
+
+  const sourceBadge =
+    kind === 'bajaj' ? (
+      <Badge variant="default">Bajaj</Badge>
+    ) : kind === 'adhoc' ? (
+      <Badge variant="notice">Ad-hoc</Badge>
+    ) : (
+      <Badge variant="outline">{data.snapshot_domain || 'Competitor'}</Badge>
+    );
+
   return (
     <div className="bajaj-ui p-6">
       <header className="mb-6">
-        <div className="text-xs text-brand-text-3">
-          <Link href="/competitors">
-            <span className="cursor-pointer hover:underline">Competitors</span>
-          </Link>
-          <span className="mx-2">/</span>
-          <Link href={`/competitors/${encodeURIComponent(data.domain)}`}>
-            <span className="cursor-pointer hover:underline">{data.domain}</span>
-          </Link>
-          <span className="mx-2">/</span>
-          <span>page detail</span>
-        </div>
+        <div className="text-xs text-brand-text-3">{breadcrumb}</div>
         <h1 className="mt-1 text-2xl font-semibold text-brand-text">
-          {data.title || <span className="italic text-brand-text-3">— no title —</span>}
+          {data.title || (
+            <span className="italic text-brand-text-3">— no title —</span>
+          )}
         </h1>
         <a
           href={data.url}
@@ -82,6 +129,7 @@ export default function CompetitorPageDetailPage() {
           {data.url}
         </a>
         <div className="mt-3 flex flex-wrap items-center gap-2">
+          {sourceBadge}
           {data.page_type && <Badge variant="notice">{data.page_type}</Badge>}
           {data.has_schema && <Badge variant="success">schema</Badge>}
           {data.last_modified && (
@@ -124,16 +172,14 @@ export default function CompetitorPageDetailPage() {
             </Card>
           )}
 
-          {/* Phase 2A.5 — full outline tree in document order.
-              Falls back to the legacy h1_texts/h2_texts when the
-              structural payload is empty (older GapDeepCrawl rows). */}
           {data.headings && data.headings.length > 0 ? (
             <Card className="mb-4">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm">
                   Page outline
                   <span className="ml-2 text-xs font-normal text-brand-text-3">
-                    {data.headings.length} heading{data.headings.length === 1 ? '' : 's'}
+                    {data.headings.length} heading
+                    {data.headings.length === 1 ? '' : 's'}
                   </span>
                 </CardTitle>
               </CardHeader>
@@ -142,11 +188,17 @@ export default function CompetitorPageDetailPage() {
                   {data.headings.map((h) => {
                     const indent = (h.level - 1) * 16;
                     const color =
-                      h.level === 1 ? 'text-brand-text font-semibold' :
-                      h.level === 2 ? 'text-brand-text font-medium' :
-                      'text-brand-text-2';
+                      h.level === 1
+                        ? 'text-brand-text font-semibold'
+                        : h.level === 2
+                          ? 'text-brand-text font-medium'
+                          : 'text-brand-text-2';
                     return (
-                      <li key={h.idx} style={{ paddingLeft: indent }} className={color}>
+                      <li
+                        key={h.idx}
+                        style={{ paddingLeft: indent }}
+                        className={color}
+                      >
                         <span className="mr-2 inline-block w-7 rounded bg-brand-surface-2 px-1.5 py-0.5 text-center text-[10px] font-mono uppercase text-brand-text-3">
                           h{h.level}
                         </span>
@@ -157,42 +209,49 @@ export default function CompetitorPageDetailPage() {
                 </ul>
               </CardContent>
             </Card>
-          ) : (data.h1_texts.length > 0 || data.h2_texts.length > 0) && (
-            <Card className="mb-4">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Headings (legacy)</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                {data.h1_texts.length > 0 && (
-                  <div>
-                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand-text-3">H1</div>
-                    <ul className="space-y-1">
-                      {data.h1_texts.map((h, i) => (
-                        <li key={i} className="font-medium text-brand-text">{h}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {data.h2_texts.length > 0 && (
-                  <div>
-                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand-text-3">
-                      H2 ({data.h2_texts.length})
+          ) : (
+            (data.h1_texts.length > 0 || data.h2_texts.length > 0) && (
+              <Card className="mb-4">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Headings (legacy)</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  {data.h1_texts.length > 0 && (
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand-text-3">
+                        H1
+                      </div>
+                      <ul className="space-y-1">
+                        {data.h1_texts.map((h, i) => (
+                          <li
+                            key={i}
+                            className="font-medium text-brand-text"
+                          >
+                            {h}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                    <ul className="space-y-1">
-                      {data.h2_texts.slice(0, 12).map((h, i) => (
-                        <li key={i} className="text-brand-text-2">{h}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <div className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
-                  Re-run the gap pipeline to capture the full outline + link inventory + image audit.
-                </div>
-              </CardContent>
-            </Card>
+                  )}
+                  {data.h2_texts.length > 0 && (
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-brand-text-3">
+                        H2 ({data.h2_texts.length})
+                      </div>
+                      <ul className="space-y-1">
+                        {data.h2_texts.slice(0, 12).map((h, i) => (
+                          <li key={i} className="text-brand-text-2">
+                            {h}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )
           )}
 
-          {/* Internal link inventory — what the user explicitly asked for. */}
           {data.internal_links && data.internal_links.length > 0 && (
             <Card className="mb-4">
               <CardHeader className="pb-2">
@@ -201,10 +260,13 @@ export default function CompetitorPageDetailPage() {
                   <span className="ml-2 text-xs font-normal text-brand-text-3">
                     {data.internal_links.length} ·{' '}
                     {Object.entries(
-                      data.internal_links.reduce((a: Record<string, number>, l) => {
-                        a[l.kind] = (a[l.kind] || 0) + 1;
-                        return a;
-                      }, {})
+                      data.internal_links.reduce(
+                        (a: Record<string, number>, l) => {
+                          a[l.kind] = (a[l.kind] || 0) + 1;
+                          return a;
+                        },
+                        {},
+                      ),
                     )
                       .sort((a, b) => b[1] - a[1])
                       .slice(0, 6)
@@ -228,7 +290,13 @@ export default function CompetitorPageDetailPage() {
                       {data.internal_links.map((l, i) => (
                         <tr key={i} className="border-t border-brand-border">
                           <td className="px-2 py-1 align-top">
-                            <Badge variant={l.kind === 'calculator' ? 'success' : 'outline'}>
+                            <Badge
+                              variant={
+                                l.kind === 'calculator'
+                                  ? 'success'
+                                  : 'outline'
+                              }
+                            >
                               {l.kind}
                             </Badge>
                           </td>
@@ -236,11 +304,19 @@ export default function CompetitorPageDetailPage() {
                             {l.section || '—'}
                           </td>
                           <td className="px-2 py-1 align-top text-brand-text max-w-[18rem] truncate">
-                            {l.anchor || <span className="italic text-brand-text-3">— no anchor —</span>}
+                            {l.anchor || (
+                              <span className="italic text-brand-text-3">
+                                — no anchor —
+                              </span>
+                            )}
                           </td>
                           <td className="px-2 py-1 align-top font-mono">
-                            <a href={l.href} target="_blank" rel="noreferrer"
-                               className="text-brand-accent hover:underline break-all">
+                            <a
+                              href={l.href}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand-accent hover:underline break-all"
+                            >
                               {l.href}
                             </a>
                           </td>
@@ -253,14 +329,14 @@ export default function CompetitorPageDetailPage() {
             </Card>
           )}
 
-          {/* Image audit — per-image alt + dimensions. */}
           {data.images && data.images.length > 0 && (
             <Card className="mb-4">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm">
                   Images
                   <span className="ml-2 text-xs font-normal text-brand-text-3">
-                    {data.images.length} · {data.images.filter((i) => i.alt).length} with alt
+                    {data.images.length} ·{' '}
+                    {data.images.filter((i) => i.alt).length} with alt
                   </span>
                 </CardTitle>
               </CardHeader>
@@ -280,18 +356,26 @@ export default function CompetitorPageDetailPage() {
                         <tr key={i} className="border-t border-brand-border">
                           <td className="px-2 py-1 align-top max-w-[16rem] truncate">
                             {img.alt || (
-                              <span className="italic text-severity-error">— missing alt —</span>
+                              <span className="italic text-severity-error">
+                                — missing alt —
+                              </span>
                             )}
                           </td>
                           <td className="px-2 py-1 align-top font-mono text-brand-text-3">
-                            {img.width && img.height ? `${img.width}×${img.height}` : '—'}
+                            {img.width && img.height
+                              ? `${img.width}×${img.height}`
+                              : '—'}
                           </td>
                           <td className="px-2 py-1 align-top font-mono text-brand-text-3">
                             {img.loading || '—'}
                           </td>
                           <td className="px-2 py-1 align-top font-mono">
-                            <a href={img.src} target="_blank" rel="noreferrer"
-                               className="text-brand-accent hover:underline break-all">
+                            <a
+                              href={img.src}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand-accent hover:underline break-all"
+                            >
                               {img.src}
                             </a>
                           </td>
@@ -309,7 +393,8 @@ export default function CompetitorPageDetailPage() {
               <CardTitle className="text-sm">
                 Body text
                 <span className="ml-2 text-xs font-normal text-brand-text-3">
-                  {data.body_text.length.toLocaleString()} chars · {data.word_count.toLocaleString()} words
+                  {data.body_text.length.toLocaleString()} chars ·{' '}
+                  {data.word_count.toLocaleString()} words
                 </span>
               </CardTitle>
             </CardHeader>
@@ -320,7 +405,7 @@ export default function CompetitorPageDetailPage() {
                 </div>
               ) : (
                 <div className="italic text-brand-text-3">
-                  No body text captured. Re-run the gap pipeline to populate.
+                  No body text captured for this URL.
                 </div>
               )}
             </CardContent>
@@ -337,15 +422,27 @@ export default function CompetitorPageDetailPage() {
                 <SideStat label="PageSpeed" value={data.pagespeed_score} />
                 <SideStat
                   label="LCP"
-                  value={data.lcp_ms !== null && data.lcp_ms !== undefined ? `${data.lcp_ms}ms` : null}
+                  value={
+                    data.lcp_ms !== null && data.lcp_ms !== undefined
+                      ? `${data.lcp_ms}ms`
+                      : null
+                  }
                 />
                 <SideStat
                   label="CLS"
-                  value={data.cls !== null && data.cls !== undefined ? data.cls.toFixed(3) : null}
+                  value={
+                    data.cls !== null && data.cls !== undefined
+                      ? data.cls.toFixed(3)
+                      : null
+                  }
                 />
                 <SideStat
                   label="INP"
-                  value={data.inp_ms !== null && data.inp_ms !== undefined ? `${data.inp_ms}ms` : null}
+                  value={
+                    data.inp_ms !== null && data.inp_ms !== undefined
+                      ? `${data.inp_ms}ms`
+                      : null
+                  }
                 />
               </div>
             </CardContent>
@@ -356,9 +453,18 @@ export default function CompetitorPageDetailPage() {
               <CardTitle className="text-sm">Structural signals</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              <SideStat label="Response time" value={`${data.response_time_ms} ms`} />
-              <SideStat label="Internal links" value={data.internal_link_count} />
-              <SideStat label="External links" value={data.external_link_count} />
+              <SideStat
+                label="Response time"
+                value={`${data.response_time_ms} ms`}
+              />
+              <SideStat
+                label="Internal links"
+                value={data.internal_link_count}
+              />
+              <SideStat
+                label="External links"
+                value={data.external_link_count}
+              />
             </CardContent>
           </Card>
 
@@ -369,7 +475,9 @@ export default function CompetitorPageDetailPage() {
               </CardHeader>
               <CardContent className="flex flex-wrap gap-1.5">
                 {data.schema_types.map((t) => (
-                  <Badge key={t} variant="outline">{t}</Badge>
+                  <Badge key={t} variant="outline">
+                    {t}
+                  </Badge>
                 ))}
               </CardContent>
             </Card>
@@ -396,8 +504,12 @@ function SideStat({
         : value;
   return (
     <div>
-      <div className="text-xs uppercase tracking-wide text-brand-text-3">{label}</div>
-      <div className="mt-0.5 text-base font-semibold text-brand-text">{rendered}</div>
+      <div className="text-xs uppercase tracking-wide text-brand-text-3">
+        {label}
+      </div>
+      <div className="mt-0.5 text-base font-semibold text-brand-text">
+        {rendered}
+      </div>
     </div>
   );
 }
