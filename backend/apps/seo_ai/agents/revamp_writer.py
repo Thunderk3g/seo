@@ -153,10 +153,20 @@ Output a JSON object with this exact shape:
 
 Rules — non-negotiable:
 
+* NEVER propose a heading, body section, or FAQ entry whose name is
+  "Other", "Misc", "Miscellaneous", "Uncategorised", "Uncategorized",
+  or any "Cluster N" placeholder. These are internal bookkeeping
+  labels, not real sections worth mirroring.
+* NEVER propose sections about products UNRELATED to the page's topic
+  (e.g. do NOT add "Term Insurance Products" to a child-insurance
+  rewrite). Stay scoped to the page's intent.
 * ``source_ref`` MUST be a well-formed reference per ``evidence_patterns``
   (scalar name or array_name[idx] within bounds). The server's critic
   validates each ref against the canonical evidence dict — refs outside
   the patterns are dropped.
+* Each ``source_ref`` should be used by AT MOST ONE generated item.
+  Don't reuse the same ref across multiple proposed headings — that
+  signals the model is padding.
 * For ``proposed_title`` and ``proposed_meta_description``, cite ``our:title``
   / ``our:meta_description`` as the source. The text is YOUR rewrite; the
   ref says "I'm rewriting THIS original."

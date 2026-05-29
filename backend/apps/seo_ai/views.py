@@ -2936,6 +2936,10 @@ def _serialize_proposal(p) -> dict:
         "cost_usd": p.cost_usd,
         "error": p.error or "",
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        # Phase F5 — cluster-first outputs surface on every re-open.
+        "our_sections": getattr(p, "our_sections", []) or [],
+        "their_sections": getattr(p, "their_sections", []) or [],
+        "gap": getattr(p, "gap", {}) or {},
     }
 
 
@@ -3020,6 +3024,13 @@ def content_writer_revamp(request: Request):
         tokens_out=result.tokens_out,
         cost_usd=result.cost_usd,
         error=result.error or "",
+        # Persist cluster-first outputs so the Gap + Sections panels
+        # render every time the operator re-opens the proposal.
+        our_sections=payload.our_sections,
+        their_sections=[
+            {"brand": b, "sections": s} for b, s in payload.their_sections
+        ],
+        gap=payload.gap,
     )
 
     response = _serialize_proposal(proposal)

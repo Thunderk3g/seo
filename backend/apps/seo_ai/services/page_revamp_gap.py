@@ -116,6 +116,25 @@ _FOOTER_HINTS = (
     "privacy", "terms", "compliance", "irdai", "ombudsman",
     "social", "follow us", "investor relations", "corporate",
 )
+# Catch-all section names the LLM clusterer produces when it can't
+# confidently assign every heading. These must NEVER appear in the
+# gap output — they're internal bookkeeping, not real competitor
+# sections we should mirror.
+_CATCHALL_SECTION_HINTS = (
+    "other",
+    "uncategorised",
+    "uncategorized",
+    "misc",
+    "miscellaneous",
+    "cluster ",
+)
+
+
+def _is_catchall_section(name: str) -> bool:
+    n = (name or "").strip().lower()
+    if not n:
+        return True
+    return any(h in n for h in _CATCHALL_SECTION_HINTS)
 
 
 def _normalise_name(name: str) -> str:
@@ -223,14 +242,20 @@ def compute_gap(
     # ─ Section-name diff (Jaccard on normalised section names) ─
     our_section_names: dict[str, dict] = {}
     for s in (our_sections or []):
-        norm = _normalise_name(s.get("name") or "")
+        name = s.get("name") or ""
+        if _is_catchall_section(name):
+            continue  # never count our own catch-all as "we have it"
+        norm = _normalise_name(name)
         if norm:
             our_section_names[norm] = s
 
     competitor_section_index: dict[str, dict[str, Any]] = {}
     for brand, sections in their_sections_by_brand:
         for s in sections or []:
-            norm = _normalise_name(s.get("name") or "")
+            name = s.get("name") or ""
+            if _is_catchall_section(name):
+                continue  # never count their catch-all as "they have it"
+            norm = _normalise_name(name)
             if not norm:
                 continue
             entry = competitor_section_index.setdefault(

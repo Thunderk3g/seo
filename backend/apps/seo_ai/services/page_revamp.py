@@ -89,6 +89,61 @@ def _title_tokens(title: str) -> set[str]:
     return {t for t in raw if t not in _URL_STOP_TOKENS}
 
 
+_SOFT_404_TITLE_SIGNALS = (
+    "page not found",
+    "not found",
+    "404",
+    "error",
+    "oops",
+    "unable to find",
+)
+
+
+def looks_like_soft_404(row) -> tuple[bool, str]:
+    """Detect pages that returned HTTP 200 but are actually 404s or
+    empty nav-only landings.
+
+    Returns ``(is_junk, reason)``. Operator-visible reason flows into
+    the warnings list so they know why a brand got dropped.
+
+    Heuristics, ordered cheapest-first:
+      1. Title contains 'page not found' / 'not found' / '404'.
+      2. Title is empty OR matches the URL path verbatim (CMS leak).
+      3. Zero H1 tags AND <1500 words — almost always a nav-only stub.
+      4. Only-H2 text matches CMS boilerplate like "Add new comment".
+    """
+    if row is None:
+        return True, "no row"
+    title = (row.title or "").strip().lower()
+    url = (row.url or "").lower()
+    for hint in _SOFT_404_TITLE_SIGNALS:
+        if hint in title:
+            return True, f"title says '{hint}'"
+    # Title equals URL path → CMS didn't fill in <title>.
+    path_part = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if title and (title.startswith("/") or path_part and path_part in title.replace(" ", "")):
+        # Looks like the URL path is the title verbatim.
+        if "|" not in title or title.split("|", 1)[0].strip().startswith("/"):
+            return True, "title is the URL path"
+    headings = list(row.headings_json or [])
+    h1_count = sum(
+        1 for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 1
+    )
+    word_count = int(row.word_count or 0)
+    if h1_count == 0 and word_count < 1500:
+        return True, f"no H1 + only {word_count} words"
+    h2_texts = [
+        (h.get("text") or "").strip().lower()
+        for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 2
+    ]
+    cms_boilerplate = {"add new comment", "leave a reply", "post a comment"}
+    if h2_texts and all(t in cms_boilerplate or len(t) < 4 for t in h2_texts):
+        return True, "CMS boilerplate (no real H2 content)"
+    return False, ""
+
+
 def _overlap_score(
     our_url_tokens: list[str],
     our_title_tokens: set[str],
@@ -227,10 +282,19 @@ def find_competitor_counterparts(
         q = Q()
         for tok in top_signal_tokens:
             q |= Q(url__icontains=tok)
+        # Include ad-hoc snapshot rows scoped to the same brand —
+        # those are URLs we previously live-fetched during a prior
+        # revamp / Quick URL Crawl. Without this, every URL that the
+        # daily walk's sitemap doesn't list (which is most product
+        # pages once you go past the first few) gets re-fetched on
+        # every revamp run, wasting both time and crawl politeness.
         cands = (
             CrawlerPageResult.objects
             .filter(
-                snapshot__kind=CrawlSnapshot.Kind.COMPETITOR,
+                snapshot__kind__in=[
+                    CrawlSnapshot.Kind.COMPETITOR,
+                    CrawlSnapshot.Kind.ADHOC,
+                ],
                 snapshot__parent_domain=brand,
                 status_code="200",
             )
@@ -712,6 +776,16 @@ def build_revamp_payload(
                 if row is None or not row.body_text:
                     warnings.append(
                         f"could not refresh {m.url}; skipping it"
+                    )
+                    continue
+                # Soft-404 guard: drop counterparts that look like
+                # error pages or nav-only stubs. Without this, the LLM
+                # ingests their footer/nav as "competitor sections"
+                # and proposes them as headings on our rewrite.
+                is_junk, reason = looks_like_soft_404(row)
+                if is_junk:
+                    warnings.append(
+                        f"{m.brand}: dropped match {m.url} — {reason}"
                     )
                     continue
                 counterparts.append((m, _to_page_signals(row)))

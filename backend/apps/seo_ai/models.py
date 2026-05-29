@@ -710,6 +710,13 @@ class ContentRewriteProposal(models.Model):
     prompt_instructions = models.TextField(blank=True, default="")
     competitor_matches = models.JSONField(default=list, blank=True)
 
+    # Phase F5 (cluster-first orchestrator) — persisted so re-opening a
+    # past proposal renders the Gap Panel + Sections Comparison without
+    # re-running the LLM. Same shapes the orchestrator returns inline.
+    our_sections = models.JSONField(default=list, blank=True)
+    their_sections = models.JSONField(default=list, blank=True)
+    gap = models.JSONField(default=dict, blank=True)
+
     # Frozen at generation time so re-reading the same proposal later
     # shows what the agent actually had access to — not whatever the
     # crawler has captured *since*.
