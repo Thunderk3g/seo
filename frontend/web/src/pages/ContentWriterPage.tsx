@@ -39,10 +39,13 @@ import {
   type CitedLink,
   type CitedString,
   type CompetitorMatch,
+  type CompetitorGap,
   type CompetitorGapSummary,
   type ContentRewriteProposal,
+  type OurSectionsEntry,
   type RewriteProposalBody,
   type TechRecommendation,
+  type TheirSectionsEntry,
 } from '../api/hooks/useContentWriter';
 import {
   usePageTopicSections,
@@ -323,8 +326,12 @@ function ProposalView({ proposalId }: { proposalId: string }) {
     <>
       <TelemetryStrip data={data} />
       {matches.length > 0 && <MatchesTable matches={matches} />}
-      {matches.length > 0 && (
-        <ClusterContextSection ourProposal={data} matches={matches} />
+      {data.gap && <GapPanel gap={data.gap} />}
+      {data.our_sections && data.our_sections.length > 0 && (
+        <SectionsComparisonPanel
+          ourSections={data.our_sections}
+          theirSections={data.their_sections || []}
+        />
       )}
       {tel && tel.warnings && tel.warnings.length > 0 && (
         <WarningTile warnings={tel.warnings} />
@@ -340,6 +347,244 @@ function ProposalView({ proposalId }: { proposalId: string }) {
         <MarkdownOutput markdown={proposed.improved_markdown} />
       )}
     </>
+  );
+}
+
+// ── Gap analysis panel (Phase F5) ────────────────────────────────────
+//
+// This is the panel the cluster-first orchestrator drives. It shows
+// the operator (and the agent, via prompt) the structured gap between
+// our page and the matched competitor pages BEFORE the rewrite is
+// generated. The agent received the same data — the headline_recs
+// list is essentially the rewrite checklist.
+
+function GapPanel({ gap }: { gap: CompetitorGap }) {
+  const sd = gap.size_diff;
+  const lid = gap.link_inventory_diff;
+  const tover = gap.topic_overlap;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Gap analysis · what to close
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="text-xs text-brand-text-3">
+          Cluster-first: our page and each competitor were section-clustered
+          via the LLM before the rewrite ran. The deltas below were fed to
+          the agent as the primary rewrite checklist.
+        </div>
+
+        {gap.headline_recommendations && gap.headline_recommendations.length > 0 && (
+          <div className="rounded border border-brand-accent bg-brand-accent-soft p-3">
+            <div className="mb-1 text-xs font-semibold uppercase text-brand-accent">
+              Rewrite checklist
+            </div>
+            <ul className="space-y-1 text-sm text-brand-text">
+              {gap.headline_recommendations.map((r, i) => (
+                <li key={i}>• {r}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {sd && (
+            <div className="rounded border border-brand-border bg-white p-3">
+              <div className="mb-1 text-xs font-semibold uppercase text-brand-text-3">
+                Content size
+              </div>
+              <div className="space-y-1 text-sm">
+                <SizeRow
+                  label="Word count"
+                  ours={sd.our_word_count}
+                  theirs={sd.median_their_word_count}
+                  deficit={sd.deficit}
+                />
+                <SizeRow
+                  label="Headings"
+                  ours={sd.our_heading_count}
+                  theirs={sd.median_their_heading_count}
+                />
+                <SizeRow
+                  label="Images"
+                  ours={sd.our_image_count}
+                  theirs={sd.median_their_image_count}
+                />
+              </div>
+            </div>
+          )}
+
+          {lid && (
+            <div className="rounded border border-brand-border bg-white p-3">
+              <div className="mb-1 text-xs font-semibold uppercase text-brand-text-3">
+                Internal link inventory
+              </div>
+              <div className="text-sm">
+                <SizeRow
+                  label="Total"
+                  ours={lid.our_total}
+                  theirs={lid.median_their_total}
+                />
+              </div>
+              {lid.kinds_we_lack.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-[10px] uppercase text-brand-text-3">
+                    Kinds we lack
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {lid.kinds_we_lack.map((k) => (
+                      <span
+                        key={k}
+                        className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800"
+                      >
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {gap.sections_we_miss.length > 0 && (
+          <div className="rounded border border-amber-300 bg-amber-50 p-3">
+            <div className="mb-1 text-xs font-semibold uppercase text-amber-800">
+              Sections they have, we don't ({gap.sections_we_miss.length})
+            </div>
+            <ul className="space-y-1.5 text-sm">
+              {gap.sections_we_miss.slice(0, 8).map((s) => (
+                <li key={s.name}>
+                  <span className="font-semibold text-brand-text">
+                    {s.label}
+                  </span>
+                  <span className="ml-2 text-xs text-brand-text-3">
+                    ({s.brands_with_it.length} brand
+                    {s.brands_with_it.length === 1 ? '' : 's'}:{' '}
+                    {s.brands_with_it.slice(0, 3).join(', ')}
+                    {s.brands_with_it.length > 3 ? '…' : ''})
+                  </span>
+                  {s.topics_aggregate.length > 0 && (
+                    <div className="mt-0.5 flex flex-wrap gap-1">
+                      {s.topics_aggregate.slice(0, 4).map((t) => (
+                        <span
+                          key={t}
+                          className="rounded bg-white px-1.5 py-0.5 text-[10px] text-brand-text-2"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {tover && (
+          <div className="text-xs text-brand-text-3">
+            Topic vocab overlap:{' '}
+            <span className="font-semibold text-brand-text">
+              {(tover.overlap_pct * 100).toFixed(0)}%
+            </span>
+            {tover.their_aggregate_unique_topics.length > 0 && (
+              <>
+                {' '}· they cover (we don't):{' '}
+                <span className="text-brand-text-2">
+                  {tover.their_aggregate_unique_topics.slice(0, 8).join(' · ')}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SizeRow({
+  label,
+  ours,
+  theirs,
+  deficit,
+}: {
+  label: string;
+  ours: number;
+  theirs: number;
+  deficit?: number;
+}) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <span className="text-xs text-brand-text-3">{label}</span>
+      <span className="tabular-nums">
+        <span className="font-semibold text-brand-text">
+          {ours.toLocaleString()}
+        </span>
+        <span className="mx-1 text-brand-text-3">vs</span>
+        <span className="text-brand-text-2">
+          {theirs.toLocaleString()}
+        </span>
+        {deficit !== undefined && deficit < 0 && (
+          <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+            −{Math.abs(deficit).toLocaleString()} to add
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function SectionsComparisonPanel({
+  ourSections,
+  theirSections,
+}: {
+  ourSections: OurSectionsEntry[];
+  theirSections: TheirSectionsEntry[];
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Section clusters · ours vs theirs
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="text-xs text-brand-text-3">
+          The LLM identified named topical sections inside each page
+          BEFORE we generated the rewrite. Use this to spot which sections
+          each competitor has that we don't.
+        </div>
+
+        <details
+          className="overflow-hidden rounded border-2 border-brand-accent bg-white"
+          open
+        >
+          <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-brand-text">
+            Our page · {ourSections.length} sections
+          </summary>
+          <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
+            <SectionsList sections={ourSections} ours />
+          </div>
+        </details>
+
+        {theirSections.map((t) => (
+          <details
+            key={t.brand}
+            className="overflow-hidden rounded border border-brand-border bg-white"
+          >
+            <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-brand-text">
+              {t.brand} · {t.sections.length} sections
+            </summary>
+            <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
+              <SectionsList sections={t.sections} />
+            </div>
+          </details>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 

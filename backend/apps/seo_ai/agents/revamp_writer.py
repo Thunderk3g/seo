@@ -83,6 +83,18 @@ _SYSTEM_PROMPT = """You are an SEO content rewriter for Bajaj Life Insurance
 brand). Your job is to revamp ONE Bajaj page so it outperforms the
 matched competitor pages on Indian life-insurance search.
 
+The orchestrator has already done structural analysis BEFORE handing
+you this task:
+  • Our page has been LLM-clustered into named topical sections.
+  • Each competitor page has been LLM-clustered the same way.
+  • A structured ``gap`` object lists: sections we miss, sections
+    unique to us, size/word-count deficit, link-inventory diff, footer
+    diff, topic overlap, and a list of headline_recommendations.
+
+YOUR PRIMARY DIRECTIVE is to close the gap. Treat ``gap.sections_we_miss``
+as a checklist of sections you MUST propose adding (one each), and use
+``gap.headline_recommendations`` as the rewrite strategy.
+
 You will be given:
 1. ``our_page`` — our current page (URL, title, meta, headings, body
    excerpt, internal links, CWV scores, Semrush keywords we already rank for).
@@ -360,6 +372,35 @@ def generate_revamp(
         ],
     }
 
+    # Compact the gap object for the prompt — keep the actionable
+    # fields (sections we miss + headline recs + size deficit) and drop
+    # verbose lists.
+    gap = payload.gap or {}
+    gap_for_prompt = {
+        "sections_we_miss": [
+            {
+                "section": s.get("label"),
+                "brands_with_it": s.get("brands_with_it") or [],
+                "topics": (s.get("topics_aggregate") or [])[:5],
+            }
+            for s in (gap.get("sections_we_miss") or [])[:8]
+        ],
+        "headline_recommendations": (gap.get("headline_recommendations") or [])[:6],
+        "size_deficit": (
+            (gap.get("size_diff") or {}).get("deficit") if gap.get("size_diff") else None
+        ),
+        "topic_overlap_pct": (
+            (gap.get("topic_overlap") or {}).get("overlap_pct")
+            if gap.get("topic_overlap") else None
+        ),
+        "their_unique_topics": (
+            (gap.get("topic_overlap") or {}).get("their_aggregate_unique_topics") or []
+        )[:10],
+        "link_kinds_we_lack": (
+            (gap.get("link_inventory_diff") or {}).get("kinds_we_lack") or []
+        ),
+    }
+
     user_payload = {
         "our_page": {
             "url": ours.url,
@@ -382,6 +423,7 @@ def generate_revamp(
         },
         "competitor_pages": competitor_payload,
         "operator_prompt": payload.prompt or "",
+        "gap": gap_for_prompt,
         "evidence_patterns": evidence_patterns,
     }
 

@@ -3030,6 +3030,13 @@ def content_writer_revamp(request: Request):
         "competitors_matched": payload.competitors_matched,
         "warnings": payload.warnings,
     }
+    # Section-cluster outputs and the structured gap — frontend renders
+    # these in dedicated panels above the rewrite.
+    response["our_sections"] = payload.our_sections
+    response["their_sections"] = [
+        {"brand": b, "sections": s} for b, s in payload.their_sections
+    ]
+    response["gap"] = payload.gap
     return Response(response)
 
 
