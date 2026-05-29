@@ -2230,6 +2230,36 @@ def competitor_detail_view(_request, domain: str):
     })
 
 
+def _clean_chunk_preview(text: str, max_chars: int = 280) -> str:
+    """Snap chunk text to word boundaries for human display.
+
+    The embedder chunker splits on raw chars (intentional for cosine
+    similarity), so chunks usually start mid-word ("olicy" instead of
+    "Policy") and end mid-sentence. That's fine for vector math but
+    ugly to read in the UI. We trim leading + trailing partial words
+    so the preview looks like a clean snippet.
+    """
+    if not text:
+        return ""
+    t = text.strip()
+    # Drop leading partial word: if first char is lowercase (likely a
+    # cut-off mid-word) AND a space exists within the first 40 chars,
+    # skip to that space. We keep proper-nouned starts intact.
+    if t and t[0].islower():
+        sp = t.find(" ")
+        if 0 < sp < 40:
+            t = t[sp + 1 :].lstrip()
+    if len(t) > max_chars:
+        cut = t[:max_chars]
+        last_space = cut.rfind(" ")
+        if last_space > max_chars * 0.6:
+            t = cut[:last_space].rstrip()
+        else:
+            t = cut.rstrip()
+        t += "…"
+    return t
+
+
 def _topic_cluster_chunks(chunks: list[dict], vectors: list[list[float]]) -> list[dict]:
     """Cluster a single page's chunks by topical similarity and label
     each cluster from its own dominant TF-IDF terms.
@@ -2290,71 +2320,86 @@ def _topic_cluster_chunks(chunks: list[dict], vectors: list[list[float]]) -> lis
         docs_per_cluster.setdefault(cid, []).append(c["text"] or "")
         indices_per_cluster.setdefault(cid, []).append(i)
 
-    out: list[dict] = []
-    for cid, docs in docs_per_cluster.items():
-        # TF-IDF inside this cluster only; pick top terms that contain
-        # at least one search-intent word so labels stay SEO-shaped.
-        joined = " ".join(docs)
-        if not joined.strip():
-            continue
+    # Discriminative TF-IDF: one document per cluster, not per chunk.
+    # This surfaces terms UNIQUE to each cluster (high tf in this doc,
+    # low df across all clusters), so labels don't all start with the
+    # corpus-wide "insurance" / "plan" noise.
+    cluster_ids = sorted(docs_per_cluster.keys())
+    cluster_docs = [" ".join(docs_per_cluster[cid]) for cid in cluster_ids]
+    cluster_term_ranking: dict[int, list[str]] = {cid: [] for cid in cluster_ids}
+    if cluster_docs:
         try:
-            vec = TfidfVectorizer(
-                ngram_range=(1, 2),
+            cluster_vec = TfidfVectorizer(
+                ngram_range=(1, 3),
                 stop_words=list(stop),
                 lowercase=True,
                 token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]{1,}\b",
-                max_features=200,
+                max_features=400,
             )
-            tfidf = vec.fit_transform(docs)
+            ctfidf = cluster_vec.fit_transform(cluster_docs)
         except ValueError:
-            terms = []
+            ctfidf = None
         else:
-            summed = tfidf.sum(axis=0).A1
-            term_list = vec.get_feature_names_out()
-            ranked = sorted(
-                zip(term_list, summed.tolist()),
-                key=lambda x: -x[1],
-            )
-            terms = [
-                t
-                for t, _s in ranked
-                if any(tok in SEARCH_INTENT_TERMS for tok in t.split())
-            ][:8]
-            if not terms:
-                terms = [t for t, _s in ranked[:8]]
+            cterms = cluster_vec.get_feature_names_out()
+            for row, cid in enumerate(cluster_ids):
+                arr = ctfidf.getrow(row).toarray().ravel()
+                ranked = sorted(
+                    zip(cterms, arr.tolist()),
+                    key=lambda x: -x[1],
+                )
+                # Prefer search-intent-shaped terms but fall back when
+                # none rank high.
+                with_intent = [
+                    t
+                    for t, _s in ranked
+                    if _s > 0
+                    and any(tok in SEARCH_INTENT_TERMS for tok in t.split())
+                ]
+                fallback = [t for t, _s in ranked if _s > 0]
+                cluster_term_ranking[cid] = (with_intent or fallback)[:8]
 
-        # Label: prefer the most specific multi-word term as the lead,
-        # because single-word "insurance" / "plan" / "policy" are
-        # page-wide noise — almost every cluster on an insurer page
-        # surfaces them first. A bigram like "term insurance" or
-        # "retirement plan" actually identifies the cluster's topic.
-        bigrams = [t for t in terms if " " in t]
-        unigrams = [t for t in terms if " " not in t]
-        lead = bigrams[0] if bigrams else (unigrams[0] if unigrams else "")
+    out: list[dict] = []
+    used_lead_tokens: set[str] = set()  # disambiguate labels across clusters
+    for cid in cluster_ids:
+        terms = cluster_term_ranking[cid]
+
+        # Label picking with cross-cluster disambiguation: choose the
+        # highest-ranked term whose primary token isn't already used
+        # as the lead for another cluster. Prefer multi-word terms.
+        sorted_terms = sorted(
+            terms,
+            key=lambda t: (
+                # 1. Penalise terms whose tokens are already a lead.
+                any(tok in used_lead_tokens for tok in t.split()),
+                # 2. Prefer multi-word (more specific) labels.
+                " " not in t,
+                # 3. Stable original order.
+                terms.index(t),
+            ),
+        )
+        lead = sorted_terms[0] if sorted_terms else ""
+        lead_tokens = set(lead.split())
+        # Secondary: same logic but must not overlap the lead.
         secondary = ""
-        for t in terms:
-            if t == lead:
-                continue
-            # Don't repeat a token already in the lead.
-            lead_tokens = set(lead.split())
-            if any(tok in lead_tokens for tok in t.split()):
+        for t in sorted_terms[1:]:
+            t_tokens = set(t.split())
+            if t_tokens & lead_tokens:
                 continue
             secondary = t
             break
+
+        used_lead_tokens.update(lead_tokens)
         label = (
             (lead + (" + " + secondary if secondary else "")).title()
             if lead
             else f"Cluster {cid}"
         )
 
-        # Representative chunk = the one nearest to the centroid.
         cluster_indices = indices_per_cluster[cid]
         cluster_vecs = X[cluster_indices]
         centroid = km.cluster_centers_[cid]
         dists = np.linalg.norm(cluster_vecs - centroid, axis=1)
-        ordered = [
-            cluster_indices[j] for j in dists.argsort()
-        ]
+        ordered = [cluster_indices[j] for j in dists.argsort()]
 
         out.append({
             "cluster_id": cid,
@@ -2365,7 +2410,7 @@ def _topic_cluster_chunks(chunks: list[dict], vectors: list[list[float]]) -> lis
             "sample_chunks": [
                 {
                     "chunk_idx": chunks[idx]["chunk_idx"],
-                    "text": chunks[idx]["text"],
+                    "text": _clean_chunk_preview(chunks[idx]["text"]),
                 }
                 for idx in ordered[:3]
             ],
@@ -2435,7 +2480,7 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
     pt_counter: dict[str, int] = {}
     prod_counter: dict[str, int] = {}
     for c in chunks_qs:
-        text_preview = (c.chunk_text or "")[:280]
+        text_preview = _clean_chunk_preview(c.chunk_text or "")
         products = list(c.products or [])
         chunks.append({
             "chunk_idx": c.chunk_idx,
