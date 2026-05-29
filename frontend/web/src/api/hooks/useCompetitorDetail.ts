@@ -208,6 +208,7 @@ export interface PageClusterChunk {
   coord_x: number | null;
   coord_y: number | null;
   coord_z: number | null;
+  topic_cluster_id: number | null;
 }
 
 export interface PageClusterBreakdownRow {
@@ -216,6 +217,16 @@ export interface PageClusterBreakdownRow {
   pct: number;
   page_type?: string;
   product?: string;
+}
+
+export interface PageTopicCluster {
+  cluster_id: number;
+  label: string;
+  keywords: string[];
+  chunk_count: number;
+  pct: number;
+  sample_chunks: Array<{ chunk_idx: number; text: string }>;
+  chunk_indices: number[];
 }
 
 export interface PageClustersResponse {
@@ -229,6 +240,7 @@ export interface PageClustersResponse {
   chunks: PageClusterChunk[];
   page_type_breakdown: PageClusterBreakdownRow[];
   product_breakdown: PageClusterBreakdownRow[];
+  topic_clusters: PageTopicCluster[];
   error?: string;
 }
 

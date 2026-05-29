@@ -18,6 +18,26 @@
 import { useMemo } from 'react';
 import { usePageClusters } from '../../api/hooks/useCompetitorDetail';
 
+// Palette for the auto-discovered topic clusters — bright, distinct.
+// We support up to 10 clusters per page (KMeans clamp on the backend).
+const TOPIC_COLOURS = [
+  '#003DA5', // Bajaj navy
+  '#10B981', // emerald
+  '#8B5CF6', // violet
+  '#F59E0B', // amber
+  '#EC4899', // pink
+  '#14B8A6', // teal
+  '#EF4444', // red
+  '#0EA5E9', // sky
+  '#FDB913', // Bajaj gold
+  '#A855F7', // purple
+];
+
+function colourForTopic(id: number | null): string {
+  if (id === null || id === undefined) return '#9CA3AF';
+  return TOPIC_COLOURS[id % TOPIC_COLOURS.length];
+}
+
 // Color palette synced with PRODUCT_COLOURS elsewhere so the operator
 // sees the same dot colors here as on the corpus content map.
 const PAGE_TYPE_COLOURS: Record<string, string> = {
@@ -101,6 +121,7 @@ function ChunkScatter({
     chunk_idx: number;
     text: string;
     page_type: string;
+    topic_cluster_id: number | null;
     coord_x: number | null;
     coord_y: number | null;
   }>;
@@ -158,11 +179,11 @@ function ChunkScatter({
               cx={scaleX(c.coord_x as number)}
               cy={scaleY(c.coord_y as number)}
               r={5}
-              fill={colourForPageType(c.page_type)}
-              opacity={0.8}
+              fill={colourForTopic(c.topic_cluster_id)}
+              opacity={0.85}
             >
               <title>
-                {c.page_type} · chunk {c.chunk_idx}
+                cluster {c.topic_cluster_id ?? '-'} · chunk {c.chunk_idx}
                 {'\n'}
                 {c.text}
               </title>
@@ -278,16 +299,90 @@ export default function PageClustersView({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-md border border-brand-border bg-card p-4 shadow-e1">
-        <div className="mb-3 flex items-baseline justify-between">
-          <h3 className="text-sm font-semibold text-brand-text">
-            Content distribution
-          </h3>
-          <span className="text-xs text-brand-text-3">
-            {data.total_chunks} chunk{data.total_chunks === 1 ? '' : 's'}
-          </span>
+      {/* Primary view: auto-discovered topics — what this page actually
+          covers, derived from semantic clustering of the chunks. The
+          rule-based page_type/product breakdowns below are kept as
+          secondary reference because they lump the whole page under
+          one label ("home", "product_landing", …) which loses signal. */}
+      {data.topic_clusters.length > 0 && (
+        <div className="rounded-md border border-brand-border bg-card p-4 shadow-e1">
+          <div className="mb-3 flex items-baseline justify-between">
+            <h3 className="text-sm font-semibold text-brand-text">
+              Topics on this page
+            </h3>
+            <span className="text-xs text-brand-text-3">
+              {data.total_chunks} chunk{data.total_chunks === 1 ? '' : 's'}{' '}
+              clustered into {data.topic_clusters.length} topic
+              {data.topic_clusters.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <ul className="space-y-2">
+            {data.topic_clusters.map((tc) => (
+              <li
+                key={tc.cluster_id}
+                className="rounded border border-brand-border bg-white p-3"
+                style={{ borderLeft: `4px solid ${colourForTopic(tc.cluster_id)}` }}
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-brand-text">
+                      {tc.label}
+                    </div>
+                    <div className="mt-0.5 truncate text-xs text-brand-text-3">
+                      {tc.keywords.slice(0, 6).join(' · ')}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-lg font-bold tabular-nums text-brand-text">
+                      {tc.pct}%
+                    </div>
+                    <div className="text-[10px] uppercase tracking-wide text-brand-text-3">
+                      {tc.chunk_count} chunk
+                      {tc.chunk_count === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                </div>
+                {tc.sample_chunks.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs text-brand-text-3 hover:text-brand-text-2">
+                      Sample text
+                    </summary>
+                    <div className="mt-1 space-y-1 rounded bg-brand-surface-2 p-2 text-xs leading-relaxed text-brand-text-2">
+                      {tc.sample_chunks.slice(0, 2).map((s) => (
+                        <div key={s.chunk_idx}>
+                          <span className="font-mono text-[10px] text-brand-text-3">
+                            #{s.chunk_idx}
+                          </span>{' '}
+                          {s.text}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
         </div>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      )}
+
+      {/* 2D scatter — now colored by topic_cluster_id so the visual
+          map matches the topic list above. */}
+      {data.chunks.length >= 4 && (
+        <div className="rounded-md border border-brand-border bg-card p-4 shadow-e1">
+          <div className="mb-2 text-sm font-semibold text-brand-text">
+            2D chunk map
+          </div>
+          <ChunkScatter chunks={data.chunks} />
+        </div>
+      )}
+
+      {/* Secondary: rule-classifier breakdowns. Lighter visual weight
+          because they're often degenerate ("100% home" on a homepage). */}
+      <details className="rounded-md border border-brand-border bg-card p-4 shadow-e1">
+        <summary className="cursor-pointer text-sm font-semibold text-brand-text">
+          Rule-classifier breakdown (page-type + product)
+        </summary>
+        <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-brand-text-3">
               By page-type
@@ -309,16 +404,7 @@ export default function PageClustersView({
             />
           </div>
         </div>
-      </div>
-
-      {data.chunks.length >= 4 && (
-        <div className="rounded-md border border-brand-border bg-card p-4 shadow-e1">
-          <div className="mb-2 text-sm font-semibold text-brand-text">
-            2D chunk map
-          </div>
-          <ChunkScatter chunks={data.chunks} />
-        </div>
-      )}
+      </details>
 
       <div className="rounded-md border border-brand-border bg-card p-4 shadow-e1">
         <div className="mb-2 flex items-baseline justify-between">
