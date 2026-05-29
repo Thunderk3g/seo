@@ -44,6 +44,7 @@ import {
   type RewriteProposalBody,
   type TechRecommendation,
 } from '../api/hooks/useContentWriter';
+import { useCompetitorPageStructure } from '../api/hooks/useCompetitorDetail';
 
 const PROGRESS_STAGES = [
   { at: 0, label: 'Live-crawling your URL' },
@@ -319,6 +320,7 @@ function ProposalView({ proposalId }: { proposalId: string }) {
     <>
       <TelemetryStrip data={data} />
       {matches.length > 0 && <MatchesTable matches={matches} />}
+      {matches.length > 0 && <ClusterContextSection matches={matches} />}
       {tel && tel.warnings && tel.warnings.length > 0 && (
         <WarningTile warnings={tel.warnings} />
       )}
@@ -333,6 +335,180 @@ function ProposalView({ proposalId }: { proposalId: string }) {
         <MarkdownOutput markdown={proposed.improved_markdown} />
       )}
     </>
+  );
+}
+
+// ── Cluster-context section ─────────────────────────────────────────
+//
+// For each matched competitor: pull their LLM-clustered page structure
+// (re-uses the same endpoint that powers CompetitorPageStructureSection
+// on /competitors/<domain>/) and highlight which cluster the matched
+// URL belongs to. The operator sees not just "we compared with HDFC's
+// term-insurance-plans" but "that page sits in their Term Insurance
+// Products cluster which has these 3 sibling pages we could also
+// link to".
+
+function ClusterContextSection({ matches }: { matches: CompetitorMatch[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Page-structure context · how each match sits in their site
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="text-xs text-brand-text-3">
+          The LLM clusters each competitor's pages into named topical
+          buckets. We highlight the cluster the matched URL belongs to,
+          plus its siblings — useful for spotting related pages we
+          might cover or internal-link to.
+        </div>
+        {matches.map((m) => (
+          <CompetitorClusterCard key={m.brand} match={m} />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CompetitorClusterCard({ match }: { match: CompetitorMatch }) {
+  const [expanded, setExpanded] = useState(false);
+  const { data, isLoading, isError, error } = useCompetitorPageStructure(
+    match.brand,
+    { maxPages: 60 },
+  );
+
+  // Find the cluster containing the matched URL.
+  const matchedCluster = useMemo(() => {
+    if (!data?.clusters) return null;
+    for (const c of data.clusters) {
+      if (c.pages.some((p) => p.url === match.url)) {
+        return c;
+      }
+    }
+    return null;
+  }, [data, match.url]);
+
+  return (
+    <div className="overflow-hidden rounded border border-brand-border bg-white">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-start gap-3 px-3 py-2 text-left"
+      >
+        <span className="w-3 text-xs text-brand-text-3">
+          {expanded ? '▾' : '▸'}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-semibold text-brand-text">
+              {match.brand}
+            </span>
+            <span className="text-[10px] text-brand-text-3">
+              {(match.confidence * 100).toFixed(0)}% match
+            </span>
+          </div>
+          {isLoading && (
+            <div className="text-xs text-brand-text-3">
+              Building page structure…
+            </div>
+          )}
+          {isError && (
+            <div className="text-xs text-brand-text-3">
+              Failed: {error instanceof Error ? error.message : 'unknown'}
+            </div>
+          )}
+          {!isLoading && !isError && matchedCluster && (
+            <div className="text-xs text-brand-text-2">
+              Sits in{' '}
+              <span className="font-semibold text-brand-accent">
+                {matchedCluster.name}
+              </span>{' '}
+              · {matchedCluster.pages.length} sibling page
+              {matchedCluster.pages.length === 1 ? '' : 's'}
+            </div>
+          )}
+          {!isLoading && !isError && !matchedCluster && data && (
+            <div className="text-xs text-brand-text-3">
+              URL not found in structure scan (may be outside the top{' '}
+              {data.total_pages_sampled} pages).
+            </div>
+          )}
+        </div>
+        {data && (
+          <span className="shrink-0 text-[10px] text-brand-text-3">
+            {data.total_pages_sampled}/{data.total_pages_in_corpus} pages ·{' '}
+            {data.clusters.length} clusters
+          </span>
+        )}
+      </button>
+      {expanded && data && data.clusters && data.clusters.length > 0 && (
+        <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
+          <div className="space-y-2">
+            {data.clusters.map((c) => {
+              const isMatched = matchedCluster?.cluster_id === c.cluster_id;
+              return (
+                <div
+                  key={c.cluster_id}
+                  className={`rounded border bg-white p-2 ${
+                    isMatched
+                      ? 'border-brand-accent shadow-sm'
+                      : 'border-brand-border'
+                  }`}
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-xs font-semibold text-brand-text">
+                      {c.name}
+                    </span>
+                    <span className="text-[10px] text-brand-text-3">
+                      {c.pages.length} page
+                      {c.pages.length === 1 ? '' : 's'}
+                    </span>
+                    {isMatched && (
+                      <span className="rounded bg-brand-accent px-1.5 py-0.5 text-[9px] font-semibold uppercase text-white">
+                        matched URL here
+                      </span>
+                    )}
+                  </div>
+                  {c.rationale && (
+                    <div className="mt-0.5 text-[10px] italic text-brand-text-3">
+                      {c.rationale}
+                    </div>
+                  )}
+                  <ul className="mt-1 space-y-0.5">
+                    {c.pages.slice(0, 5).map((p) => {
+                      const isMatchedUrl = p.url === match.url;
+                      return (
+                        <li key={p.url} className="text-[11px]">
+                          <a
+                            href={p.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={
+                              isMatchedUrl
+                                ? 'font-mono font-semibold text-brand-accent hover:underline'
+                                : 'font-mono text-brand-text-2 hover:underline'
+                            }
+                            title={p.url}
+                          >
+                            {p.title || '(untitled)'}
+                          </a>
+                        </li>
+                      );
+                    })}
+                    {c.pages.length > 5 && (
+                      <li className="text-[10px] italic text-brand-text-3">
+                        + {c.pages.length - 5} more
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
