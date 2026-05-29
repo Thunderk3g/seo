@@ -2230,18 +2230,165 @@ def competitor_detail_view(_request, domain: str):
     })
 
 
+def _topic_cluster_chunks(chunks: list[dict], vectors: list[list[float]]) -> list[dict]:
+    """Cluster a single page's chunks by topical similarity and label
+    each cluster from its own dominant TF-IDF terms.
+
+    The rule classifier (``classify_row``) labels each chunk by the
+    page-level URL/title — so on a homepage every chunk inherits
+    page_type="home" with no products, which is useless for "what does
+    this page cover" analysis. We re-cluster the chunk vectors with
+    KMeans and derive a label per cluster from its TF-IDF top terms.
+
+    k is picked heuristically — ``n_chunks // 14``, clamped to [3, 10].
+    Sufficient for a long homepage with ~100 chunks (yields ~7 clusters)
+    and degrades gracefully on shorter pages (a 25-chunk product page
+    gets k=3).
+    """
+    n = len(chunks)
+    if n < 3:
+        return []
+
+    try:
+        import numpy as np
+        from sklearn.cluster import KMeans
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.feature_extraction import _stop_words as _sw_module
+    except ImportError:
+        return []
+
+    # Sanity-check vector shape — skip clustering if vectors are missing
+    # or jagged (e.g. mid-migration data).
+    if not vectors or not vectors[0]:
+        return []
+    try:
+        X = np.asarray(vectors, dtype=np.float32)
+    except (TypeError, ValueError):
+        return []
+    if X.ndim != 2 or X.shape[0] != n:
+        return []
+
+    k = max(3, min(10, n // 14))
+    try:
+        km = KMeans(n_clusters=k, random_state=42, n_init=10).fit(X)
+    except Exception:  # noqa: BLE001
+        return []
+    labels = km.labels_
+
+    # Build per-cluster TF-IDF over chunk text — gives us auto-derived
+    # topic labels ("term insurance", "tax saving", "retirement
+    # calculator") instead of relying on the page-level classifier.
+    from .keywords.content_keywords import (
+        DOMAIN_STOPWORDS, SEARCH_INTENT_TERMS,
+    )
+    stop = set(_sw_module.ENGLISH_STOP_WORDS) | DOMAIN_STOPWORDS
+
+    docs_per_cluster: dict[int, list[str]] = {}
+    indices_per_cluster: dict[int, list[int]] = {}
+    for i, c in enumerate(chunks):
+        cid = int(labels[i])
+        docs_per_cluster.setdefault(cid, []).append(c["text"] or "")
+        indices_per_cluster.setdefault(cid, []).append(i)
+
+    out: list[dict] = []
+    for cid, docs in docs_per_cluster.items():
+        # TF-IDF inside this cluster only; pick top terms that contain
+        # at least one search-intent word so labels stay SEO-shaped.
+        joined = " ".join(docs)
+        if not joined.strip():
+            continue
+        try:
+            vec = TfidfVectorizer(
+                ngram_range=(1, 2),
+                stop_words=list(stop),
+                lowercase=True,
+                token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]{1,}\b",
+                max_features=200,
+            )
+            tfidf = vec.fit_transform(docs)
+        except ValueError:
+            terms = []
+        else:
+            summed = tfidf.sum(axis=0).A1
+            term_list = vec.get_feature_names_out()
+            ranked = sorted(
+                zip(term_list, summed.tolist()),
+                key=lambda x: -x[1],
+            )
+            terms = [
+                t
+                for t, _s in ranked
+                if any(tok in SEARCH_INTENT_TERMS for tok in t.split())
+            ][:8]
+            if not terms:
+                terms = [t for t, _s in ranked[:8]]
+
+        # Label: prefer the most specific multi-word term as the lead,
+        # because single-word "insurance" / "plan" / "policy" are
+        # page-wide noise — almost every cluster on an insurer page
+        # surfaces them first. A bigram like "term insurance" or
+        # "retirement plan" actually identifies the cluster's topic.
+        bigrams = [t for t in terms if " " in t]
+        unigrams = [t for t in terms if " " not in t]
+        lead = bigrams[0] if bigrams else (unigrams[0] if unigrams else "")
+        secondary = ""
+        for t in terms:
+            if t == lead:
+                continue
+            # Don't repeat a token already in the lead.
+            lead_tokens = set(lead.split())
+            if any(tok in lead_tokens for tok in t.split()):
+                continue
+            secondary = t
+            break
+        label = (
+            (lead + (" + " + secondary if secondary else "")).title()
+            if lead
+            else f"Cluster {cid}"
+        )
+
+        # Representative chunk = the one nearest to the centroid.
+        cluster_indices = indices_per_cluster[cid]
+        cluster_vecs = X[cluster_indices]
+        centroid = km.cluster_centers_[cid]
+        dists = np.linalg.norm(cluster_vecs - centroid, axis=1)
+        ordered = [
+            cluster_indices[j] for j in dists.argsort()
+        ]
+
+        out.append({
+            "cluster_id": cid,
+            "label": label,
+            "keywords": terms,
+            "chunk_count": len(cluster_indices),
+            "pct": round(100.0 * len(cluster_indices) / n, 1),
+            "sample_chunks": [
+                {
+                    "chunk_idx": chunks[idx]["chunk_idx"],
+                    "text": chunks[idx]["text"],
+                }
+                for idx in ordered[:3]
+            ],
+            "chunk_indices": [chunks[idx]["chunk_idx"] for idx in cluster_indices],
+        })
+    out.sort(key=lambda c: -c["chunk_count"])
+    return out
+
+
 @api_view(["GET"])
 def page_clusters_view(_request, snapshot_id: str, url_b64: str):
     """Per-URL content clusters — how this single page's chunks distribute
-    across page-types + products. Counterpart to the corpus-wide content
-    map (/content/map/3d), scoped to one URL.
+    across (a) rule-based page-type + product taxonomy, AND (b) auto-
+    discovered topical clusters from semantic similarity. Counterpart of
+    the corpus-wide content map (/content/map/3d), scoped to one URL.
 
-    Reads PageEmbedding rows for the (snapshot, url) pair, groups by
-    classified page_type and product, and returns:
+    Reads PageEmbedding rows for the (snapshot, url) pair and returns:
       - chunks: [{chunk_idx, text, page_type, products, confidence,
-                  coord_x, coord_y, coord_z}]
+                  coord_x, coord_y, coord_z, topic_cluster_id}]
       - page_type_breakdown: [{page_type, label, count, pct}]
       - product_breakdown:   [{product, label, count, pct}]
+      - topic_clusters: [{cluster_id, label, keywords, chunk_count, pct,
+                          sample_chunks}]  ← auto-discovered topics
 
     Returns 404 if the URL has no PageEmbedding rows yet (operator needs
     to run refresh_content_map for that snapshot first).
@@ -2278,16 +2425,16 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
         .only(
             "chunk_idx", "chunk_text", "products", "page_type",
             "confidence", "coord_x", "coord_y", "coord_z",
+            "embedding_json",
         )
         .order_by("chunk_idx")
     )
 
     chunks: list[dict] = []
+    vectors: list[list[float]] = []
     pt_counter: dict[str, int] = {}
     prod_counter: dict[str, int] = {}
     for c in chunks_qs:
-        # Truncate chunk_text in the response (the full text is rarely
-        # needed for a cluster view; ~280 chars is one tweet's worth).
         text_preview = (c.chunk_text or "")[:280]
         products = list(c.products or [])
         chunks.append({
@@ -2299,14 +2446,14 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
             "coord_x": c.coord_x,
             "coord_y": c.coord_y,
             "coord_z": c.coord_z,
+            # Filled in below after clustering.
+            "topic_cluster_id": None,
         })
+        vectors.append(list(c.embedding_json or []))
         pt_counter[c.page_type or "other"] = (
             pt_counter.get(c.page_type or "other", 0) + 1
         )
         for prod in products:
-            # Products come through as either ["term"] or
-            # [{"key":"term","label":"Term Insurance",...}] depending on
-            # which embedder version wrote the row. Handle both.
             if isinstance(prod, dict):
                 key = (prod.get("key") or prod.get("label") or "").strip().lower()
             else:
@@ -2348,6 +2495,19 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
         for p, cnt in sorted(prod_counter.items(), key=lambda x: -x[1])
     ]
 
+    # Auto-discovered topical clusters from chunk vectors. This is the
+    # "what topics does this page actually cover" view — independent of
+    # the page-level rule classifier (which often labels every chunk
+    # identically e.g. as "home" on a sprawling homepage).
+    topic_clusters = _topic_cluster_chunks(chunks, vectors)
+    for tc in topic_clusters:
+        for idx in tc["chunk_indices"]:
+            # Find the chunk with this chunk_idx and stamp it.
+            for ch in chunks:
+                if ch["chunk_idx"] == idx:
+                    ch["topic_cluster_id"] = tc["cluster_id"]
+                    break
+
     return Response({
         "snapshot_id": str(snap.id),
         "snapshot_kind": snap.kind,
@@ -2359,6 +2519,7 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
         "chunks": chunks,
         "page_type_breakdown": page_type_breakdown,
         "product_breakdown": product_breakdown,
+        "topic_clusters": topic_clusters,
     })
 
 
