@@ -949,7 +949,17 @@ class AdobeAnalyticsAdapter:
     def hour_of_day(
         self, *, lookback_days: int = 7,
     ) -> list[HourRow]:
-        """Hour-of-day visit distribution. ``variables/hour`` returns 0-23."""
+        """Hour-of-day visit distribution. ``variables/hour`` returns 0-23.
+
+        On Bajaj's suite (and many others) ``variables/hour`` is gated
+        behind an unauthorized_dimension_global error — the service
+        account lacks per-dimension permission. Fall back to
+        ``variables/daterangehour`` which exposes the same data via
+        per-hour-per-day rows and rarely has the same permission lock.
+        We aggregate the (HH, date) rows into 24 hour buckets.
+        """
+        rows: list[HourRow] = []
+        had_error = False
         try:
             data = self._report(
                 dimension="variables/hour",
@@ -957,30 +967,94 @@ class AdobeAnalyticsAdapter:
                 lookback_days=lookback_days,
                 limit=24,
             )
+            cols = data.get("columns") or {}
+            if cols.get("columnErrors"):
+                had_error = True
+                logger.info(
+                    "hour_of_day: variables/hour blocked (%s) — falling "
+                    "back to variables/daterangehour",
+                    cols["columnErrors"][0].get("errorCode"),
+                )
+            else:
+                for r in (data.get("rows") or []):
+                    try:
+                        n = int((r.get("data") or [0])[0] or 0)
+                    except (TypeError, ValueError, IndexError):
+                        n = 0
+                    rows.append(HourRow(
+                        hour=str(r.get("value") or ""),
+                        visits=n,
+                        share_pct=0.0,
+                    ))
         except AdobeAnalyticsError as exc:
-            logger.info("hour_of_day report failed: %s", exc)
-            return []
-        rows: list[HourRow] = []
-        for r in (data.get("rows") or []):
-            try:
-                n = int((r.get("data") or [0])[0] or 0)
-            except (TypeError, ValueError, IndexError):
-                n = 0
-            rows.append(HourRow(
-                hour=str(r.get("value") or ""),
-                visits=n,
-                share_pct=0.0,
-            ))
+            logger.info("hour_of_day variables/hour failed: %s", exc)
+            had_error = True
+
+        if not rows or (had_error and not any(r.visits > 0 for r in rows)):
+            rows = self._hour_of_day_from_daterangehour(
+                lookback_days=lookback_days,
+            )
+
         total = sum(r.visits for r in rows) or 1
         for r in rows:
             r.share_pct = round(100.0 * r.visits / total, 2)
         return rows
 
+    def _hour_of_day_from_daterangehour(
+        self, *, lookback_days: int = 7,
+    ) -> list[HourRow]:
+        """Bucket daterangehour rows into 24 hour-of-day rows.
+
+        daterangehour returns one row per (hour, date), with value like
+        ``"11:00 2026-05-22"``. We parse the HH prefix and sum visits
+        across dates so the operator sees a 24-row Mon-aligned bucket.
+        """
+        try:
+            data = self._report(
+                dimension="variables/daterangehour",
+                metrics=["metrics/visits"],
+                lookback_days=lookback_days,
+                limit=max(200, lookback_days * 24),
+            )
+        except AdobeAnalyticsError as exc:
+            logger.info(
+                "hour_of_day daterangehour fallback failed: %s", exc,
+            )
+            return []
+        buckets: dict[int, int] = {h: 0 for h in range(24)}
+        for r in (data.get("rows") or []):
+            val = str(r.get("value") or "")
+            # Format "HH:00 YYYY-MM-DD" — the hour is the first 2 chars
+            # before the colon. Defensive parse in case Adobe ever
+            # changes the format.
+            try:
+                hh = int(val.split(":", 1)[0])
+            except (ValueError, IndexError):
+                continue
+            if 0 <= hh <= 23:
+                try:
+                    n = int((r.get("data") or [0])[0] or 0)
+                except (TypeError, ValueError, IndexError):
+                    n = 0
+                buckets[hh] += n
+        return [
+            HourRow(hour=f"{h:02d}", visits=buckets[h], share_pct=0.0)
+            for h in range(24)
+        ]
+
     def day_of_week(
         self, *, lookback_days: int = 30,
     ) -> list[WeekdayRow]:
         """Mon-Sun visit distribution. Bigger lookback (30 days) by
-        default so each weekday gets ~4 data points."""
+        default so each weekday gets ~4 data points.
+
+        Falls back to deriving weekday buckets from ``daily_trend`` when
+        Adobe's native ``variables/dayofweek`` returns nothing — which
+        happens on suites where the tag setup doesn't populate
+        ``s.dayofweek`` even though the date dimension itself works fine
+        (Bajaj's suite behaves this way as of 2026-05). Operator still
+        sees the breakdown they need without an admin permission ask.
+        """
         try:
             data = self._report(
                 dimension="variables/dayofweek",
@@ -989,8 +1063,8 @@ class AdobeAnalyticsAdapter:
                 limit=7,
             )
         except AdobeAnalyticsError as exc:
-            logger.info("day_of_week report failed: %s", exc)
-            return []
+            logger.info("day_of_week native report failed: %s", exc)
+            data = {}
         rows: list[WeekdayRow] = []
         for r in (data.get("rows") or []):
             try:
@@ -1002,10 +1076,49 @@ class AdobeAnalyticsAdapter:
                 visits=n,
                 share_pct=0.0,
             ))
-        total = sum(r.visits for r in rows) or 1
-        for r in rows:
-            r.share_pct = round(100.0 * r.visits / total, 2)
-        return rows
+        if rows and any(r.visits > 0 for r in rows):
+            total = sum(r.visits for r in rows) or 1
+            for r in rows:
+                r.share_pct = round(100.0 * r.visits / total, 2)
+            return rows
+
+        # Native dimension empty → derive from daily_trend. We already
+        # know that dimension works (the Overview chart renders).
+        return self._day_of_week_from_daily_trend(lookback_days=lookback_days)
+
+    def _day_of_week_from_daily_trend(
+        self, *, lookback_days: int = 30,
+    ) -> list[WeekdayRow]:
+        """Bucket daily_trend visits by weekday — fallback for suites
+        where the native variables/dayofweek dimension is empty."""
+        from datetime import datetime
+
+        try:
+            daily = self.daily_trend(lookback_days=lookback_days)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("day_of_week derived: daily_trend failed: %s", exc)
+            return []
+        if not daily:
+            return []
+
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                    "Friday", "Saturday", "Sunday"]
+        buckets = {w: 0 for w in weekdays}
+        for pt in daily:
+            try:
+                dt = datetime.fromisoformat(str(pt.date))
+            except (ValueError, TypeError):
+                continue
+            buckets[weekdays[dt.weekday()]] += int(pt.visits or 0)
+        total = sum(buckets.values()) or 1
+        return [
+            WeekdayRow(
+                weekday=w,
+                visits=buckets[w],
+                share_pct=round(100.0 * buckets[w] / total, 2),
+            )
+            for w in weekdays
+        ]
 
     def year_over_year_trend(
         self, *, lookback_days: int = 30,
