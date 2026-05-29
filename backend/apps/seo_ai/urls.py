@@ -15,6 +15,7 @@ from .views import (
     competitor_gap_detection,
     competitor_keywords_content_view,
     competitor_keywords_semrush_view,
+    competitor_page_structure_view,
     competitor_page_detail_view,
     competitor_page_history,
     competitor_walk_pause_view,
@@ -240,6 +241,14 @@ urlpatterns = [
         "competitor/<str:domain>/keywords/content/",
         competitor_keywords_content_view,
         name="competitor-keywords-content",
+    ),
+    # LLM-clustered page-structure view: groups a competitor's pages
+    # into 5-10 named topical buckets. Each page carries data-source
+    # provenance (snapshot kind + engine + crawl_mode + started_at).
+    path(
+        "competitor/<str:domain>/page-structure/",
+        competitor_page_structure_view,
+        name="competitor-page-structure",
     ),
     path("chat/stream/", chat_stream, name="chat-stream"),
     # LLM pool monitoring — Groq key pool health.

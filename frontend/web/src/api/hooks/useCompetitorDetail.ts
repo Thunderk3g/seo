@@ -313,6 +313,68 @@ export function useCompetitorKeywordsSemrush(domain: string | null) {
   });
 }
 
+// Phase F3 — LLM-clustered page structure for a competitor.
+export interface PageDataSource {
+  snapshot_id: string;
+  snapshot_kind: string;
+  snapshot_engine: string;
+  snapshot_started_at: string;
+  crawl_mode: string;
+}
+
+export interface PageStructureEntry {
+  url: string;
+  title: string;
+  word_count: number;
+  page_type: string;
+  source: PageDataSource;
+}
+
+export interface PageStructureCluster {
+  cluster_id: number;
+  name: string;
+  rationale: string;
+  pages: PageStructureEntry[];
+}
+
+export interface CompetitorPageStructureResponse {
+  domain: string;
+  parent_domain: string;
+  total_pages_sampled: number;
+  total_pages_in_corpus: number;
+  clusters: PageStructureCluster[];
+  model_used: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  cached: boolean;
+  cached_at: string;
+  error?: string;
+}
+
+export function useCompetitorPageStructure(
+  domain: string | null,
+  opts?: { force?: boolean; maxPages?: number },
+) {
+  const force = opts?.force ? '1' : '';
+  const maxPages = opts?.maxPages ?? 60;
+  return useQuery({
+    queryKey: [
+      'competitor-page-structure',
+      { domain, force, maxPages },
+    ],
+    queryFn: () =>
+      api.get<CompetitorPageStructureResponse>(
+        `/seo/competitor/${encodeURIComponent(domain || '')}/page-structure/`
+        + `?max_pages=${maxPages}${force ? '&force=1' : ''}`,
+      ),
+    enabled: Boolean(domain),
+    staleTime: 15 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}
+
 export function useCompetitorKeywordsContent(domain: string | null) {
   return useQuery({
     queryKey: ['competitor-keywords-content', { domain }],

@@ -2022,6 +2022,45 @@ def competitor_keywords_content_view(_request, domain: str):
     })
 
 
+@api_view(["GET"])
+def competitor_page_structure_view(request, domain: str):
+    """LLM-clustered view of a competitor's pages.
+
+    Counterpart to ``page_clusters_view`` (which clusters chunks of ONE
+    page) — this clusters all of a competitor's pages into 5-10 named
+    topical groups using the LLM (not sentence-transformers). Each
+    page in a cluster carries a ``source`` blob (snapshot id + kind +
+    engine + started_at + crawl_mode) so the operator can see which
+    crawl produced which row.
+
+    Query params:
+      max_pages    — top-N by word_count to send to the LLM (default 60).
+      force        — '1' to bypass the 24-h disk cache.
+    """
+    from .services.competitor_clustering import (
+        _to_dict, build_competitor_page_structure,
+    )
+
+    target = _normalize_competitor_domain(domain)
+    if not target:
+        return Response({"error": "invalid domain"}, status=400)
+
+    try:
+        max_pages = max(20, min(120, int(
+            request.query_params.get("max_pages") or 60,
+        )))
+    except (TypeError, ValueError):
+        max_pages = 60
+    force = (request.query_params.get("force") or "").lower() in (
+        "1", "true", "yes",
+    )
+
+    result = build_competitor_page_structure(
+        domain=target, max_pages=max_pages, force_refresh=force,
+    )
+    return Response(_to_dict(result))
+
+
 @api_view(["GET", "POST"])
 def competitor_walk_pause_view(request):
     """GET/POST the competitor-walk pause toggle.
