@@ -21,6 +21,7 @@ from .views import (
     competitor_walk_pause_view,
     page_clusters_view,
     page_detail_view,
+    page_topic_sections_view,
     content_comparison,
     content_comparison_our_pages,
     content_writer_generate,
@@ -220,6 +221,14 @@ urlpatterns = [
         "page/<uuid:snapshot_id>/<str:url_b64>/clusters/",
         page_clusters_view,
         name="page-clusters",
+    ),
+    # LLM-clustered topical sections WITHIN one page (Calculator,
+    # Tax Benefits, FAQ, etc.) — different from /clusters/ which
+    # uses KMeans on sentence-transformer chunk vectors.
+    path(
+        "page/<uuid:snapshot_id>/<str:url_b64>/sections/",
+        page_topic_sections_view,
+        name="page-topic-sections",
     ),
     # Pause toggle for the 03:00 IST walk-competitors-daily cron.
     # GET returns current state; POST {paused: bool} flips it.
