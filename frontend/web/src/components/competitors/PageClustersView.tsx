@@ -265,17 +265,7 @@ export default function PageClustersView({
     return (
       <div className="rounded-md border border-dashed border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
         {is404 ? (
-          <>
-            No embeddings yet for this URL. Run{' '}
-            <code className="font-mono text-xs">
-              python manage.py refresh_content_map
-            </code>{' '}
-            (or for one competitor:{' '}
-            <code className="font-mono text-xs">
-              --competitor-domain &lt;host&gt;
-            </code>
-            ) so the chunker can populate <code>PageEmbedding</code>.
-          </>
+          <>This page has no body text to cluster. Re-crawl the URL first.</>
         ) : (
           msg
         )}

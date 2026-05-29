@@ -1273,46 +1273,50 @@ def backlinks_view(request):
 # ── Ad-hoc URL crawler ─────────────────────────────────────────────
 
 
-@api_view(["POST"])
-def adhoc_crawl_view(request):
-    """POST /api/v1/crawler/adhoc — quick-fetch one URL and return its
-    snapshot+url_b64 so the dashboard can route to /adhoc/pages/<id>/<b64>.
+class CrawlLiveError(Exception):
+    """Raised by crawl_live when the URL fails to fetch or parse."""
 
-    Synchronous (the operator clicks "Quick crawl" and waits 5-30 s).
-    Reuses the competitor crawler's ``fetch_one`` so the parser is
-    identical to what the nightly competitor walk produces — H1s,
-    internal links, image audit, JSON-LD, body text. One singleton
-    ``CrawlSnapshot(kind='adhoc', target_domain=<host>)`` per host so
-    repeated fetches of the same site aggregate naturally; URL-level
-    rows are unique per (snapshot, url).
+    def __init__(self, message: str, *, status_code: int = 0):
+        super().__init__(message)
+        self.status_code = status_code
 
-    Request body: ``{"url": "https://example.com/page"}``
-    Response: ``{"snapshot_id": "<uuid>", "url_b64": "<b64>", "url": "<final_url>"}``
+
+def crawl_live(url: str):
+    """Live-fetch one URL into a fresh ``CrawlerPageResult`` row and
+    return ``(snapshot, page_row)``.
+
+    Extracted from ``adhoc_crawl_view`` so other in-process callers (the
+    Content Writer compare-and-write orchestrator at
+    ``apps/seo_ai/views.py:content_writer_compare_and_write``) can crawl
+    without going through HTTP. The orchestrator parallelises two calls
+    via ``ThreadPoolExecutor`` so a side-by-side comparison crawl
+    finishes in ``max(t_ours, t_them)`` instead of ``t_ours + t_them``.
+
+    Mirrors the field-mapping in
+    ``apps.seo_ai.pipelines.competitor_postgres.process_item`` so the
+    unified page-detail serializer renders identically.
+
+    Raises ``CrawlLiveError`` on bad URL / network failure / non-200; the
+    caller decides whether to surface a 4xx, swallow it, or retry.
     """
     from urllib.parse import urlparse
-    import base64 as _b64
 
     from apps.seo_ai.adapters.competitor_crawler import CompetitorCrawler
+    from django.db.models import F
     from .models import CrawlSnapshot, CrawlerPageResult
-    from .util.host import apex
 
-    raw_url = (request.data.get("url") or "").strip()
+    raw_url = (url or "").strip()
     if not raw_url:
-        return Response(
-            {"error": "url required"}, status=400,
-        )
+        raise CrawlLiveError("url required", status_code=400)
     if "://" not in raw_url:
         raw_url = "https://" + raw_url
     parsed = urlparse(raw_url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return Response(
-            {"error": "invalid url — must be http(s) with a host"},
-            status=400,
+        raise CrawlLiveError(
+            "invalid url — must be http(s) with a host", status_code=400,
         )
     host = parsed.netloc.lower()
-    parent = apex(host)
 
-    # Singleton snapshot per host: get_or_create keyed on (kind, target_domain).
     snap, _ = CrawlSnapshot.objects.get_or_create(
         kind=CrawlSnapshot.Kind.ADHOC,
         target_domain=host,
@@ -1324,34 +1328,20 @@ def adhoc_crawl_view(request):
             "notes": "Ad-hoc URL crawl singleton — one row per host.",
         },
     )
-    # parent_domain auto-fills via save() override; nothing to set here.
 
-    # Synchronous fetch. CompetitorCrawler.__new__ dispatches to the
-    # Scrapy subclass when COMPETITOR_ENGINE=scrapy, but Scrapy's
-    # fetch_one spawns a per-call subprocess that's too slow for an
-    # interactive dashboard click. Bypass __new__ to get the legacy
-    # requests-based path which uses a single HTTP call and returns in
-    # 1-3 s for typical pages.
     crawler = object.__new__(CompetitorCrawler)
     CompetitorCrawler.__init__(crawler)
     page = crawler.fetch_one(raw_url)
     if page is None or page.error:
         err = (page.error if page is not None else "fetch returned None")
-        return Response(
-            {
-                "error": f"fetch failed: {err}",
-                "url": raw_url,
-                "status_code": page.status_code if page else 0,
-            },
-            status=502,
+        raise CrawlLiveError(
+            f"fetch failed: {err}",
+            status_code=page.status_code if page else 0,
         )
 
-    # Map CompetitorPage dataclass → CrawlerPageResult row. Mirrors the
-    # mapping in apps.seo_ai.pipelines.competitor_postgres.process_item
-    # so the unified page-detail serializer renders identically.
     final_url = (page.final_url or raw_url)[:2048]
     page_url = (page.url or raw_url)[:2048]
-    CrawlerPageResult.objects.update_or_create(
+    row, _ = CrawlerPageResult.objects.update_or_create(
         snapshot=snap,
         url=page_url,
         defaults={
@@ -1380,22 +1370,48 @@ def adhoc_crawl_view(request):
         },
     )
 
-    # Update snapshot counters (simple +1; not idempotent across re-fetches
-    # of the same URL, but ad-hoc snapshots are operator-driven and the
-    # counters are advisory only).
-    from django.db.models import F
     CrawlSnapshot.objects.filter(id=snap.id).update(
         pages_attempted=F("pages_attempted") + 1,
         pages_ok=F("pages_ok") + (1 if (page.status_code or 0) == 200 else 0),
     )
+    return snap, row
 
-    url_b64 = _b64.urlsafe_b64encode(page_url.encode("utf-8")).decode("ascii").rstrip("=")
+
+@api_view(["POST"])
+def adhoc_crawl_view(request):
+    """POST /api/v1/crawler/adhoc — quick-fetch one URL and return its
+    snapshot+url_b64 so the dashboard can route to /adhoc/pages/<id>/<b64>.
+
+    Thin wrapper around ``crawl_live`` — the heavy lifting moved there
+    so the Content Writer orchestrator can call it directly without an
+    HTTP self-loop.
+    """
+    import base64 as _b64
+    from urllib.parse import urlparse
+
+    from .util.host import apex
+
+    try:
+        snap, _row = crawl_live(request.data.get("url") or "")
+    except CrawlLiveError as exc:
+        return Response(
+            {"error": str(exc), "status_code": exc.status_code},
+            status=400 if exc.status_code in (400, 0) else 502,
+        )
+
+    page_url = _row.url
+    final_url = _row.final_url or page_url
+    host = (urlparse(page_url).netloc or "").lower()
+    parent = apex(host)
+    url_b64 = _b64.urlsafe_b64encode(
+        page_url.encode("utf-8"),
+    ).decode("ascii").rstrip("=")
     return Response({
         "snapshot_id": str(snap.id),
         "url_b64": url_b64,
         "url": page_url,
         "final_url": final_url,
-        "status_code": page.status_code or 0,
+        "status_code": int(_row.status_code or 0) if (_row.status_code or "").isdigit() else 0,
         "host": host,
         "parent_domain": parent,
     })

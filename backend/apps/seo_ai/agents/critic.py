@@ -226,7 +226,19 @@ def verify_generation(
             accepted += 1
 
     # List generated fields — preserve only the entries that verify.
-    for key in ("proposed_headings", "proposed_internal_links"):
+    # Includes RevampWriter additions: proposed_body_sections,
+    # proposed_faq, proposed_ctas, tech_recommendations. Each is a list
+    # of dicts; the source_ref check is identical regardless of the
+    # surrounding shape (heading text, FAQ pair, CTA copy, tech finding).
+    list_keys = (
+        "proposed_headings",
+        "proposed_internal_links",
+        "proposed_body_sections",
+        "proposed_faq",
+        "proposed_ctas",
+        "tech_recommendations",
+    )
+    for key in list_keys:
         items = proposal.get(key) or []
         kept: list[dict[str, Any]] = []
         for i, item in enumerate(items):
@@ -236,11 +248,15 @@ def verify_generation(
         if kept:
             filtered[key] = kept
 
-    # Carry rationale + any future fields through unchanged.
+    # Carry rationale + any future fields through unchanged. This is
+    # where ``improved_html``, ``improved_markdown``,
+    # ``competitor_gap_summary``, ``overall_rationale`` flow — they
+    # don't carry their own ``source_ref`` because they're aggregate
+    # outputs derived from many evidence keys.
     for key, val in proposal.items():
         if key in filtered or key in (
             "proposed_title", "proposed_meta_description",
-            "proposed_headings", "proposed_internal_links",
+            *list_keys,
         ):
             continue
         filtered[key] = val

@@ -140,3 +140,82 @@ def embed_snapshot(snapshot, *, force: bool = False, verbose: bool = False) -> d
             log.info("embedded %s (%d chunks)", page.url, len(chunks))
 
     return counters
+
+
+def embed_one_page_live(page, *, max_chunks: int = 200) -> int:
+    """Embed a single ``CrawlerPageResult`` row synchronously and persist
+    ``PageEmbedding`` rows. Returns the number of chunks written.
+
+    Used by ``page_clusters_view`` as the on-demand fallback when the
+    operator opens the per-page Clusters tab for a URL whose snapshot
+    hasn't yet been processed by ``refresh_content_map``. MiniLM loads
+    in ~3-5 s the first time per worker (cached afterwards); per-chunk
+    encode is ~50-200 ms; a typical 50-chunk page completes in <15 s.
+
+    ``max_chunks`` caps the embed at the first N chunks so a sprawling
+    91 k-word page doesn't tie up the request thread for minutes. The
+    bulk path (``refresh_content_map``) has no cap and runs offline.
+
+    Skips and returns 0 when the page has no body text to chunk.
+    """
+    from django.db import connection, transaction
+    from sentence_transformers import SentenceTransformer
+
+    from ..models import PageEmbedding
+    from .pipeline import classify_row
+    from . import _minilm_path
+
+    text = _visible_text(page)
+    if not text:
+        return 0
+
+    chunks = chunk_text(text)
+    if not chunks:
+        return 0
+    if len(chunks) > max_chunks:
+        log.info(
+            "embed_one_page_live: capping %s from %d chunks → %d (live cap)",
+            page.url, len(chunks), max_chunks,
+        )
+        chunks = chunks[:max_chunks]
+
+    model = SentenceTransformer(_minilm_path())
+    vectors = model.encode(chunks, normalize_embeddings=True)
+
+    page_row = {
+        "url": page.url,
+        "title": page.title or "",
+        "meta_description": page.meta_description or "",
+        "jsonld_types": page.jsonld_types or [],
+    }
+    cls = classify_row(page_row)
+    products = [p["label"] for p in cls.get("products", [])]
+    page_type = cls.get("page_type", "other")
+    confidence = cls.get("page_type_confidence", 0.0)
+
+    written = 0
+    with transaction.atomic():
+        # Live-embed always wipes prior chunks for this page so re-runs
+        # don't accumulate duplicates from earlier partial fetches.
+        PageEmbedding.objects.filter(page=page).delete()
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
+            emb = PageEmbedding.objects.create(
+                page=page,
+                chunk_idx=idx,
+                chunk_text=chunk[:1000],
+                embedding_json=vec.tolist(),
+                products=products,
+                page_type=page_type,
+                confidence=float(confidence),
+            )
+            # pgvector column update — same trick the bulk path uses.
+            vec_literal = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+            with connection.cursor() as cur:
+                cur.execute(
+                    "UPDATE crawler_pageembedding SET embedding = %s::vector "
+                    "WHERE id = %s",
+                    [vec_literal, emb.id],
+                )
+            written += 1
+    log.info("embed_one_page_live %s wrote %d chunks", page.url, written)
+    return written

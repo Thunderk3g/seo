@@ -26,6 +26,7 @@ from .views import (
     content_writer_our_pages,
     content_writer_proposal_detail,
     content_writer_proposals_list,
+    content_writer_revamp,
     custodian_adobe,
     custodian_layout,
     custodian_structure_gaps,
@@ -253,6 +254,15 @@ urlpatterns = [
         "content-writer/generate/",
         content_writer_generate,
         name="content-writer-generate",
+    ),
+    # Page-revamp orchestrator: single URL in, scans every competitor
+    # brand in the DB for a counterpart, refreshes stale rows, pulls
+    # CWV + Semrush, asks the RevampWriter agent to produce a full
+    # improved-version draft (title/meta/headings/body/FAQ/HTML).
+    path(
+        "content-writer/revamp/",
+        content_writer_revamp,
+        name="content-writer-revamp",
     ),
     path(
         "content-writer/proposals/",
