@@ -701,6 +701,15 @@ class ContentRewriteProposal(models.Model):
     competitor_urls = models.JSONField(default=list, blank=True)
     target_keywords = models.JSONField(default=list, blank=True)
 
+    # Phase F2 (page-revamp) additions. ``prompt_instructions`` is the
+    # free-text steer the operator wrote on the Content Writer page
+    # ("focus on tax", "only compare with hdfclife", etc.). The new
+    # endpoint scans EVERY competitor brand for a counterpart page; the
+    # matches end up in ``competitor_matches`` so the operator can see
+    # what was compared and re-render the comparison without re-crawling.
+    prompt_instructions = models.TextField(blank=True, default="")
+    competitor_matches = models.JSONField(default=list, blank=True)
+
     # Frozen at generation time so re-reading the same proposal later
     # shows what the agent actually had access to — not whatever the
     # crawler has captured *since*.

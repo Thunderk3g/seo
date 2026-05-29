@@ -2022,6 +2022,45 @@ def competitor_keywords_content_view(_request, domain: str):
     })
 
 
+@api_view(["GET"])
+def competitor_page_structure_view(request, domain: str):
+    """LLM-clustered view of a competitor's pages.
+
+    Counterpart to ``page_clusters_view`` (which clusters chunks of ONE
+    page) — this clusters all of a competitor's pages into 5-10 named
+    topical groups using the LLM (not sentence-transformers). Each
+    page in a cluster carries a ``source`` blob (snapshot id + kind +
+    engine + started_at + crawl_mode) so the operator can see which
+    crawl produced which row.
+
+    Query params:
+      max_pages    — top-N by word_count to send to the LLM (default 60).
+      force        — '1' to bypass the 24-h disk cache.
+    """
+    from .services.competitor_clustering import (
+        _to_dict, build_competitor_page_structure,
+    )
+
+    target = _normalize_competitor_domain(domain)
+    if not target:
+        return Response({"error": "invalid domain"}, status=400)
+
+    try:
+        max_pages = max(20, min(120, int(
+            request.query_params.get("max_pages") or 60,
+        )))
+    except (TypeError, ValueError):
+        max_pages = 60
+    force = (request.query_params.get("force") or "").lower() in (
+        "1", "true", "yes",
+    )
+
+    result = build_competitor_page_structure(
+        domain=target, max_pages=max_pages, force_refresh=force,
+    )
+    return Response(_to_dict(result))
+
+
 @api_view(["GET", "POST"])
 def competitor_walk_pause_view(request):
     """GET/POST the competitor-walk pause toggle.
@@ -2475,6 +2514,50 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
         .order_by("chunk_idx")
     )
 
+    # If there are no PageEmbedding rows yet, do a live embed inline
+    # rather than asking the operator to run a management command. This
+    # is the "fix this for live clustering" path: chunker + MiniLM run
+    # synchronously, write rows, then we re-query and proceed. Costs
+    # ~5-15 s on the cold path; subsequent loads are instant since the
+    # rows now exist.
+    if not chunks_qs.exists():
+        try:
+            from apps.crawler.content.embedder import embed_one_page_live
+            wrote = embed_one_page_live(page)
+        except Exception as exc:  # noqa: BLE001 — surface as fallback msg
+            return Response(
+                {
+                    "error": (
+                        "live embed failed; run `python manage.py "
+                        "refresh_content_map` for snapshot "
+                        f"{snapshot_id}: {exc}"
+                    ),
+                    "url": decoded,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        if wrote == 0:
+            return Response(
+                {
+                    "error": (
+                        "page has no body text to chunk — nothing to "
+                        "cluster. Re-crawl the URL first."
+                    ),
+                    "url": decoded,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        chunks_qs = (
+            PageEmbedding.objects
+            .filter(page=page)
+            .only(
+                "chunk_idx", "chunk_text", "products", "page_type",
+                "confidence", "coord_x", "coord_y", "coord_z",
+                "embedding_json",
+            )
+            .order_by("chunk_idx")
+        )
+
     chunks: list[dict] = []
     vectors: list[list[float]] = []
     pt_counter: dict[str, int] = {}
@@ -2510,9 +2593,8 @@ def page_clusters_view(_request, snapshot_id: str, url_b64: str):
         return Response(
             {
                 "error": (
-                    "No PageEmbedding rows for this URL yet. Run "
-                    "`python manage.py refresh_content_map` for snapshot "
-                    f"{snapshot_id} to populate."
+                    "page has no body text to chunk — live embed wrote "
+                    "no rows. Re-crawl the URL first."
                 ),
                 "url": decoded,
                 "snapshot_id": str(snap.id),
@@ -2794,6 +2876,8 @@ def _serialize_proposal(p) -> dict:
         "our_url": p.our_url,
         "competitor_urls": p.competitor_urls or [],
         "target_keywords": p.target_keywords or [],
+        "prompt_instructions": getattr(p, "prompt_instructions", "") or "",
+        "competitor_matches": getattr(p, "competitor_matches", []) or [],
         "evidence_dict": p.evidence_dict or {},
         "generated_proposal": p.generated_proposal or {},
         "raw_proposal": p.raw_proposal or {},
@@ -2805,6 +2889,100 @@ def _serialize_proposal(p) -> dict:
         "error": p.error or "",
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
+
+
+@api_view(["POST"])
+def content_writer_revamp(request: Request):
+    """POST /api/v1/seo/content-writer/revamp.
+
+    Body:
+        {"our_url": "https://www.bajajlifeinsurance.com/term-insurance-plans.html",
+         "prompt": "focus on tax-saving angle, compare with hdfc"}  # optional
+
+    The orchestrator:
+      1. Live-crawls ``our_url`` (fresh body always — no stale DB read).
+      2. Scans every competitor brand in the DB for a counterpart page
+         using URL-slug + title overlap. ``prompt`` is parsed for a
+         brand mention to restrict the scan.
+      3. For each matched competitor: uses the DB row if it's fresh
+         AND has body text, otherwise live-fetches it.
+      4. PSI (mobile + desktop) for our URL + each counterpart in
+         parallel; Semrush ranking keywords filtered to each URL.
+      5. Builds the evidence dict, calls the RevampWriter agent, runs
+         the deterministic critic, persists the proposal, returns the
+         full payload + the competitor-matches list so the operator
+         knows which competitors were compared.
+
+    Synchronous; ~25-40 s wall time. The frontend renders a staged
+    progress UI based on elapsed-time thresholds.
+    """
+    from .agents.revamp_writer import generate_revamp
+    from .models import ContentRewriteProposal
+    from .services.page_revamp import build_revamp_payload
+
+    body = request.data or {}
+    our_url = (body.get("our_url") or "").strip()
+    prompt = (body.get("prompt") or "").strip()
+    if not our_url:
+        return Response(
+            {"error": "our_url is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        payload = build_revamp_payload(
+            our_url=our_url,
+            prompt=prompt,
+            max_competitors=int(body.get("max_competitors") or 5),
+            enable_psi=bool(body.get("enable_psi", True)),
+            enable_semrush=bool(body.get("enable_semrush", True)),
+        )
+    except RuntimeError as exc:
+        return Response(
+            {"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    result = generate_revamp(payload=payload)
+
+    competitor_matches = [
+        {
+            "brand": m.brand,
+            "url": m.url,
+            "title": m.title,
+            "confidence": m.confidence,
+            "source": m.source,
+            "snapshot_id": m.snapshot_id,
+            "word_count": m.word_count,
+        }
+        for m, _s in payload.counterparts
+    ]
+
+    proposal = ContentRewriteProposal.objects.create(
+        our_url=result.our_url,
+        competitor_urls=result.competitor_urls,
+        target_keywords=[],  # not used in the revamp flow
+        prompt_instructions=prompt,
+        competitor_matches=competitor_matches,
+        evidence_dict=result.evidence_dict,
+        raw_proposal=result.raw_proposal,
+        generated_proposal=result.filtered_proposal,
+        critic_verdict=result.critic_verdict,
+        model_used=result.model_used,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        cost_usd=result.cost_usd,
+        error=result.error or "",
+    )
+
+    response = _serialize_proposal(proposal)
+    # Surface the warnings + brand-scan telemetry from the assembly step
+    # so the operator sees "we scanned 8 competitor brands, matched 4".
+    response["telemetry"] = {
+        "competitors_scanned": payload.competitors_scanned,
+        "competitors_matched": payload.competitors_matched,
+        "warnings": payload.warnings,
+    }
+    return Response(response)
 
 
 @api_view(["GET"])

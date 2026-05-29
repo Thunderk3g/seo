@@ -18,6 +18,7 @@ import CompetitorMetaAdsSection from '../components/competitors/CompetitorMetaAd
 import CompetitorContentMapSection from '../components/competitors/CompetitorContentMapSection';
 import CompetitorContentClusterSection from '../components/competitors/CompetitorContentClusterSection';
 import CompetitorKeywordsSection from '../components/competitors/CompetitorKeywordsSection';
+import CompetitorPageStructureSection from '../components/competitors/CompetitorPageStructureSection';
 
 export default function CompetitorDetailPage() {
   const params = useParams<{ domain: string }>();
@@ -120,6 +121,12 @@ export default function CompetitorDetailPage() {
           above the maps because "what do they target" reads top-down
           better than seeing the structure first. */}
       <CompetitorKeywordsSection domain={data.domain} />
+
+      {/* Phase F3 — LLM-clustered page structure. Groups the
+          competitor's pages into 5-10 named topical buckets via the
+          LLM (not embeddings), with per-page data-source provenance so
+          the operator sees which snapshot wrote which row. */}
+      <CompetitorPageStructureSection domain={data.domain} />
 
       {/* Per-competitor content map — own PageEmbedding rows + UMAP
           projection, isolated from Bajaj's map. Renders page-type +

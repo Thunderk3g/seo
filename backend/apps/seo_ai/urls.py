@@ -15,6 +15,7 @@ from .views import (
     competitor_gap_detection,
     competitor_keywords_content_view,
     competitor_keywords_semrush_view,
+    competitor_page_structure_view,
     competitor_page_detail_view,
     competitor_page_history,
     competitor_walk_pause_view,
@@ -26,6 +27,7 @@ from .views import (
     content_writer_our_pages,
     content_writer_proposal_detail,
     content_writer_proposals_list,
+    content_writer_revamp,
     custodian_adobe,
     custodian_layout,
     custodian_structure_gaps,
@@ -240,6 +242,14 @@ urlpatterns = [
         competitor_keywords_content_view,
         name="competitor-keywords-content",
     ),
+    # LLM-clustered page-structure view: groups a competitor's pages
+    # into 5-10 named topical buckets. Each page carries data-source
+    # provenance (snapshot kind + engine + crawl_mode + started_at).
+    path(
+        "competitor/<str:domain>/page-structure/",
+        competitor_page_structure_view,
+        name="competitor-page-structure",
+    ),
     path("chat/stream/", chat_stream, name="chat-stream"),
     # LLM pool monitoring — Groq key pool health.
     path("llm/pool-stats/", llm_pool_stats, name="llm-pool-stats"),
@@ -253,6 +263,15 @@ urlpatterns = [
         "content-writer/generate/",
         content_writer_generate,
         name="content-writer-generate",
+    ),
+    # Page-revamp orchestrator: single URL in, scans every competitor
+    # brand in the DB for a counterpart, refreshes stale rows, pulls
+    # CWV + Semrush, asks the RevampWriter agent to produce a full
+    # improved-version draft (title/meta/headings/body/FAQ/HTML).
+    path(
+        "content-writer/revamp/",
+        content_writer_revamp,
+        name="content-writer-revamp",
     ),
     path(
         "content-writer/proposals/",

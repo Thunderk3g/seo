@@ -46,12 +46,69 @@ export interface CitedLink {
   rationale?: string;
 }
 
+export interface CitedBodySection {
+  heading_text: string;
+  paragraphs: string[];
+  source_ref: string;
+  rationale?: string;
+}
+
+export interface CitedFaqEntry {
+  question: string;
+  answer: string;
+  source_ref: string;
+  rationale?: string;
+}
+
+export interface CitedCta {
+  text: string;
+  placement?: string;
+  source_ref: string;
+}
+
+export interface TechRecommendation {
+  area: string;          // 'lcp' | 'cls' | 'inp' | 'pagespeed' | 'schema'
+  current?: string;
+  target?: string;
+  suggestion: string;
+  source_ref: string;
+}
+
+export interface CompetitorGapSummary {
+  brand: string;
+  gap: string;
+}
+
 export interface RewriteProposalBody {
   proposed_title?: CitedString;
   proposed_meta_description?: CitedString;
   proposed_headings?: CitedHeading[];
   proposed_internal_links?: CitedLink[];
+  // Revamp-flow additions (Phase F2).
+  proposed_body_sections?: CitedBodySection[];
+  proposed_faq?: CitedFaqEntry[];
+  proposed_ctas?: CitedCta[];
+  tech_recommendations?: TechRecommendation[];
+  improved_html?: string;
+  improved_markdown?: string;
+  competitor_gap_summary?: CompetitorGapSummary[];
   overall_rationale?: string;
+}
+
+export interface CompetitorMatch {
+  brand: string;
+  url: string;
+  title: string;
+  confidence: number;
+  source: 'db' | 'live' | string;
+  snapshot_id: string;
+  word_count: number;
+}
+
+export interface RevampTelemetry {
+  competitors_scanned: number;
+  competitors_matched: number;
+  warnings: string[];
 }
 
 export interface CriticVerdict {
@@ -69,6 +126,8 @@ export interface ContentRewriteProposal {
   our_url: string;
   competitor_urls: string[];
   target_keywords: string[];
+  prompt_instructions?: string;
+  competitor_matches?: CompetitorMatch[];
   evidence_dict: Record<string, unknown>;
   generated_proposal: RewriteProposalBody;
   raw_proposal: RewriteProposalBody;
@@ -79,6 +138,7 @@ export interface ContentRewriteProposal {
   cost_usd: number;
   error: string;
   created_at: string;
+  telemetry?: RevampTelemetry;
 }
 
 export interface ProposalListEntry {
@@ -144,6 +204,29 @@ export function useGenerateRewrite() {
     mutationFn: (body: GenerateRewriteInput) =>
       api.post<ContentRewriteProposal>(
         '/seo/content-writer/generate/',
+        body,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: LIST_KEY });
+    },
+  });
+}
+
+// Phase F2 — single-URL revamp flow.
+export interface RevampInput {
+  our_url: string;
+  prompt?: string;
+  max_competitors?: number;
+  enable_psi?: boolean;
+  enable_semrush?: boolean;
+}
+
+export function useRevampPage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RevampInput) =>
+      api.post<ContentRewriteProposal>(
+        '/seo/content-writer/revamp/',
         body,
       ),
     onSuccess: () => {
