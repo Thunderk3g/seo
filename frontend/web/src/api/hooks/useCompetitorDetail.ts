@@ -352,6 +352,57 @@ export interface CompetitorPageStructureResponse {
   error?: string;
 }
 
+// Phase F4 — LLM-clustered topical sections WITHIN one page.
+export interface PageTopicLink {
+  anchor: string;
+  href: string;
+  kind: string;
+}
+
+export interface PageTopicSection {
+  section_id: number;
+  name: string;
+  rationale: string;
+  topics_covered: string[];
+  heading_texts: string[];
+  internal_links: PageTopicLink[];
+  image_count: number;
+  word_count: number;
+}
+
+export interface PageTopicSectionsResponse {
+  url: string;
+  title: string;
+  snapshot_id: string;
+  total_headings: number;
+  total_internal_links: number;
+  sections: PageTopicSection[];
+  model_used: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  cached: boolean;
+  cached_at: string;
+  error?: string;
+}
+
+export function usePageTopicSections(
+  snapshotId: string | null,
+  urlB64: string | null,
+) {
+  return useQuery({
+    queryKey: ['page-topic-sections', { snapshotId, urlB64 }],
+    queryFn: () =>
+      api.get<PageTopicSectionsResponse>(
+        `/seo/page/${snapshotId || ''}/${urlB64 || ''}/sections/`,
+      ),
+    enabled: Boolean(snapshotId && urlB64),
+    staleTime: 30 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}
+
 export function useCompetitorPageStructure(
   domain: string | null,
   opts?: { force?: boolean; maxPages?: number },

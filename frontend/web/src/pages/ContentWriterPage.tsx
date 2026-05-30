@@ -39,12 +39,18 @@ import {
   type CitedLink,
   type CitedString,
   type CompetitorMatch,
+  type CompetitorGap,
   type CompetitorGapSummary,
   type ContentRewriteProposal,
+  type OurSectionsEntry,
   type RewriteProposalBody,
   type TechRecommendation,
+  type TheirSectionsEntry,
 } from '../api/hooks/useContentWriter';
-import { useCompetitorPageStructure } from '../api/hooks/useCompetitorDetail';
+import {
+  usePageTopicSections,
+  type PageTopicSection,
+} from '../api/hooks/useCompetitorDetail';
 
 const PROGRESS_STAGES = [
   { at: 0, label: 'Live-crawling your URL' },
@@ -320,7 +326,13 @@ function ProposalView({ proposalId }: { proposalId: string }) {
     <>
       <TelemetryStrip data={data} />
       {matches.length > 0 && <MatchesTable matches={matches} />}
-      {matches.length > 0 && <ClusterContextSection matches={matches} />}
+      {data.gap && <GapPanel gap={data.gap} />}
+      {data.our_sections && data.our_sections.length > 0 && (
+        <SectionsComparisonPanel
+          ourSections={data.our_sections}
+          theirSections={data.their_sections || []}
+        />
+      )}
       {tel && tel.warnings && tel.warnings.length > 0 && (
         <WarningTile warnings={tel.warnings} />
       )}
@@ -338,56 +350,383 @@ function ProposalView({ proposalId }: { proposalId: string }) {
   );
 }
 
-// ── Cluster-context section ─────────────────────────────────────────
+// ── Gap analysis panel (Phase F5) ────────────────────────────────────
 //
-// For each matched competitor: pull their LLM-clustered page structure
-// (re-uses the same endpoint that powers CompetitorPageStructureSection
-// on /competitors/<domain>/) and highlight which cluster the matched
-// URL belongs to. The operator sees not just "we compared with HDFC's
-// term-insurance-plans" but "that page sits in their Term Insurance
-// Products cluster which has these 3 sibling pages we could also
-// link to".
+// This is the panel the cluster-first orchestrator drives. It shows
+// the operator (and the agent, via prompt) the structured gap between
+// our page and the matched competitor pages BEFORE the rewrite is
+// generated. The agent received the same data — the headline_recs
+// list is essentially the rewrite checklist.
 
-function ClusterContextSection({ matches }: { matches: CompetitorMatch[] }) {
+function GapPanel({ gap }: { gap: CompetitorGap }) {
+  const sd = gap.size_diff;
+  const lid = gap.link_inventory_diff;
+  const tover = gap.topic_overlap;
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
-          Page-structure context · how each match sits in their site
+          Gap analysis · what to close
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="text-xs text-brand-text-3">
-          The LLM clusters each competitor's pages into named topical
-          buckets. We highlight the cluster the matched URL belongs to,
-          plus its siblings — useful for spotting related pages we
-          might cover or internal-link to.
+          Cluster-first: our page and each competitor were section-clustered
+          via the LLM before the rewrite ran. The deltas below were fed to
+          the agent as the primary rewrite checklist.
         </div>
-        {matches.map((m) => (
-          <CompetitorClusterCard key={m.brand} match={m} />
+
+        {gap.headline_recommendations && gap.headline_recommendations.length > 0 && (
+          <div className="rounded border border-brand-accent bg-brand-accent-soft p-3">
+            <div className="mb-1 text-xs font-semibold uppercase text-brand-accent">
+              Rewrite checklist
+            </div>
+            <ul className="space-y-1 text-sm text-brand-text">
+              {gap.headline_recommendations.map((r, i) => (
+                <li key={i}>• {r}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {sd && (
+            <div className="rounded border border-brand-border bg-white p-3">
+              <div className="mb-1 text-xs font-semibold uppercase text-brand-text-3">
+                Content size
+              </div>
+              <div className="space-y-1 text-sm">
+                <SizeRow
+                  label="Word count"
+                  ours={sd.our_word_count}
+                  theirs={sd.median_their_word_count}
+                  deficit={sd.deficit}
+                />
+                <SizeRow
+                  label="Headings"
+                  ours={sd.our_heading_count}
+                  theirs={sd.median_their_heading_count}
+                />
+                <SizeRow
+                  label="Images"
+                  ours={sd.our_image_count}
+                  theirs={sd.median_their_image_count}
+                />
+              </div>
+            </div>
+          )}
+
+          {lid && (
+            <div className="rounded border border-brand-border bg-white p-3">
+              <div className="mb-1 text-xs font-semibold uppercase text-brand-text-3">
+                Internal link inventory
+              </div>
+              <div className="text-sm">
+                <SizeRow
+                  label="Total"
+                  ours={lid.our_total}
+                  theirs={lid.median_their_total}
+                />
+              </div>
+              {lid.kinds_we_lack.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-[10px] uppercase text-brand-text-3">
+                    Kinds we lack
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {lid.kinds_we_lack.map((k) => (
+                      <span
+                        key={k}
+                        className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800"
+                      >
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {gap.sections_we_miss.length > 0 && (
+          <div className="rounded border border-amber-300 bg-amber-50 p-3">
+            <div className="mb-1 text-xs font-semibold uppercase text-amber-800">
+              Sections they have, we don't ({gap.sections_we_miss.length})
+            </div>
+            <ul className="space-y-1.5 text-sm">
+              {gap.sections_we_miss.slice(0, 8).map((s) => (
+                <li key={s.name}>
+                  <span className="font-semibold text-brand-text">
+                    {s.label}
+                  </span>
+                  <span className="ml-2 text-xs text-brand-text-3">
+                    ({s.brands_with_it.length} brand
+                    {s.brands_with_it.length === 1 ? '' : 's'}:{' '}
+                    {s.brands_with_it.slice(0, 3).join(', ')}
+                    {s.brands_with_it.length > 3 ? '…' : ''})
+                  </span>
+                  {s.topics_aggregate.length > 0 && (
+                    <div className="mt-0.5 flex flex-wrap gap-1">
+                      {s.topics_aggregate.slice(0, 4).map((t) => (
+                        <span
+                          key={t}
+                          className="rounded bg-white px-1.5 py-0.5 text-[10px] text-brand-text-2"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {tover && (
+          <div className="text-xs text-brand-text-3">
+            Topic vocab overlap:{' '}
+            <span className="font-semibold text-brand-text">
+              {(tover.overlap_pct * 100).toFixed(0)}%
+            </span>
+            {tover.their_aggregate_unique_topics.length > 0 && (
+              <>
+                {' '}· they cover (we don't):{' '}
+                <span className="text-brand-text-2">
+                  {tover.their_aggregate_unique_topics.slice(0, 8).join(' · ')}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SizeRow({
+  label,
+  ours,
+  theirs,
+  deficit,
+}: {
+  label: string;
+  ours: number;
+  theirs: number;
+  deficit?: number;
+}) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <span className="text-xs text-brand-text-3">{label}</span>
+      <span className="tabular-nums">
+        <span className="font-semibold text-brand-text">
+          {ours.toLocaleString()}
+        </span>
+        <span className="mx-1 text-brand-text-3">vs</span>
+        <span className="text-brand-text-2">
+          {theirs.toLocaleString()}
+        </span>
+        {deficit !== undefined && deficit < 0 && (
+          <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+            −{Math.abs(deficit).toLocaleString()} to add
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function SectionsComparisonPanel({
+  ourSections,
+  theirSections,
+}: {
+  ourSections: OurSectionsEntry[];
+  theirSections: TheirSectionsEntry[];
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Section clusters · ours vs theirs
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="text-xs text-brand-text-3">
+          The LLM identified named topical sections inside each page
+          BEFORE we generated the rewrite. Use this to spot which sections
+          each competitor has that we don't.
+        </div>
+
+        <details
+          className="overflow-hidden rounded border-2 border-brand-accent bg-white"
+          open
+        >
+          <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-brand-text">
+            Our page · {ourSections.length} sections
+          </summary>
+          <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
+            <SectionsList sections={ourSections} ours />
+          </div>
+        </details>
+
+        {theirSections.map((t) => (
+          <details
+            key={t.brand}
+            className="overflow-hidden rounded border border-brand-border bg-white"
+          >
+            <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-brand-text">
+              {t.brand} · {t.sections.length} sections
+            </summary>
+            <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
+              <SectionsList sections={t.sections} />
+            </div>
+          </details>
         ))}
       </CardContent>
     </Card>
   );
 }
 
-function CompetitorClusterCard({ match }: { match: CompetitorMatch }) {
-  const [expanded, setExpanded] = useState(false);
-  const { data, isLoading, isError, error } = useCompetitorPageStructure(
-    match.brand,
-    { maxPages: 60 },
+// ── Per-page topical-section comparison ─────────────────────────────
+//
+// For each matched competitor: ask the LLM to identify the topical
+// sections WITHIN that specific page (Premium Calculator, Tax Benefits,
+// FAQ, etc.). Compare those against our page's own sections so the
+// operator sees "they cover X, Y, Z; we only cover X" at a glance.
+//
+// The LLM section endpoint (/seo/page/<snap>/<b64>/sections/) is the
+// same one used for the per-URL Clusters tab on the page-detail view,
+// so results are 24-h disk-cached and shared across surfaces.
+
+function ClusterContextSection({
+  ourProposal,
+  matches,
+}: {
+  ourProposal: ContentRewriteProposal;
+  matches: CompetitorMatch[];
+}) {
+  // Look up the latest ad-hoc snapshot for our URL — the orchestrator
+  // crawled it as part of building the proposal, so it exists in
+  // CrawlerPageResult already. We pull the section breakdown via the
+  // page-detail endpoint (uses run_id from the legacy serializer).
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Page-section comparison · what they cover, what we cover
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="text-xs text-brand-text-3">
+          For each page we matched, the LLM identifies its topical
+          sections — Premium Calculator, Tax Benefits, FAQ block, etc.
+          Expand any row to see that competitor's section breakdown plus
+          the topics covered. Useful for spotting structural gaps
+          (e.g. "HDFC has a Calculator section, we don't").
+        </div>
+        <OurPageSections proposalUrl={ourProposal.our_url} />
+        {matches.map((m) => (
+          <CompetitorPageSectionsCard key={m.brand} match={m} />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+// Helper — resolve a URL to (snapshot_id, url_b64) by hitting the
+// crawls list for the parent brand and finding the row. For ours we
+// use the adhoc snapshot (the orchestrator just wrote it).
+function urlToB64(url: string): string {
+  if (!url) return '';
+  try {
+    // Match the backend's urlsafe-base64 no-pad encoding.
+    return btoa(url).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function OurPageSections({ proposalUrl }: { proposalUrl: string }) {
+  // The orchestrator wrote a fresh CrawlerPageResult row under the
+  // singleton adhoc snapshot for our host. We resolve it via the
+  // ad-hoc snapshot endpoint pattern: kind=adhoc, target_domain=host.
+  const [snapshotId, setSnapshotId] = useState<string | null>(null);
+  const urlB64 = urlToB64(proposalUrl);
+
+  useEffect(() => {
+    if (!proposalUrl) return;
+    // Re-trigger an ad-hoc crawl to get back the snapshot id (idempotent
+    // — same singleton snapshot per host, just upserts the URL row).
+    // This is fast (~3s) and ensures we have a fresh snapshot pointer.
+    const ctrl = new AbortController();
+    fetch('/crawler-api/adhoc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: proposalUrl }),
+      signal: ctrl.signal,
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.snapshot_id) setSnapshotId(d.snapshot_id);
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, [proposalUrl]);
+
+  const { data, isLoading, isError, error } = usePageTopicSections(
+    snapshotId,
+    urlB64,
   );
 
-  // Find the cluster containing the matched URL.
-  const matchedCluster = useMemo(() => {
-    if (!data?.clusters) return null;
-    for (const c of data.clusters) {
-      if (c.pages.some((p) => p.url === match.url)) {
-        return c;
-      }
-    }
-    return null;
-  }, [data, match.url]);
+  return (
+    <div
+      className="overflow-hidden rounded border-2 border-brand-accent bg-white"
+    >
+      <div className="flex items-baseline justify-between px-3 py-2">
+        <div>
+          <div className="text-sm font-semibold text-brand-text">
+            Our page · {proposalUrl}
+          </div>
+          {data && (
+            <div className="text-[10px] text-brand-text-3">
+              {data.sections.length} sections · {data.total_headings} headings
+            </div>
+          )}
+        </div>
+        <span className="rounded bg-brand-accent px-2 py-0.5 text-[10px] font-semibold uppercase text-white">
+          ours
+        </span>
+      </div>
+      <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
+        {isLoading && (
+          <div className="text-xs text-brand-text-3">
+            Asking LLM to identify sections of our page…
+          </div>
+        )}
+        {isError && (
+          <div className="text-xs text-brand-text-3">
+            Failed: {error instanceof Error ? error.message : 'unknown'}
+          </div>
+        )}
+        {data && data.error && (
+          <div className="text-xs text-brand-text-3">{data.error}</div>
+        )}
+        {data && data.sections.length > 0 && (
+          <SectionsList sections={data.sections} ours />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CompetitorPageSectionsCard({ match }: { match: CompetitorMatch }) {
+  const [expanded, setExpanded] = useState(false);
+  const urlB64 = urlToB64(match.url);
+  const { data, isLoading, isError, error } = usePageTopicSections(
+    expanded ? match.snapshot_id : null,
+    expanded ? urlB64 : null,
+  );
 
   return (
     <div className="overflow-hidden rounded border border-brand-border bg-white">
@@ -408,9 +747,22 @@ function CompetitorClusterCard({ match }: { match: CompetitorMatch }) {
               {(match.confidence * 100).toFixed(0)}% match
             </span>
           </div>
+          <div className="break-all font-mono text-[10px] text-brand-text-3">
+            {match.url}
+          </div>
+          {expanded && data && (
+            <div className="text-[10px] text-brand-text-3">
+              {data.sections.length} sections · {data.total_headings}{' '}
+              headings · ${data.cost_usd.toFixed(4)}
+            </div>
+          )}
+        </div>
+      </button>
+      {expanded && (
+        <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
           {isLoading && (
             <div className="text-xs text-brand-text-3">
-              Building page structure…
+              Asking LLM to identify sections of {match.brand}'s page…
             </div>
           )}
           {isError && (
@@ -418,97 +770,116 @@ function CompetitorClusterCard({ match }: { match: CompetitorMatch }) {
               Failed: {error instanceof Error ? error.message : 'unknown'}
             </div>
           )}
-          {!isLoading && !isError && matchedCluster && (
-            <div className="text-xs text-brand-text-2">
-              Sits in{' '}
-              <span className="font-semibold text-brand-accent">
-                {matchedCluster.name}
-              </span>{' '}
-              · {matchedCluster.pages.length} sibling page
-              {matchedCluster.pages.length === 1 ? '' : 's'}
-            </div>
+          {data && data.error && (
+            <div className="text-xs text-brand-text-3">{data.error}</div>
           )}
-          {!isLoading && !isError && !matchedCluster && data && (
-            <div className="text-xs text-brand-text-3">
-              URL not found in structure scan (may be outside the top{' '}
-              {data.total_pages_sampled} pages).
-            </div>
+          {data && data.sections.length > 0 && (
+            <SectionsList sections={data.sections} />
           )}
-        </div>
-        {data && (
-          <span className="shrink-0 text-[10px] text-brand-text-3">
-            {data.total_pages_sampled}/{data.total_pages_in_corpus} pages ·{' '}
-            {data.clusters.length} clusters
-          </span>
-        )}
-      </button>
-      {expanded && data && data.clusters && data.clusters.length > 0 && (
-        <div className="border-t border-brand-border bg-brand-surface-2 px-3 py-2">
-          <div className="space-y-2">
-            {data.clusters.map((c) => {
-              const isMatched = matchedCluster?.cluster_id === c.cluster_id;
-              return (
-                <div
-                  key={c.cluster_id}
-                  className={`rounded border bg-white p-2 ${
-                    isMatched
-                      ? 'border-brand-accent shadow-sm'
-                      : 'border-brand-border'
-                  }`}
-                >
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-semibold text-brand-text">
-                      {c.name}
-                    </span>
-                    <span className="text-[10px] text-brand-text-3">
-                      {c.pages.length} page
-                      {c.pages.length === 1 ? '' : 's'}
-                    </span>
-                    {isMatched && (
-                      <span className="rounded bg-brand-accent px-1.5 py-0.5 text-[9px] font-semibold uppercase text-white">
-                        matched URL here
-                      </span>
-                    )}
-                  </div>
-                  {c.rationale && (
-                    <div className="mt-0.5 text-[10px] italic text-brand-text-3">
-                      {c.rationale}
-                    </div>
-                  )}
-                  <ul className="mt-1 space-y-0.5">
-                    {c.pages.slice(0, 5).map((p) => {
-                      const isMatchedUrl = p.url === match.url;
-                      return (
-                        <li key={p.url} className="text-[11px]">
-                          <a
-                            href={p.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className={
-                              isMatchedUrl
-                                ? 'font-mono font-semibold text-brand-accent hover:underline'
-                                : 'font-mono text-brand-text-2 hover:underline'
-                            }
-                            title={p.url}
-                          >
-                            {p.title || '(untitled)'}
-                          </a>
-                        </li>
-                      );
-                    })}
-                    {c.pages.length > 5 && (
-                      <li className="text-[10px] italic text-brand-text-3">
-                        + {c.pages.length - 5} more
-                      </li>
-                    )}
-                  </ul>
-                </div>
-              );
-            })}
-          </div>
         </div>
       )}
     </div>
+  );
+}
+
+const SECTION_COLOURS = [
+  '#003DA5', '#10B981', '#8B5CF6', '#F59E0B',
+  '#EC4899', '#14B8A6', '#EF4444', '#0EA5E9',
+  '#FDB913', '#A855F7', '#64748B',
+];
+
+function SectionsList({
+  sections,
+  ours = false,
+}: {
+  sections: PageTopicSection[];
+  ours?: boolean;
+}) {
+  return (
+    <ul className="space-y-2">
+      {sections.map((s, i) => {
+        const colour = SECTION_COLOURS[i % SECTION_COLOURS.length];
+        return (
+          <li
+            key={s.section_id}
+            className="rounded border border-brand-border bg-white p-2"
+            style={{ borderLeft: `4px solid ${colour}` }}
+          >
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-semibold text-brand-text">
+                {s.name}
+              </span>
+              <span className="text-[10px] text-brand-text-3">
+                {s.heading_texts.length} heading
+                {s.heading_texts.length === 1 ? '' : 's'}
+                {s.internal_links.length > 0 &&
+                  ` · ${s.internal_links.length} link${s.internal_links.length === 1 ? '' : 's'}`}
+                {s.image_count > 0 && ` · ${s.image_count} image${s.image_count === 1 ? '' : 's'}`}
+              </span>
+            </div>
+            {s.topics_covered.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {s.topics_covered.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded bg-brand-surface-2 px-1.5 py-0.5 text-[10px] text-brand-text-2"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+            {s.rationale && (
+              <div className="mt-1 text-[10px] italic text-brand-text-3">
+                {s.rationale}
+              </div>
+            )}
+            {(s.heading_texts.length > 0 || s.internal_links.length > 0) && (
+              <details className="mt-1">
+                <summary className="cursor-pointer text-[10px] text-brand-text-3 hover:text-brand-text-2">
+                  Headings + links
+                </summary>
+                <div className="mt-1 space-y-1">
+                  {s.heading_texts.length > 0 && (
+                    <ul className="space-y-0.5">
+                      {s.heading_texts.slice(0, 8).map((h, j) => (
+                        <li
+                          key={j}
+                          className="text-[11px] text-brand-text-2"
+                        >
+                          • {h}
+                        </li>
+                      ))}
+                      {s.heading_texts.length > 8 && (
+                        <li className="text-[10px] italic text-brand-text-3">
+                          + {s.heading_texts.length - 8} more
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                  {s.internal_links.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {s.internal_links.slice(0, 4).map((l, j) => (
+                        <li key={j} className="text-[10px]">
+                          <a
+                            href={l.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-mono text-brand-accent hover:underline"
+                          >
+                            {l.anchor || l.href}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </details>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

@@ -121,6 +121,75 @@ export interface CriticVerdict {
   }>;
 }
 
+export interface GapSectionMissByUs {
+  name: string;
+  label: string;
+  brands_with_it: string[];
+  topics_aggregate: string[];
+  sample_headings: string[];
+}
+
+export interface GapSectionUniqueToUs {
+  name: string;
+  label: string;
+  sample_headings: string[];
+}
+
+export interface GapSizeDiff {
+  our_word_count: number;
+  median_their_word_count: number;
+  deficit: number;
+  our_heading_count: number;
+  median_their_heading_count: number;
+  our_image_count: number;
+  median_their_image_count: number;
+}
+
+export interface GapLinkInventoryDiff {
+  our_total: number;
+  median_their_total: number;
+  our_by_kind: Record<string, number>;
+  median_their_by_kind: Record<string, number>;
+  kinds_we_lack: string[];
+}
+
+export interface GapFooterDiff {
+  our_footer_link_count: number;
+  median_their_footer_link_count: number;
+}
+
+export interface GapTopicOverlap {
+  overlap_pct: number;
+  our_unique_topics: string[];
+  their_aggregate_unique_topics: string[];
+}
+
+export interface CompetitorGap {
+  sections_we_miss: GapSectionMissByUs[];
+  sections_unique_to_us: GapSectionUniqueToUs[];
+  size_diff: GapSizeDiff | null;
+  link_inventory_diff: GapLinkInventoryDiff | null;
+  footer_diff: GapFooterDiff | null;
+  topic_overlap: GapTopicOverlap | null;
+  headline_recommendations: string[];
+}
+
+export interface OurSectionsEntry {
+  section_id: number;
+  name: string;
+  rationale: string;
+  topics_covered: string[];
+  heading_texts: string[];
+  internal_links: { anchor: string; href: string; kind: string }[];
+  image_count: number;
+  word_count: number;
+}
+
+export interface TheirSectionsEntry {
+  brand: string;
+  sections: OurSectionsEntry[];
+}
+
 export interface ContentRewriteProposal {
   id: string;
   our_url: string;
@@ -139,6 +208,10 @@ export interface ContentRewriteProposal {
   error: string;
   created_at: string;
   telemetry?: RevampTelemetry;
+  // Cluster-first orchestrator output (Phase F5).
+  our_sections?: OurSectionsEntry[];
+  their_sections?: TheirSectionsEntry[];
+  gap?: CompetitorGap;
 }
 
 export interface ProposalListEntry {

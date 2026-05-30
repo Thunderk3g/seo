@@ -89,6 +89,61 @@ def _title_tokens(title: str) -> set[str]:
     return {t for t in raw if t not in _URL_STOP_TOKENS}
 
 
+_SOFT_404_TITLE_SIGNALS = (
+    "page not found",
+    "not found",
+    "404",
+    "error",
+    "oops",
+    "unable to find",
+)
+
+
+def looks_like_soft_404(row) -> tuple[bool, str]:
+    """Detect pages that returned HTTP 200 but are actually 404s or
+    empty nav-only landings.
+
+    Returns ``(is_junk, reason)``. Operator-visible reason flows into
+    the warnings list so they know why a brand got dropped.
+
+    Heuristics, ordered cheapest-first:
+      1. Title contains 'page not found' / 'not found' / '404'.
+      2. Title is empty OR matches the URL path verbatim (CMS leak).
+      3. Zero H1 tags AND <1500 words — almost always a nav-only stub.
+      4. Only-H2 text matches CMS boilerplate like "Add new comment".
+    """
+    if row is None:
+        return True, "no row"
+    title = (row.title or "").strip().lower()
+    url = (row.url or "").lower()
+    for hint in _SOFT_404_TITLE_SIGNALS:
+        if hint in title:
+            return True, f"title says '{hint}'"
+    # Title equals URL path → CMS didn't fill in <title>.
+    path_part = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if title and (title.startswith("/") or path_part and path_part in title.replace(" ", "")):
+        # Looks like the URL path is the title verbatim.
+        if "|" not in title or title.split("|", 1)[0].strip().startswith("/"):
+            return True, "title is the URL path"
+    headings = list(row.headings_json or [])
+    h1_count = sum(
+        1 for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 1
+    )
+    word_count = int(row.word_count or 0)
+    if h1_count == 0 and word_count < 1500:
+        return True, f"no H1 + only {word_count} words"
+    h2_texts = [
+        (h.get("text") or "").strip().lower()
+        for h in headings
+        if isinstance(h, dict) and int(h.get("level") or 0) == 2
+    ]
+    cms_boilerplate = {"add new comment", "leave a reply", "post a comment"}
+    if h2_texts and all(t in cms_boilerplate or len(t) < 4 for t in h2_texts):
+        return True, "CMS boilerplate (no real H2 content)"
+    return False, ""
+
+
 def _overlap_score(
     our_url_tokens: list[str],
     our_title_tokens: set[str],
@@ -156,6 +211,15 @@ class RevampPayload:
     competitors_scanned: int
     competitors_matched: int
     warnings: list[str] = field(default_factory=list)
+    # Section clusters computed BEFORE the rewrite call so the agent
+    # generates content explicitly closing identified gaps rather than
+    # inferring them from raw evidence. ``our_sections`` is the LLM
+    # cluster output for our page; ``their_sections`` is a list of
+    # (brand, sections_list) pairs.
+    our_sections: list[dict] = field(default_factory=list)
+    their_sections: list[tuple[str, list[dict]]] = field(default_factory=list)
+    # Structured diff fed to both the agent and the UI gap panel.
+    gap: dict = field(default_factory=dict)
 
 
 # ── counterpart discovery ─────────────────────────────────────────────
@@ -218,10 +282,19 @@ def find_competitor_counterparts(
         q = Q()
         for tok in top_signal_tokens:
             q |= Q(url__icontains=tok)
+        # Include ad-hoc snapshot rows scoped to the same brand —
+        # those are URLs we previously live-fetched during a prior
+        # revamp / Quick URL Crawl. Without this, every URL that the
+        # daily walk's sitemap doesn't list (which is most product
+        # pages once you go past the first few) gets re-fetched on
+        # every revamp run, wasting both time and crawl politeness.
         cands = (
             CrawlerPageResult.objects
             .filter(
-                snapshot__kind=CrawlSnapshot.Kind.COMPETITOR,
+                snapshot__kind__in=[
+                    CrawlSnapshot.Kind.COMPETITOR,
+                    CrawlSnapshot.Kind.ADHOC,
+                ],
                 snapshot__parent_domain=brand,
                 status_code="200",
             )
@@ -248,6 +321,160 @@ def find_competitor_counterparts(
     matches.sort(key=lambda m: -m.confidence)
     matches = matches[:max_brands]
     return matches, len(brands)
+
+
+# ── URL-guess fallback for brands without a DB match ────────────────
+
+
+def _url_guesses_for_brand(our_url: str, brand: str) -> list[str]:
+    """Produce candidate URLs for ``brand`` based on our path slug.
+
+    Tight: only the 2 most-likely variants per brand so a brand whose
+    DNS/TLS is slow can't blow the orchestrator's latency budget.
+    Caller short-circuits on the first 200 hit anyway.
+    """
+    if not our_url or not brand:
+        return []
+    parsed = urlparse(our_url)
+    path = parsed.path.strip("/")
+    if not path:
+        return [f"https://www.{brand}/"]
+    base = re.sub(r"\.(html?|aspx?|php|jsp)$", "", path, flags=re.I)
+    candidates: list[str] = [
+        f"https://www.{brand}/{base}",
+        f"https://www.{brand}/{base}/",
+    ]
+    # Singular variant if path ends in -plans (term-insurance-plans →
+    # term-insurance). Many competitors use the singular slug.
+    if base.endswith("-plans"):
+        candidates.append(f"https://www.{brand}/{base[:-len('-plans')] + '-plan'}")
+    # De-dup while preserving order.
+    seen: set[str] = set()
+    return [c for c in candidates if not (c in seen or seen.add(c))][:3]
+
+
+def _try_url_guess_for_brand(
+    our_url: str, brand: str, *, our_path_tokens: list[str],
+    our_title_toks: set[str], min_confidence: float = 0.15,
+) -> CounterpartMatch | None:
+    """Live-fetch URL guesses for ``brand`` until one returns 200 with
+    a real title, then return it as a ``CounterpartMatch`` (source='live').
+
+    Logs every attempt so the operator can see what URLs were tried.
+    """
+    from apps.crawler.views import crawl_live, CrawlLiveError
+
+    for url in _url_guesses_for_brand(our_url, brand):
+        try:
+            _snap, row = crawl_live(url)
+        except CrawlLiveError as exc:
+            logger.info("url-guess miss %s: %s", url, exc)
+            continue
+        # crawl_live writes under kind='adhoc' — but the URL conceptually
+        # belongs to the competitor brand. Tag the match accordingly so
+        # downstream surfaces don't show "adhoc" as the source.
+        if not row or not row.title:
+            continue
+        score = _overlap_score(
+            our_path_tokens, our_title_toks, row.url, row.title or "",
+        )
+        if score < min_confidence:
+            continue
+        return CounterpartMatch(
+            brand=brand,
+            url=row.url,
+            title=row.title or "",
+            snapshot_id=str(row.snapshot_id),
+            confidence=round(score, 3),
+            source="live-guess",
+            word_count=int(row.word_count or 0),
+        )
+    return None
+
+
+def find_or_guess_counterparts(
+    our_url: str,
+    *,
+    max_brands: int = 5,
+    brand_filter: str | None = None,
+    enable_url_guess: bool = True,
+) -> tuple[list[CounterpartMatch], int, list[str]]:
+    """Like ``find_competitor_counterparts`` but for brands without a
+    DB match, tries common URL conventions live.
+
+    Returns ``(matches, brands_scanned, attempted_guess_brands)``.
+    """
+    from apps.crawler.models import CrawlSnapshot
+
+    matches, brands_scanned = find_competitor_counterparts(
+        our_url,
+        max_per_brand=1,
+        max_brands=max_brands,
+        brand_filter=brand_filter,
+    )
+    if not enable_url_guess:
+        return matches, brands_scanned, []
+
+    matched_brands = {m.brand for m in matches}
+    all_brands = list(
+        CrawlSnapshot.objects
+        .filter(kind=CrawlSnapshot.Kind.COMPETITOR, status="complete")
+        .exclude(parent_domain="")
+        .exclude(parent_domain="bajajlifeinsurance.com")
+        .values_list("parent_domain", flat=True)
+        .distinct()
+    )
+    if brand_filter:
+        all_brands = [b for b in all_brands if brand_filter in b]
+
+    parsed = urlparse(our_url)
+    path_tokens = _tokens(parsed.path)
+    # Get our title for scoring guess matches.
+    from apps.crawler.models import CrawlerPageResult
+    our_row = (
+        CrawlerPageResult.objects.filter(url=our_url)
+        .order_by("-snapshot__started_at")
+        .first()
+    )
+    title_toks = _title_tokens(our_row.title if our_row else "")
+
+    brands_to_guess = [
+        b for b in sorted(set(all_brands))
+        if b not in matched_brands
+    ]
+    # Cap how many brands we try to keep latency bounded — caller wants
+    # max_brands total, we already have len(matches) from DB.
+    remaining = max(0, max_brands - len(matches))
+    brands_to_guess = brands_to_guess[: remaining * 2]  # try 2x in case some miss
+    attempted = list(brands_to_guess)
+
+    if brands_to_guess:
+        with ThreadPoolExecutor(max_workers=min(4, len(brands_to_guess))) as ex:
+            future_map = {
+                ex.submit(
+                    _try_url_guess_for_brand,
+                    our_url, brand,
+                    our_path_tokens=path_tokens,
+                    our_title_toks=title_toks,
+                ): brand
+                for brand in brands_to_guess
+            }
+            for fut in future_map:
+                brand = future_map[fut]
+                try:
+                    guess = fut.result(timeout=30)
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("url-guess for %s crashed: %s", brand, exc)
+                    continue
+                if guess is not None:
+                    matches.append(guess)
+                    logger.info(
+                        "url-guess hit for %s: %s (conf=%.2f)",
+                        brand, guess.url, guess.confidence,
+                    )
+
+    matches.sort(key=lambda m: -m.confidence)
+    return matches[:max_brands], brands_scanned, attempted
 
 
 # ── signal gathering ─────────────────────────────────────────────────
@@ -500,36 +727,65 @@ def build_revamp_payload(
 
     our_signals = _to_page_signals(our_row)
 
-    # 2) Find counterparts.
+    # 2) Find counterparts in DB + URL-guess fallback for missing brands.
     brand_filter = _extract_brand_filter(prompt)
-    matches, brands_scanned = find_competitor_counterparts(
+    matches, brands_scanned, guessed_brands = find_or_guess_counterparts(
         our_url,
-        max_per_brand=1,
         max_brands=max_competitors,
         brand_filter=brand_filter,
+        enable_url_guess=True,
     )
     if brand_filter and not matches:
         warnings.append(
-            f"prompt mentioned a brand but no counterpart pages found; "
-            "falling back to scanning all competitors"
+            "prompt mentioned a brand but no counterpart pages found "
+            "(neither in DB nor via URL-guess); falling back to "
+            "scanning all competitors"
         )
-        matches, brands_scanned = find_competitor_counterparts(
-            our_url,
-            max_per_brand=1,
-            max_brands=max_competitors,
+        matches, brands_scanned, guessed_brands = find_or_guess_counterparts(
+            our_url, max_brands=max_competitors,
         )
+    if guessed_brands:
+        for m in matches:
+            if m.source == "live-guess":
+                warnings.append(
+                    f"{m.brand}: no DB match — live-fetched via URL guess "
+                    f"({m.url})"
+                )
 
-    # 3) Resolve each match to a fresh-or-cached row and project to PageSignals.
+    # 3) Resolve each match to a fresh-or-cached row. Live-guess matches
+    # already came back via crawl_live so we already have a fresh row.
     counterparts: list[tuple[CounterpartMatch, PageSignals]] = []
     if matches:
+        from apps.crawler.models import CrawlerPageResult
+
+        def _resolve(match):
+            if match.source == "live-guess":
+                # We already crawled it; pull the row out of the DB.
+                return (
+                    CrawlerPageResult.objects
+                    .filter(snapshot_id=match.snapshot_id, url=match.url)
+                    .first()
+                )
+            return _fresh_or_live(match)
+
         with ThreadPoolExecutor(max_workers=min(4, len(matches))) as ex:
-            future_map = {ex.submit(_fresh_or_live, m): m for m in matches}
+            future_map = {ex.submit(_resolve, m): m for m in matches}
             for f in future_map:
                 m = future_map[f]
                 row = f.result(timeout=120)
                 if row is None or not row.body_text:
                     warnings.append(
                         f"could not refresh {m.url}; skipping it"
+                    )
+                    continue
+                # Soft-404 guard: drop counterparts that look like
+                # error pages or nav-only stubs. Without this, the LLM
+                # ingests their footer/nav as "competitor sections"
+                # and proposes them as headings on our rewrite.
+                is_junk, reason = looks_like_soft_404(row)
+                if is_junk:
+                    warnings.append(
+                        f"{m.brand}: dropped match {m.url} — {reason}"
                     )
                     continue
                 counterparts.append((m, _to_page_signals(row)))
@@ -557,10 +813,81 @@ def build_revamp_payload(
             except Exception as exc:  # noqa: BLE001
                 logger.info("semrush for %s failed: %s", m.url, exc)
 
+    # 6) Cluster ours + each counterpart via LLM (parallel). This is the
+    # explicit "cluster-first-then-rewrite" step the operator asked for:
+    # the rewrite agent receives the gap as primary structured input.
+    from .page_topic_sections import (
+        build_page_topic_sections, _to_dict as _section_to_dict,
+    )
+
+    def _cluster_page(row):
+        if row is None:
+            return {"sections": []}
+        try:
+            res = build_page_topic_sections(page=row)
+            return _section_to_dict(res)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("section cluster failed for %s: %s", row.url, exc)
+            return {"sections": [], "error": str(exc)}
+
+    # Resolve our CrawlerPageResult row to feed the clusterer.
+    our_section_payload: dict = _cluster_page(our_row)
+    their_section_payloads: list[tuple[str, dict]] = []
+    if counterparts:
+        # We need the actual CrawlerPageResult rows the counterpart
+        # signals came from. Re-look-up by (snapshot, url) to keep this
+        # cheap; ORM cache catches the hot path.
+        from apps.crawler.models import CrawlerPageResult
+
+        def _cluster_counterpart(match):
+            row = (
+                CrawlerPageResult.objects
+                .filter(snapshot_id=match.snapshot_id, url=match.url)
+                .first()
+            )
+            return (match.brand, _cluster_page(row))
+
+        with ThreadPoolExecutor(max_workers=min(4, len(counterparts))) as ex:
+            for brand, sec_payload in ex.map(
+                _cluster_counterpart, (m for m, _s in counterparts),
+            ):
+                their_section_payloads.append((brand, sec_payload))
+
+    # 7) Structured gap computation — same shape we send to the agent
+    # and render in the UI's Gap Analysis panel.
+    from .page_revamp_gap import compute_gap, to_dict as _gap_to_dict
+
+    our_sections_list = our_section_payload.get("sections") or []
+    their_sections_list = [
+        (brand, payload.get("sections") or [])
+        for brand, payload in their_section_payloads
+    ]
+    # PageSignals → dict for the gap-compute helper.
+    def _signals_dict(s):
+        return {
+            "url": s.url,
+            "title": s.title,
+            "word_count": s.word_count,
+            "headings": s.headings,
+            "internal_links": s.internal_links,
+            "images": s.images,
+            "h1": s.h1,
+            "h2": s.h2,
+        }
+    their_signals_for_gap = [
+        (m.brand, _signals_dict(s)) for m, s in counterparts
+    ]
+    gap_obj = compute_gap(
+        our_sections=our_sections_list,
+        our_signals=_signals_dict(our_signals),
+        their_sections_by_brand=their_sections_list,
+        their_signals_by_brand=their_signals_for_gap,
+    )
+
     elapsed = time.monotonic() - t0
     logger.info(
-        "revamp payload assembled in %.1fs: counterparts=%d brands_scanned=%d",
-        elapsed, len(counterparts), brands_scanned,
+        "revamp payload assembled in %.1fs: counterparts=%d brands_scanned=%d guessed=%d",
+        elapsed, len(counterparts), brands_scanned, len(guessed_brands),
     )
 
     return RevampPayload(
@@ -570,4 +897,7 @@ def build_revamp_payload(
         competitors_scanned=brands_scanned,
         competitors_matched=len(counterparts),
         warnings=warnings,
+        our_sections=our_sections_list,
+        their_sections=their_sections_list,
+        gap=_gap_to_dict(gap_obj),
     )

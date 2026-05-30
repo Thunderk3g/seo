@@ -2023,6 +2023,54 @@ def competitor_keywords_content_view(_request, domain: str):
 
 
 @api_view(["GET"])
+def page_topic_sections_view(_request, snapshot_id: str, url_b64: str):
+    """LLM-clustered topical sections WITHIN one page.
+
+    Different from ``page_clusters_view`` (which clusters chunks of a
+    page via KMeans on sentence-transformer vectors) and from
+    ``competitor_page_structure_view`` (which clusters a brand's PAGES).
+
+    This identifies the topical sections inside one page — Calculator
+    widget, Tax-Benefits, FAQ block, Plan-Comparison table, CTAs — by
+    asking the LLM to group the page's headings into 5-10 named
+    sections, attaching the section's internal-links + image counts.
+
+    Used by the Content Writer revamp page to render section-by-section
+    comparison between our page and each matched competitor page.
+
+    Disk-cached 24 h per (snapshot, url).
+    """
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    from .services.page_topic_sections import (
+        _to_dict, build_page_topic_sections,
+    )
+
+    snap = CrawlSnapshot.objects.filter(id=snapshot_id).first()
+    if snap is None:
+        return Response(
+            {"error": f"snapshot {snapshot_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    decoded = _b64url_decode(url_b64)
+    if decoded is None:
+        return Response(
+            {"error": "invalid base64url segment"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    page = CrawlerPageResult.objects.filter(
+        snapshot=snap, url=decoded.strip(),
+    ).first()
+    if page is None:
+        return Response(
+            {"error": f"URL {decoded} not in snapshot {snapshot_id}"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    result = build_page_topic_sections(page=page)
+    return Response(_to_dict(result))
+
+
+@api_view(["GET"])
 def competitor_page_structure_view(request, domain: str):
     """LLM-clustered view of a competitor's pages.
 
@@ -2888,6 +2936,10 @@ def _serialize_proposal(p) -> dict:
         "cost_usd": p.cost_usd,
         "error": p.error or "",
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        # Phase F5 — cluster-first outputs surface on every re-open.
+        "our_sections": getattr(p, "our_sections", []) or [],
+        "their_sections": getattr(p, "their_sections", []) or [],
+        "gap": getattr(p, "gap", {}) or {},
     }
 
 
@@ -2972,6 +3024,13 @@ def content_writer_revamp(request: Request):
         tokens_out=result.tokens_out,
         cost_usd=result.cost_usd,
         error=result.error or "",
+        # Persist cluster-first outputs so the Gap + Sections panels
+        # render every time the operator re-opens the proposal.
+        our_sections=payload.our_sections,
+        their_sections=[
+            {"brand": b, "sections": s} for b, s in payload.their_sections
+        ],
+        gap=payload.gap,
     )
 
     response = _serialize_proposal(proposal)
@@ -2982,6 +3041,13 @@ def content_writer_revamp(request: Request):
         "competitors_matched": payload.competitors_matched,
         "warnings": payload.warnings,
     }
+    # Section-cluster outputs and the structured gap — frontend renders
+    # these in dedicated panels above the rewrite.
+    response["our_sections"] = payload.our_sections
+    response["their_sections"] = [
+        {"brand": b, "sections": s} for b, s in payload.their_sections
+    ]
+    response["gap"] = payload.gap
     return Response(response)
 
 
