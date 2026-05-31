@@ -36,7 +36,8 @@ logger = logging.getLogger("seo.ai.gap_pipeline.llm_search")
 # OpenAI uses the web_search_preview tool; Perplexity sonar and Grok
 # are natively grounded; Gemini grounds when grounding_chunks come
 # back (best-effort, set when cited_urls is non-empty).
-_GROUNDED_BY_DEFAULT = {"openai", "perplexity", "grok"}
+# Grok's adapter provider attr is "xai" (not "grok") — fixed per audit.
+_GROUNDED_BY_DEFAULT = {"openai", "perplexity", "xai"}
 
 
 @dataclass
@@ -75,12 +76,11 @@ def _was_web_grounded(result: AIProbeResult) -> bool:
     metadata (not just URLs the model happened to type)."""
     if result.provider in _GROUNDED_BY_DEFAULT:
         return True
-    # For providers like Gemini, citations only land in cited_urls when
-    # grounding_metadata was returned — a reliable "yes, grounded" signal.
-    # For raw-chat providers (Anthropic in current adapter), cited_urls
-    # gets populated by the base class regex from answer text, which
-    # isn't true grounding, so this heuristic over-counts. The UI
-    # treats this as a hint, not a hard claim.
+    # Gemini (provider "google") grounds via the google_search tool and
+    # returns real groundingMetadata URIs in cited_urls — a reliable
+    # "yes, grounded" signal. (Anthropic raw-chat has no grounding here.)
+    if result.provider == "google" and result.cited_urls:
+        return True
     return False
 
 
