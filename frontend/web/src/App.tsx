@@ -34,7 +34,6 @@ import GeoDashboard from './crawler/pages/GeoDashboard';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 import PageDetailPage from './pages/PageDetailPage';
-import ContentWriterPage from './pages/ContentWriterPage';
 import ContentWriterV2Page from './pages/ContentWriterV2Page';
 import CustodiansPage from './pages/CustodiansPage';
 import BriefingsPage from './pages/BriefingsPage';
@@ -116,8 +115,7 @@ export default function App() {
             <Route path="/crawler/content-clusters" component={ContentClustersPage} />
             {/* Manager-facing XLSX report builder. */}
             <Route path="/reports" component={ReportsPage} />
-            {/* ContentWriter — LLM rewrites with citation pills. */}
-            <Route path="/content-writer" component={ContentWriterPage} />
+            {/* Legacy /content-writer (DB-roster Page Revamp) REMOVED 2026-05-31. */}
             {/* V2 — SERP-discovery-driven page revamp. New flow lives
                 in apps/seo_ai/content_writer/ (separate dir). */}
             <Route path="/content-writer-v2" component={ContentWriterV2Page} />

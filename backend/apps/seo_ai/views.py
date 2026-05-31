@@ -2908,273 +2908,6 @@ def llm_pool_stats(_request):
     })
 
 
-# ── Content Writer ───────────────────────────────────────────────────
-
-
-def _serialize_proposal(p) -> dict:
-    """Wire shape for ContentRewriteProposal.
-
-    We deliberately *omit* ``raw_proposal`` from the list endpoint and
-    only include it on detail — the raw payload is ~5-10x the size of
-    the filtered version and the list view is purely for picking which
-    proposal to inspect.
-    """
-    return {
-        "id": str(p.id),
-        "our_url": p.our_url,
-        "competitor_urls": p.competitor_urls or [],
-        "target_keywords": p.target_keywords or [],
-        "prompt_instructions": getattr(p, "prompt_instructions", "") or "",
-        "competitor_matches": getattr(p, "competitor_matches", []) or [],
-        "evidence_dict": p.evidence_dict or {},
-        "generated_proposal": p.generated_proposal or {},
-        "raw_proposal": p.raw_proposal or {},
-        "critic_verdict": p.critic_verdict or {},
-        "model_used": p.model_used or "",
-        "tokens_in": p.tokens_in,
-        "tokens_out": p.tokens_out,
-        "cost_usd": p.cost_usd,
-        "error": p.error or "",
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        # Phase F5 — cluster-first outputs surface on every re-open.
-        "our_sections": getattr(p, "our_sections", []) or [],
-        "their_sections": getattr(p, "their_sections", []) or [],
-        "gap": getattr(p, "gap", {}) or {},
-    }
-
-
-@api_view(["POST"])
-def content_writer_revamp(request: Request):
-    """POST /api/v1/seo/content-writer/revamp.
-
-    Body:
-        {"our_url": "https://www.bajajlifeinsurance.com/term-insurance-plans.html",
-         "prompt": "focus on tax-saving angle, compare with hdfc"}  # optional
-
-    The orchestrator:
-      1. Live-crawls ``our_url`` (fresh body always — no stale DB read).
-      2. Scans every competitor brand in the DB for a counterpart page
-         using URL-slug + title overlap. ``prompt`` is parsed for a
-         brand mention to restrict the scan.
-      3. For each matched competitor: uses the DB row if it's fresh
-         AND has body text, otherwise live-fetches it.
-      4. PSI (mobile + desktop) for our URL + each counterpart in
-         parallel; Semrush ranking keywords filtered to each URL.
-      5. Builds the evidence dict, calls the RevampWriter agent, runs
-         the deterministic critic, persists the proposal, returns the
-         full payload + the competitor-matches list so the operator
-         knows which competitors were compared.
-
-    Synchronous; ~25-40 s wall time. The frontend renders a staged
-    progress UI based on elapsed-time thresholds.
-    """
-    from .agents.revamp_writer import generate_revamp
-    from .models import ContentRewriteProposal
-    from .services.page_revamp import build_revamp_payload
-
-    body = request.data or {}
-    our_url = (body.get("our_url") or "").strip()
-    prompt = (body.get("prompt") or "").strip()
-    if not our_url:
-        return Response(
-            {"error": "our_url is required"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
-        payload = build_revamp_payload(
-            our_url=our_url,
-            prompt=prompt,
-            max_competitors=int(body.get("max_competitors") or 5),
-            enable_psi=bool(body.get("enable_psi", True)),
-            enable_semrush=bool(body.get("enable_semrush", True)),
-        )
-    except RuntimeError as exc:
-        return Response(
-            {"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY,
-        )
-
-    result = generate_revamp(payload=payload)
-
-    competitor_matches = [
-        {
-            "brand": m.brand,
-            "url": m.url,
-            "title": m.title,
-            "confidence": m.confidence,
-            "source": m.source,
-            "snapshot_id": m.snapshot_id,
-            "word_count": m.word_count,
-        }
-        for m, _s in payload.counterparts
-    ]
-
-    proposal = ContentRewriteProposal.objects.create(
-        our_url=result.our_url,
-        competitor_urls=result.competitor_urls,
-        target_keywords=[],  # not used in the revamp flow
-        prompt_instructions=prompt,
-        competitor_matches=competitor_matches,
-        evidence_dict=result.evidence_dict,
-        raw_proposal=result.raw_proposal,
-        generated_proposal=result.filtered_proposal,
-        critic_verdict=result.critic_verdict,
-        model_used=result.model_used,
-        tokens_in=result.tokens_in,
-        tokens_out=result.tokens_out,
-        cost_usd=result.cost_usd,
-        error=result.error or "",
-        # Persist cluster-first outputs so the Gap + Sections panels
-        # render every time the operator re-opens the proposal.
-        our_sections=payload.our_sections,
-        their_sections=[
-            {"brand": b, "sections": s} for b, s in payload.their_sections
-        ],
-        gap=payload.gap,
-    )
-
-    response = _serialize_proposal(proposal)
-    # Surface the warnings + brand-scan telemetry from the assembly step
-    # so the operator sees "we scanned 8 competitor brands, matched 4".
-    response["telemetry"] = {
-        "competitors_scanned": payload.competitors_scanned,
-        "competitors_matched": payload.competitors_matched,
-        "warnings": payload.warnings,
-    }
-    # Section-cluster outputs and the structured gap — frontend renders
-    # these in dedicated panels above the rewrite.
-    response["our_sections"] = payload.our_sections
-    response["their_sections"] = [
-        {"brand": b, "sections": s} for b, s in payload.their_sections
-    ]
-    response["gap"] = payload.gap
-    return Response(response)
-
-
-@api_view(["GET"])
-def content_writer_our_pages(_request):
-    """List crawled URLs the writer can rewrite.
-
-    Sourced from the latest CrawlSnapshot's CrawlerPageResult rows so
-    the UI selector only shows URLs that actually have the structural
-    payload (headings_json, internal_links_json) the agent needs.
-    """
-    from django.db.models import Count
-
-    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
-
-    # Pick the most recent snapshot that has a meaningful number of
-    # rows — the very latest may still be mid-crawl with 0 or 1 row
-    # (Phase C full crawl in progress can take hours during PSI). We
-    # require ≥ 5 so we don't surface a single trailing PDF row from
-    # an aborted run as "the dataset".
-    snap = (
-        CrawlSnapshot.objects.annotate(n=Count("pages"))
-        .filter(n__gte=5)
-        .order_by("-id")
-        .first()
-    )
-    if snap is None:
-        return Response({"snapshot_id": None, "pages": []})
-    rows = (
-        CrawlerPageResult.objects.filter(snapshot=snap)
-        .exclude(status_code__in=["404", "500", "0"])
-        .values("url", "title", "page_type", "word_count")
-        .order_by("url")[:5000]
-    )
-    pages = [
-        {
-            "url": r["url"],
-            "title": (r["title"] or "")[:200],
-            "page_type": r["page_type"] or "",
-            "word_count": r["word_count"] or 0,
-        }
-        for r in rows
-    ]
-    return Response({
-        "snapshot_id": snap.id,
-        "snapshot_date": (
-            snap.started_at.isoformat() if snap.started_at else None
-        ),
-        "pages": pages,
-    })
-
-
-@api_view(["POST"])
-def content_writer_generate(request: Request):
-    """POST /api/v1/seo/content-writer/generate.
-
-    Body:
-        {
-          "our_url": "https://.../...",
-          "competitor_urls": ["...", "..."],   # optional
-          "target_keywords": ["...", "..."]    # optional
-        }
-
-    Returns the full :class:`ContentRewriteProposal` serialisation
-    immediately (synchronous — one LLM call, completes in 5-15 s).
-
-    The proposal is persisted regardless of outcome: errors land in
-    ``error`` so the operator can see what failed without losing the
-    request context.
-    """
-    from .agents.content_writer import generate_rewrite
-    from .models import ContentRewriteProposal
-
-    body = request.data or {}
-    our_url = (body.get("our_url") or "").strip()
-    if not our_url:
-        return Response(
-            {"error": "our_url is required"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    competitor_urls = [
-        (u or "").strip() for u in (body.get("competitor_urls") or [])
-        if (u or "").strip()
-    ]
-    target_keywords = [
-        (k or "").strip() for k in (body.get("target_keywords") or [])
-        if (k or "").strip()
-    ]
-
-    result = generate_rewrite(
-        our_url=our_url,
-        competitor_urls=competitor_urls,
-        target_keywords=target_keywords,
-    )
-
-    proposal = ContentRewriteProposal.objects.create(
-        our_url=result.our_url,
-        competitor_urls=result.competitor_urls,
-        target_keywords=result.target_keywords,
-        evidence_dict=result.evidence_dict,
-        raw_proposal=result.raw_proposal,
-        generated_proposal=result.filtered_proposal,
-        critic_verdict=result.critic_verdict,
-        model_used=result.model_used,
-        tokens_in=result.tokens_in,
-        tokens_out=result.tokens_out,
-        cost_usd=result.cost_usd,
-        error=result.error or "",
-    )
-    return Response(_serialize_proposal(proposal))
-
-
-@api_view(["GET"])
-def content_writer_proposal_detail(_request, proposal_id: str):
-    """GET /api/v1/seo/content-writer/proposals/<uuid>."""
-    from .models import ContentRewriteProposal
-
-    try:
-        proposal = ContentRewriteProposal.objects.get(id=proposal_id)
-    except ContentRewriteProposal.DoesNotExist:
-        return Response(
-            {"error": f"proposal {proposal_id} not found"},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    return Response(_serialize_proposal(proposal))
-
-
 @api_view(["GET"])
 def geo_score(request: Request):
     """GET /api/v1/seo/geo/score/.
@@ -3592,32 +3325,6 @@ def competitor_page_history(request: Request):
     })
 
 
-@api_view(["GET"])
-def content_writer_proposals_list(_request):
-    """GET /api/v1/seo/content-writer/proposals — recent rewrites."""
-    from .models import ContentRewriteProposal
-
-    rows = ContentRewriteProposal.objects.order_by("-created_at")[:50]
-    return Response({
-        "count": len(rows),
-        "proposals": [
-            {
-                "id": str(p.id),
-                "our_url": p.our_url,
-                "model_used": p.model_used,
-                "accepted": (p.critic_verdict or {}).get("accepted", 0),
-                "rejected": (p.critic_verdict or {}).get("rejected", 0),
-                "cost_usd": p.cost_usd,
-                "error": p.error,
-                "created_at": (
-                    p.created_at.isoformat() if p.created_at else None
-                ),
-            }
-            for p in rows
-        ],
-    })
-
-
 # ── Content Writer V2 — SERP-discovery-driven page revamp ───────────
 
 
@@ -3652,6 +3359,25 @@ def content_writer_v2_start(request: Request):
 
     if not our_url:
         return Response({"detail": "our_url required"}, status=400)
+
+    # Content Writer LLM is gated on a real Anthropic provider. When the
+    # key is disabled the pipeline would silently degrade to Groq/Stub and
+    # produce poor/empty drafts — so refuse new generation cleanly and let
+    # the operator keep viewing saved runs (the manager-demo history).
+    from .llm import get_content_writer_provider
+    try:
+        _prov = get_content_writer_provider()
+        llm_enabled = getattr(_prov, "name", "") == "anthropic"
+    except Exception:  # noqa: BLE001
+        llm_enabled = False
+    if not llm_enabled:
+        return Response({
+            "detail": (
+                "Content Writer LLM is disabled (ANTHROPIC_API_KEY not set). "
+                "Saved runs remain viewable; new generation is paused."
+            ),
+            "llm_enabled": False,
+        }, status=409)
 
     run = ContentWriterRun.objects.create(
         our_url=our_url,
@@ -3730,12 +3456,18 @@ def content_writer_v2_detail(_request, run_id: str):
         run = ContentWriterRun.objects.get(id=run_id)
     except ContentWriterRun.DoesNotExist:
         return Response({"detail": "run not found"}, status=404)
+    from .llm import get_content_writer_provider
+    try:
+        llm_enabled = getattr(get_content_writer_provider(), "name", "") == "anthropic"
+    except Exception:  # noqa: BLE001
+        llm_enabled = False
     return Response({
         "run_id": str(run.id),
         "status": run.status,
         "our_url": run.our_url,
         "operator_prompt": run.operator_prompt,
         "max_competitors": run.max_competitors,
+        "llm_enabled": llm_enabled,
         "stages": {
             "serp_discovery": run.serp_discovery,
             "our_page_analysis": run.our_page_analysis,

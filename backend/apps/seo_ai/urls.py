@@ -24,11 +24,6 @@ from .views import (
     page_topic_sections_view,
     content_comparison,
     content_comparison_our_pages,
-    content_writer_generate,
-    content_writer_our_pages,
-    content_writer_proposal_detail,
-    content_writer_proposals_list,
-    content_writer_revamp,
     content_writer_v2_detail,
     content_writer_v2_list,
     content_writer_v2_start,
@@ -265,36 +260,10 @@ urlpatterns = [
     path("chat/stream/", chat_stream, name="chat-stream"),
     # LLM pool monitoring — Groq key pool health.
     path("llm/pool-stats/", llm_pool_stats, name="llm-pool-stats"),
-    # Content Writer — LLM rewrites grounded in real evidence.
-    path(
-        "content-writer/our-pages/",
-        content_writer_our_pages,
-        name="content-writer-our-pages",
-    ),
-    path(
-        "content-writer/generate/",
-        content_writer_generate,
-        name="content-writer-generate",
-    ),
-    # Page-revamp orchestrator: single URL in, scans every competitor
-    # brand in the DB for a counterpart, refreshes stale rows, pulls
-    # CWV + Semrush, asks the RevampWriter agent to produce a full
-    # improved-version draft (title/meta/headings/body/FAQ/HTML).
-    path(
-        "content-writer/revamp/",
-        content_writer_revamp,
-        name="content-writer-revamp",
-    ),
-    path(
-        "content-writer/proposals/",
-        content_writer_proposals_list,
-        name="content-writer-proposals-list",
-    ),
-    path(
-        "content-writer/proposals/<uuid:proposal_id>/",
-        content_writer_proposal_detail,
-        name="content-writer-proposal-detail",
-    ),
+    # Legacy "Content Writer / Page Revamp" flow REMOVED 2026-05-31.
+    # The DB-roster revamp page + its endpoints are gone; the
+    # ContentRewriteProposal model + data are PRESERVED. Use the SERP
+    # v2 flow below.
     # Content Writer V2 — SERP-discovery-driven page revamp. New flow
     # owned by ``apps.seo_ai.content_writer/`` package (separate dir).
     # POST /content-writer/v2/start  body={our_url, operator_prompt?, max_competitors?}
