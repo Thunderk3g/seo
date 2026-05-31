@@ -17,6 +17,34 @@ from .models import GapPipelineRun, SEORun
 logger = logging.getLogger("seo.ai.tasks")
 
 
+def _cwv_record_to_columns(record) -> dict:
+    """Map a CWVRecord (lab_*/field_*/performance_score) to page CWV column
+    suffixes. Prefers CrUX field data, falls back to Lighthouse lab. The
+    old code read non-existent names (lcp_ms/pagespeed_score) and silently
+    wrote nothing — this is the corrected mapping."""
+    def pick(*vals):
+        for v in vals:
+            if v is not None and v != "":
+                return v
+        return None
+    score = getattr(record, "performance_score", None)
+    out = {
+        "lcp_ms": pick(record.field_lcp_ms, record.lab_lcp_ms),
+        "cls": pick(record.field_cls, record.lab_cls),
+        "inp_ms": record.field_inp_ms,
+        "fcp_ms": pick(record.field_fcp_ms, record.lab_fcp_ms),
+        "ttfb_ms": pick(record.field_ttfb_ms, record.lab_ttfb_ms),
+        "tbt_ms": record.lab_tbt_ms,
+        "si_ms": record.lab_si_ms,
+        "pagespeed_score": round(score * 100) if score is not None else None,
+        "lcp_category": record.field_lcp_category or None,
+        "cls_category": record.field_cls_category or None,
+        "inp_category": record.field_inp_category or None,
+        "has_field_data": record.has_field_data,
+    }
+    return {k: v for k, v in out.items() if v is not None and v != ""}
+
+
 @shared_task(name="seo_ai.run_grade", bind=True, max_retries=0)
 def run_grade_task(self, run_id: str) -> str:
     """Execute a grading run that was already created in the DB.
@@ -402,24 +430,16 @@ def psi_enrich_snapshot_task(
             if record.error:
                 continue
             prefix = "mobile_" if strategy == "mobile" else "desktop_"
-            for fld in (
-                "pagespeed_score", "lcp_ms", "cls", "inp_ms",
-                "fcp_ms", "ttfb_ms", "tbt_ms", "si_ms",
-            ):
-                val = getattr(record, fld, None)
-                if val is not None:
-                    setattr(page, f"{prefix}{fld}", val)
-            for fld in ("lcp_category", "cls_category", "inp_category", "has_field_data"):
-                val = getattr(record, fld, None)
-                if val is not None:
-                    setattr(page, f"{prefix}{fld}", val)
-            # Legacy mirror columns (mobile-only)
+            colvals = _cwv_record_to_columns(record)
+            for suffix, val in colvals.items():
+                setattr(page, f"{prefix}{suffix}", val)
+            # Legacy mirror columns (mobile-only) that the page-detail UI reads.
             if strategy == "mobile":
                 for fld in ("pagespeed_score", "lcp_ms", "cls", "inp_ms"):
-                    val = getattr(record, fld, None)
-                    if val is not None:
-                        setattr(page, fld, val)
-            enriched += 1
+                    if fld in colvals:
+                        setattr(page, fld, colvals[fld])
+            if colvals:
+                enriched += 1
         try:
             page.save(update_fields=[
                 "pagespeed_score", "lcp_ms", "cls", "inp_ms",
