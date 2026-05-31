@@ -71,6 +71,13 @@ class LLMResponse:
     model: str = ""
     finish_reason: str = ""
     raw: dict[str, Any] | None = None
+    # Populated only by Anthropic web-search turns. ``web_search_results``
+    # is a flat list of {url, title, page_age} the server tool returned;
+    # ``citations`` is the list of {url, title, cited_text} attached to
+    # the assistant's text blocks. Both empty for normal completions.
+    web_search_results: list[dict[str, Any]] = field(default_factory=list)
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    web_search_count: int = 0
 
 
 class LLMProvider:
@@ -88,6 +95,7 @@ class LLMProvider:
         max_tokens: int | None = None,
         temperature: float | None = None,
         response_format: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:  # pragma: no cover - interface
         raise NotImplementedError
 
@@ -214,9 +222,10 @@ class GroqProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         response_format: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "max_tokens": max_tokens or self._default_max_tokens,
             "temperature": (
@@ -341,13 +350,17 @@ class GroqProvider(LLMProvider):
         tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
         tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
 
+        # The resolved model reflects both the per-call override and any
+        # 413 downshift that happened mid-loop — cost must track that, not
+        # the provider default.
+        resolved_model = kwargs.get("model") or self.model
         return LLMResponse(
             content=content,
             tool_calls=tool_calls,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost_usd=_estimate_cost(self.model, tokens_in, tokens_out),
-            model=self.model,
+            cost_usd=_estimate_cost(resolved_model, tokens_in, tokens_out),
+            model=resolved_model,
             finish_reason=getattr(choice, "finish_reason", "") or "",
             raw=resp.model_dump() if hasattr(resp, "model_dump") else None,
         )
@@ -550,6 +563,353 @@ class GroqProvider(LLMProvider):
         )
 
 
+# ── Anthropic / Claude ─────────────────────────────────────────────────
+# Claude pricing per million tokens (Nov 2025 list). Updated alongside
+# the model id so cost estimates stay in sync.
+_ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
+    # in / out, USD per 1M tokens
+    "claude-opus-4-7": (15.0, 75.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (0.80, 4.0),
+    # Legacy 3.x — kept so a stale env var doesn't zero out cost.
+    "claude-3-5-sonnet-latest": (3.0, 15.0),
+    "claude-3-5-haiku-latest": (0.80, 4.0),
+}
+
+
+def _anthropic_estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    price_in, price_out = _ANTHROPIC_PRICING.get(model, (0.0, 0.0))
+    return (tokens_in * price_in + tokens_out * price_out) / 1_000_000
+
+
+# Web search server tool: $10 per 1,000 searches (Nov 2025 list).
+_ANTHROPIC_WEB_SEARCH_PRICE_PER_CALL = 0.01
+
+
+def _anthropic_cost_from_usage(model: str, usage: dict[str, Any]) -> tuple[float, int, int, int]:
+    """Compute USD cost + (total_in, total_out, web_searches) from an
+    Anthropic ``usage`` block.
+
+    Anthropic reports ``input_tokens`` EXCLUDING cached tokens; cache
+    reads bill at 0.1x and cache writes at 1.25x of the input rate.
+    Web-search requests bill per call on top of tokens.
+    """
+    price_in, price_out = _ANTHROPIC_PRICING.get(model, (0.0, 0.0))
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+    server = usage.get("server_tool_use") or {}
+    web_searches = int(server.get("web_search_requests") or 0)
+
+    cost = (input_tokens * price_in + output_tokens * price_out) / 1_000_000
+    cost += (cache_creation * price_in * 1.25 + cache_read * price_in * 0.10) / 1_000_000
+    cost += web_searches * _ANTHROPIC_WEB_SEARCH_PRICE_PER_CALL
+    total_in = input_tokens + cache_read + cache_creation
+    return cost, total_in, output_tokens, web_searches
+
+
+class AnthropicProvider(LLMProvider):
+    """Anthropic Messages API client.
+
+    Translates OpenAI-style ``messages`` (system + user + assistant)
+    into the Anthropic Messages shape (``system`` param + ``messages``
+    list without a system role). JSON-mode requests are honoured by
+    appending a strict "respond with ONE JSON object, no prose" line
+    to the system prompt — Anthropic doesn't expose response_format=json
+    today, but with the system instruction Claude reliably emits valid
+    JSON for our writer prompts.
+
+    Tool-use is wired through ``tools=[...]`` with Anthropic's native
+    schema; we translate back into the same normalized LLMResponse
+    shape Groq uses so callers don't care.
+    """
+
+    name = "anthropic"
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        cfg = settings.LLM.get("anthropic") or {}
+        key = api_key or cfg.get("api_key")
+        if not key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Populate it in .env or set "
+                "LLM_PROVIDER back to groq/stub."
+            )
+        import httpx
+        try:
+            import truststore
+            truststore.inject_into_ssl()
+        except Exception:  # noqa: BLE001 — non-Windows or already injected
+            pass
+
+        verify: bool | str = _resolve_ssl_verify(
+            settings.LLM.get("ssl_verify", "")
+        )
+        if verify is False:
+            logger.warning(
+                "LLM_SSL_VERIFY=false on Anthropic — TLS verification off."
+            )
+        self._http = httpx.Client(verify=verify, timeout=float(timeout or 120.0))
+        self._api_key = key
+        self._base_url = (cfg.get("base_url") or "https://api.anthropic.com").rstrip("/")
+        self.model = model or cfg.get("model") or "claude-sonnet-4-6"
+        self._default_max_tokens = int(max_tokens or cfg.get("max_tokens") or 6000)
+        self._default_temperature = float(cfg.get("temperature") or 0.3)
+        # Prompt caching: when on, the (large, static) system block is
+        # marked ``cache_control: ephemeral`` so repeat runs read it at
+        # 0.1x. Harmless when off or when the system block is below the
+        # cacheable minimum (Anthropic just ignores the marker).
+        cw_cfg = getattr(settings, "CONTENT_WRITER", None) or {}
+        self._cache_system = bool(cw_cfg.get("enable_prompt_cache", True))
+        self._web_search_beta = bool(cw_cfg.get("web_search_beta", False))
+
+    @staticmethod
+    def _split_system(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+        """Pull out system messages → concatenate; return (system, rest)."""
+        system_parts: list[str] = []
+        rest: list[dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "system":
+                content = m.get("content")
+                if isinstance(content, str):
+                    system_parts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            system_parts.append(part.get("text") or "")
+            else:
+                rest.append(m)
+        return "\n\n".join(p for p in system_parts if p), rest
+
+    def _system_field(self, system: str) -> Any:
+        """Return the ``system`` request field, marking it cacheable when
+        prompt caching is on. Below Anthropic's cacheable minimum the
+        marker is silently ignored, so this is always safe."""
+        if not system:
+            return None
+        if self._cache_system:
+            return [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        return system
+
+    def _post(self, body: dict[str, Any], *, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+        headers = {
+            "x-api-key": self._api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        try:
+            resp = self._http.post(
+                f"{self._base_url}/v1/messages",
+                json=body,
+                headers=headers,
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logger.error("anthropic POST network failed: %s", exc)
+            raise
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"anthropic http {resp.status_code}: {resp.text[:500]}"
+            )
+        return resp.json()
+
+    def _parse(self, data: dict[str, Any], req_model: str) -> LLMResponse:
+        """Normalize an Anthropic Messages response into LLMResponse.
+
+        Handles text / tool_use blocks plus the web-search server-tool
+        blocks (server_tool_use = the query Claude ran;
+        web_search_tool_result = the results) and text-block citations.
+        """
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        web_results: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        for block in data.get("content") or []:
+            btype = block.get("type")
+            if btype == "text":
+                text_parts.append(block.get("text") or "")
+                for c in (block.get("citations") or []):
+                    if isinstance(c, dict):
+                        citations.append({
+                            "url": c.get("url", ""),
+                            "title": c.get("title", ""),
+                            "cited_text": (c.get("cited_text") or "")[:300],
+                        })
+            elif btype == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "arguments": block.get("input") or {},
+                })
+            elif btype == "web_search_tool_result":
+                content = block.get("content")
+                if isinstance(content, list):
+                    for r in content:
+                        if isinstance(r, dict) and r.get("type") == "web_search_result":
+                            web_results.append({
+                                "url": r.get("url", ""),
+                                "title": r.get("title", ""),
+                                "page_age": r.get("page_age", ""),
+                            })
+        usage = data.get("usage") or {}
+        cost, total_in, total_out, web_count = _anthropic_cost_from_usage(req_model, usage)
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            tokens_in=total_in,
+            tokens_out=total_out,
+            cost_usd=cost,
+            model=data.get("model") or req_model,
+            finish_reason=data.get("stop_reason") or "",
+            raw=data,
+            web_search_results=web_results,
+            citations=citations,
+            web_search_count=web_count,
+        )
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> LLMResponse:
+        req_model = model or self.model
+        system, rest = self._split_system(messages)
+        # Honour the OpenAI-style "response_format=json_object" by hinting
+        # in the system prompt — Anthropic complies very reliably. Append
+        # BEFORE wrapping for cache so the cached prefix stays byte-stable.
+        if response_format and (response_format.get("type") == "json_object"):
+            system = (system + "\n\nRespond with ONE valid JSON object. "
+                      "Do not wrap it in markdown. Do not emit any prose "
+                      "before or after the JSON.").strip()
+
+        body: dict[str, Any] = {
+            "model": req_model,
+            "messages": rest,
+            "max_tokens": max_tokens or self._default_max_tokens,
+            "temperature": temperature if temperature is not None else self._default_temperature,
+        }
+        sys_field = self._system_field(system)
+        if sys_field is not None:
+            body["system"] = sys_field
+
+        if tools:
+            # OpenAI tool schema → Anthropic tool schema.
+            body["tools"] = [
+                {
+                    "name": t["function"]["name"]
+                    if t.get("type") == "function" else t.get("name"),
+                    "description": (
+                        t["function"].get("description")
+                        if t.get("type") == "function"
+                        else t.get("description")
+                    ) or "",
+                    "input_schema": (
+                        t["function"].get("parameters")
+                        if t.get("type") == "function"
+                        else t.get("input_schema")
+                    ) or {"type": "object", "properties": {}},
+                }
+                for t in tools
+            ]
+            if tool_choice == "auto" or tool_choice is None:
+                body["tool_choice"] = {"type": "auto"}
+            elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+                body["tool_choice"] = {
+                    "type": "tool", "name": tool_choice["function"]["name"],
+                }
+
+        data = self._post(body)
+        return self._parse(data, req_model)
+
+    def complete_with_web_search(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        model: str | None = None,
+        max_uses: int = 3,
+    ) -> LLMResponse:
+        """One agentic call with Anthropic's server-side web_search tool.
+
+        Claude runs the searches server-side during this single request
+        and returns the final answer plus ``web_search_tool_result``
+        blocks (harvested into ``LLMResponse.web_search_results``) and
+        per-search billing in ``usage.server_tool_use``.
+        """
+        req_model = model or self.model
+        system, rest = self._split_system(messages)
+        body: dict[str, Any] = {
+            "model": req_model,
+            "messages": rest,
+            "max_tokens": max_tokens or self._default_max_tokens,
+            "temperature": temperature if temperature is not None else self._default_temperature,
+            "tools": [{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": max(1, int(max_uses)),
+            }],
+        }
+        sys_field = self._system_field(system)
+        if sys_field is not None:
+            body["system"] = sys_field
+        extra = {"anthropic-beta": "web-search-2025-03-05"} if self._web_search_beta else None
+        data = self._post(body, extra_headers=extra)
+        return self._parse(data, req_model)
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Iterator[StreamChunk]:
+        """Non-streaming fallback. Yields one synthetic text chunk + done.
+
+        We rarely stream from the content writer — the rewrite is fetched
+        as one JSON object and rendered. If streaming becomes important
+        for the chat assistant, wire the Anthropic SSE endpoint here.
+        """
+        resp = self.complete(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if resp.content:
+            yield StreamChunk(kind="text", text=resp.content)
+        for tc in resp.tool_calls:
+            yield StreamChunk(kind="tool_call", tool_call=tc)
+        yield StreamChunk(
+            kind="done",
+            finish_reason=resp.finish_reason,
+            tokens_in=resp.tokens_in,
+            tokens_out=resp.tokens_out,
+            cost_usd=resp.cost_usd,
+        )
+
+
 # ── Stub (no network) ──────────────────────────────────────────────────
 
 
@@ -573,15 +933,19 @@ class StubProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         response_format: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         return LLMResponse(
             content="{}",
             tokens_in=0,
             tokens_out=0,
             cost_usd=0.0,
-            model=self.model,
+            model=model or self.model,
             finish_reason="stop",
         )
+
+    def complete_with_web_search(self, messages, **kwargs) -> LLMResponse:
+        return self.complete(messages)
 
     def stream_complete(
         self,
@@ -649,8 +1013,45 @@ def get_provider() -> LLMProvider:
     provider = settings.LLM["provider"].lower()
     if provider == "groq":
         _singleton = GroqProvider()
+    elif provider == "anthropic":
+        _singleton = AnthropicProvider()
     elif provider == "stub":
         _singleton = StubProvider()
     else:
         raise RuntimeError(f"Unknown LLM_PROVIDER={provider!r}")
     return _singleton
+
+
+def get_content_writer_provider() -> LLMProvider:
+    """Provider used ONLY by the content_writer package.
+
+    Distinct from the process-wide ``get_provider()`` singleton (which
+    stays on Groq for the rest of the app). Builds a FRESH, non-cached
+    ``AnthropicProvider`` whose default model is the configured writer
+    model — cheap stages (query synthesis, clustering) pass
+    ``model=CONTENT_WRITER["cheap_model"]`` per call.
+
+    Falls back to the global provider (or stub) when Anthropic isn't
+    configured, so the pipeline degrades instead of hard-crashing.
+    """
+    cw = getattr(settings, "CONTENT_WRITER", None) or {}
+    provider_name = (cw.get("provider") or "anthropic").lower()
+    if provider_name == "anthropic":
+        key = cw.get("api_key") or (settings.LLM.get("anthropic") or {}).get("api_key")
+        if key:
+            try:
+                return AnthropicProvider(
+                    api_key=key,
+                    model=cw.get("writer_model"),
+                    max_tokens=cw.get("writer_max_tokens"),
+                    timeout=cw.get("request_timeout_sec"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "content-writer Anthropic provider init failed (%s); "
+                    "falling back to global provider", exc,
+                )
+    try:
+        return get_provider()
+    except Exception:  # noqa: BLE001
+        return StubProvider()

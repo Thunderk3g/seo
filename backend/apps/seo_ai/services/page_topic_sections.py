@@ -90,14 +90,26 @@ def _cache_dir() -> Path:
     return path
 
 
-def _cache_path(snapshot_id: str, url_b64: str) -> Path:
+def _model_tag(model: str) -> str:
+    """Short stable tag for a model id so the cache key is provider-aware
+    — clustering output differs by model, and serving a Groq-clustered
+    payload after switching to Claude would silently under-report cost
+    and skip the Claude pass entirely."""
+    import hashlib
+
+    if not model:
+        return "default"
+    return hashlib.sha1(model.encode("utf-8")).hexdigest()[:8]
+
+
+def _cache_path(snapshot_id: str, url_b64: str, model: str = "") -> Path:
     safe = "".join(c if c.isalnum() else "_" for c in (snapshot_id or ""))[:48]
     safeb = url_b64[:48]
-    return _cache_dir() / f"{safe}__{safeb}.json"
+    return _cache_dir() / f"{safe}__{safeb}__{_model_tag(model)}.json"
 
 
-def _cache_read(snapshot_id: str, url_b64: str, ttl_seconds: int) -> dict | None:
-    p = _cache_path(snapshot_id, url_b64)
+def _cache_read(snapshot_id: str, url_b64: str, ttl_seconds: int, model: str = "") -> dict | None:
+    p = _cache_path(snapshot_id, url_b64, model)
     if not p.exists():
         return None
     try:
@@ -110,8 +122,8 @@ def _cache_read(snapshot_id: str, url_b64: str, ttl_seconds: int) -> dict | None
     return envelope.get("data")
 
 
-def _cache_write(snapshot_id: str, url_b64: str, data: dict) -> None:
-    p = _cache_path(snapshot_id, url_b64)
+def _cache_write(snapshot_id: str, url_b64: str, data: dict, model: str = "") -> None:
+    p = _cache_path(snapshot_id, url_b64, model)
     try:
         with p.open("w", encoding="utf-8") as f:
             json.dump({"written_at_unix": time.time(), "data": data}, f)
@@ -229,13 +241,22 @@ def build_page_topic_sections(
     page,                       # CrawlerPageResult
     cache_ttl_seconds: int = 24 * 3600,
     force_refresh: bool = False,
+    provider=None,
+    model: str | None = None,
 ) -> PageTopicSections:
     """LLM-cluster one page's content into named topical sections.
 
-    Disk-cached per (snapshot_id, url_b64) for 24 h. Cold call: ~10-15 s,
-    ~$0.002 via gpt-oss-120b.
+    Disk-cached per (snapshot_id, url_b64, model) for 24 h. Cold call:
+    ~10-15 s. ``provider``/``model`` let the content_writer route this
+    through Claude (Haiku) without touching the global provider; the
+    model is part of the cache key so a provider switch re-clusters.
     """
     import base64
+
+    from ..llm import get_provider
+
+    provider = provider or get_provider()
+    resolved_model = model or getattr(provider, "model", "") or ""
 
     snapshot_id = str(page.snapshot_id)
     url_b64 = base64.urlsafe_b64encode(
@@ -243,7 +264,7 @@ def build_page_topic_sections(
     ).decode("ascii").rstrip("=")
 
     if not force_refresh:
-        cached = _cache_read(snapshot_id, url_b64, cache_ttl_seconds)
+        cached = _cache_read(snapshot_id, url_b64, cache_ttl_seconds, resolved_model)
         if cached is not None:
             cached["cached"] = True
             return _from_dict(cached)
@@ -307,8 +328,6 @@ def build_page_topic_sections(
         "body_sample": _truncate((page.body_text or "").strip(), 1200),
     }
 
-    from ..llm import get_provider
-    provider = get_provider()
     user_content = (
         "Cluster the headings of this page into 5–10 named topical "
         "sections. Every heading id must appear in exactly one section.\n\n"
@@ -326,6 +345,7 @@ def build_page_topic_sections(
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.2,
+            model=model,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("page topic-section LLM call failed for %s", page.url)
@@ -336,7 +356,7 @@ def build_page_topic_sections(
             total_headings=len(headings),
             total_internal_links=len(internal_links),
             sections=[],
-            model_used=getattr(provider, "model", "") or "",
+            model_used=resolved_model,
             tokens_in=0,
             tokens_out=0,
             cost_usd=0.0,
@@ -361,7 +381,7 @@ def build_page_topic_sections(
             total_headings=len(headings),
             total_internal_links=len(internal_links),
             sections=[],
-            model_used=getattr(provider, "model", "") or "",
+            model_used=resolved_model,
             tokens_in=resp.tokens_in,
             tokens_out=resp.tokens_out,
             cost_usd=resp.cost_usd,
@@ -464,7 +484,7 @@ def build_page_topic_sections(
     )
 
     payload = _to_dict(result)
-    _cache_write(snapshot_id, url_b64, payload)
+    _cache_write(snapshot_id, url_b64, payload, resolved_model)
     return result
 
 

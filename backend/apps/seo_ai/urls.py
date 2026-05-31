@@ -29,6 +29,9 @@ from .views import (
     content_writer_proposal_detail,
     content_writer_proposals_list,
     content_writer_revamp,
+    content_writer_v2_detail,
+    content_writer_v2_list,
+    content_writer_v2_start,
     custodian_adobe,
     custodian_layout,
     custodian_structure_gaps,
@@ -291,6 +294,26 @@ urlpatterns = [
         "content-writer/proposals/<uuid:proposal_id>/",
         content_writer_proposal_detail,
         name="content-writer-proposal-detail",
+    ),
+    # Content Writer V2 — SERP-discovery-driven page revamp. New flow
+    # owned by ``apps.seo_ai.content_writer/`` package (separate dir).
+    # POST /content-writer/v2/start  body={our_url, operator_prompt?, max_competitors?}
+    # GET  /content-writer/v2/runs/         — recent history
+    # GET  /content-writer/v2/runs/<uuid>/  — re-render one past run
+    path(
+        "content-writer/v2/start/",
+        content_writer_v2_start,
+        name="content-writer-v2-start",
+    ),
+    path(
+        "content-writer/v2/runs/",
+        content_writer_v2_list,
+        name="content-writer-v2-list",
+    ),
+    path(
+        "content-writer/v2/runs/<uuid:run_id>/",
+        content_writer_v2_detail,
+        name="content-writer-v2-detail",
     ),
     path("", include(_router.urls)),
 ]
