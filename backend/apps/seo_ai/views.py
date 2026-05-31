@@ -3616,3 +3616,169 @@ def content_writer_proposals_list(_request):
             for p in rows
         ],
     })
+
+
+# ── Content Writer V2 — SERP-discovery-driven page revamp ───────────
+
+
+@api_view(["POST"])
+def content_writer_v2_start(request: Request):
+    """Run the new content_writer pipeline synchronously.
+
+    Body:
+      * our_url (required)
+      * operator_prompt (optional)
+      * max_competitors (optional, default 5)
+
+    Persists a :class:`ContentWriterRun` and returns the full result so
+    the UI can render every stage panel without polling. We could fan
+    this out into a Celery task later — for now sync is fine because
+    the writer takes 30-90s end-to-end and the operator is sitting on
+    the page waiting.
+    """
+    from django.utils import timezone
+
+    from .content_writer.orchestrator import run_revamp
+    from .models import ContentWriterRun
+
+    payload = request.data if isinstance(request.data, dict) else {}
+    our_url = (payload.get("our_url") or "").strip()
+    operator_prompt = (payload.get("operator_prompt") or "").strip()
+    try:
+        max_competitors = int(payload.get("max_competitors") or 5)
+    except (TypeError, ValueError):
+        max_competitors = 5
+    max_competitors = max(1, min(max_competitors, 10))
+
+    if not our_url:
+        return Response({"detail": "our_url required"}, status=400)
+
+    run = ContentWriterRun.objects.create(
+        our_url=our_url,
+        operator_prompt=operator_prompt,
+        max_competitors=max_competitors,
+        status=ContentWriterRun.Status.RUNNING,
+    )
+
+    try:
+        result = run_revamp(
+            our_url=our_url,
+            operator_prompt=operator_prompt,
+            max_competitors=max_competitors,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface to operator
+        logging.getLogger("seo.ai.content_writer.views").exception(
+            "content_writer_v2_start failed for %s", our_url,
+        )
+        run.status = ContentWriterRun.Status.FAILED
+        run.error = f"{type(exc).__name__}: {exc}"
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "error", "finished_at"])
+        return Response(
+            {"detail": "pipeline crashed", "error": run.error, "run_id": str(run.id)},
+            status=500,
+        )
+
+    stages = result.get("stages") or {}
+    telemetry = result.get("telemetry") or {}
+    run.serp_discovery = stages.get("serp_discovery") or {}
+    run.our_page_analysis = stages.get("our_page_analysis") or {}
+    run.competitor_analyses = stages.get("competitor_analyses") or []
+    run.our_sections = stages.get("our_sections") or {}
+    run.competitor_sections = stages.get("competitor_sections") or {}
+    run.gap_report = stages.get("gap_report") or {}
+    run.seo_overlay = stages.get("seo_overlay") or {}
+    run.revamp = stages.get("revamp") or {}
+    run.our_structure = stages.get("our_structure") or {}
+    run.competitor_structures = stages.get("competitor_structures") or {}
+    run.warnings = result.get("warnings") or []
+    run.telemetry = telemetry
+    run.error = stages.get("revamp_error") or ""
+    run.model_used = telemetry.get("model_used") or ""
+    run.tokens_in = int(telemetry.get("tokens_in") or 0)
+    run.tokens_out = int(telemetry.get("tokens_out") or 0)
+    run.cost_usd = float(telemetry.get("cost_usd") or 0.0)
+    run.status = (
+        ContentWriterRun.Status.COMPLETE
+        if run.revamp and not run.error
+        else ContentWriterRun.Status.FAILED
+    )
+    run.finished_at = timezone.now()
+    run.save()
+
+    return Response({
+        "run_id": str(run.id),
+        "status": run.status,
+        "our_url": run.our_url,
+        "operator_prompt": run.operator_prompt,
+        "stages": stages,
+        "telemetry": telemetry,
+        "warnings": run.warnings,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "finished_at": (
+            run.finished_at.isoformat() if run.finished_at else None
+        ),
+    })
+
+
+@api_view(["GET"])
+def content_writer_v2_detail(_request, run_id: str):
+    """Re-render a past run from its persisted stages."""
+    from .models import ContentWriterRun
+
+    try:
+        run = ContentWriterRun.objects.get(id=run_id)
+    except ContentWriterRun.DoesNotExist:
+        return Response({"detail": "run not found"}, status=404)
+    return Response({
+        "run_id": str(run.id),
+        "status": run.status,
+        "our_url": run.our_url,
+        "operator_prompt": run.operator_prompt,
+        "max_competitors": run.max_competitors,
+        "stages": {
+            "serp_discovery": run.serp_discovery,
+            "our_page_analysis": run.our_page_analysis,
+            "competitor_analyses": run.competitor_analyses,
+            "our_sections": run.our_sections,
+            "competitor_sections": run.competitor_sections,
+            "our_structure": run.our_structure,
+            "competitor_structures": run.competitor_structures,
+            "gap_report": run.gap_report,
+            "seo_overlay": run.seo_overlay,
+            "revamp": run.revamp,
+            "revamp_error": run.error,
+        },
+        "telemetry": run.telemetry,
+        "warnings": run.warnings,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "finished_at": (
+            run.finished_at.isoformat() if run.finished_at else None
+        ),
+    })
+
+
+@api_view(["GET"])
+def content_writer_v2_list(_request):
+    """List the most recent V2 runs for the history rail."""
+    from .models import ContentWriterRun
+
+    rows = ContentWriterRun.objects.all().order_by("-created_at")[:50]
+    return Response({
+        "runs": [
+            {
+                "run_id": str(r.id),
+                "our_url": r.our_url,
+                "operator_prompt": r.operator_prompt,
+                "status": r.status,
+                "model_used": r.model_used,
+                "cost_usd": r.cost_usd,
+                "competitor_count": len(r.competitor_analyses or []),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "finished_at": (
+                    r.finished_at.isoformat() if r.finished_at else None
+                ),
+            }
+            for r in rows
+        ],
+    })

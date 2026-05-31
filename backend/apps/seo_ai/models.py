@@ -863,3 +863,73 @@ class CompetitorChangeEvent(models.Model):
     def __str__(self) -> str:
         return f"{self.competitor_domain} {self.kind} {self.url[:60]}"
 
+
+# ── Content Writer V2 — SERP-discovery-driven page revamp ────────────
+
+
+class ContentWriterRun(models.Model):
+    """One end-to-end content_writer pipeline execution.
+
+    Persists every stage's output as a separate JSON column so a re-load
+    can re-render the UI panel-by-panel (SERP results, comp analyses,
+    gap report, SEO overlay, revamp draft) without re-running anything.
+
+    Distinct from :class:`ContentRewriteProposal` — that's the legacy
+    DB-roster-based revamp. This row carries SERP discovery state which
+    the proposal model doesn't model.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETE = "complete", "Complete"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    our_url = models.URLField(max_length=2048)
+    operator_prompt = models.TextField(blank=True, default="")
+    max_competitors = models.IntegerField(default=5)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING,
+    )
+
+    # Per-stage outputs — populated by the orchestrator as it progresses.
+    serp_discovery = models.JSONField(default=dict, blank=True)
+    our_page_analysis = models.JSONField(default=dict, blank=True)
+    competitor_analyses = models.JSONField(default=list, blank=True)
+    our_sections = models.JSONField(default=dict, blank=True)
+    competitor_sections = models.JSONField(default=dict, blank=True)
+    gap_report = models.JSONField(default=dict, blank=True)
+    seo_overlay = models.JSONField(default=dict, blank=True)
+    revamp = models.JSONField(default=dict, blank=True)
+
+    # Raw per-page structure (heading outline + internal-link list +
+    # image list + LLM clusters) powering the UI "page structure"
+    # dropdowns — ours and each competitor's. Separate from the analysis
+    # dicts above, which carry only counts.
+    our_structure = models.JSONField(default=dict, blank=True)
+    competitor_structures = models.JSONField(default=dict, blank=True)
+
+    warnings = models.JSONField(default=list, blank=True)
+    telemetry = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True, default="")
+
+    model_used = models.CharField(max_length=128, blank=True, default="")
+    tokens_in = models.IntegerField(default=0)
+    tokens_out = models.IntegerField(default=0)
+    cost_usd = models.FloatField(default=0.0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["-created_at"]),
+            models.Index(fields=["our_url", "-created_at"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - admin
+        return f"ContentWriterRun {self.our_url} {self.status} @ {self.created_at:%Y-%m-%d}"
+

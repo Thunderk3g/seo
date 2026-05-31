@@ -158,11 +158,79 @@ LLM = {
             "openai/gpt-oss-20b",
         ),
     },
-    # TODO(prod-cutover): OpenAI + Anthropic provider config sections.
-    # Concrete provider classes still need to be added to
+    "anthropic": {
+        # Anthropic / Claude provider — used by the Content Writer
+        # package when LLM_PROVIDER=anthropic. Defaults to claude-sonnet
+        # which is the right strength/cost point for long structured
+        # content generation (Opus is overkill, Haiku regresses on the
+        # depth Bajaj copy needs).
+        "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+        "base_url": os.environ.get(
+            "ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+        ),
+        "model": os.environ.get(
+            "ANTHROPIC_MODEL", "claude-sonnet-4-6"
+        ),
+        "max_tokens": int(os.environ.get("ANTHROPIC_MAX_TOKENS", "6000")),
+        "temperature": float(os.environ.get("ANTHROPIC_TEMPERATURE", "0.3")),
+    },
+    # TODO(prod-cutover): OpenAI provider config section.
+    # Concrete OpenAIProvider class still needs to be added to
     # apps.seo_ai.llm.provider.py — see the get_provider() factory.
     # Apify (Meta Ads adapter at apps.seo_ai.adapters.apify_meta_ads) is
     # a separate subsystem and does NOT use this LLM dict.
+}
+
+# Content Writer v2 — SERP-discovery-driven page revamp. This block
+# scopes Claude to the content_writer package ONLY (query synthesis,
+# clustering, web search, the writer). The rest of the app keeps using
+# whatever LLM["provider"] is set to (Groq in dev). The Anthropic API
+# key is reused from LLM["anthropic"]["api_key"] (ANTHROPIC_API_KEY).
+CONTENT_WRITER = {
+    "provider": os.environ.get("CONTENT_WRITER_PROVIDER", "anthropic"),
+    # Dedicated key so the operator's Claude balance is scoped to the
+    # content writer ONLY. Falls back to the shared ANTHROPIC_API_KEY if
+    # the dedicated one isn't set. Keeping ANTHROPIC_API_KEY empty leaves
+    # the AI-Visibility Anthropic probe disabled.
+    "api_key": (
+        os.environ.get("CONTENT_WRITER_ANTHROPIC_API_KEY", "")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+    ),
+    # Sonnet for the writer (long, compliant, structured copy); Haiku for
+    # the cheap high-volume stages (query synthesis + per-page clustering).
+    "writer_model": os.environ.get("CONTENT_WRITER_WRITER_MODEL", "claude-sonnet-4-6"),
+    "cheap_model": os.environ.get("CONTENT_WRITER_CHEAP_MODEL", "claude-haiku-4-5"),
+    # Output ceiling for the writer. High by design — the operator wants
+    # full, unconstrained website content (3000+ words + full HTML body
+    # with header/footer + FAQs + schema). Sonnet bills only actual
+    # output tokens, so a high ceiling is free unless used.
+    "writer_max_tokens": int(os.environ.get("CONTENT_WRITER_WRITER_MAX_TOKENS", "16000")),
+    # HTTP read timeout for Claude calls. A full 3000+ word Sonnet
+    # generation streams for several minutes, so this must be well above
+    # the 120s default or the writer will time out mid-draft.
+    "request_timeout_sec": int(os.environ.get("CONTENT_WRITER_REQUEST_TIMEOUT_SEC", "600")),
+    # Per-run cumulative cost cap (USD). Optional stages degrade before
+    # exceeding; the writer always runs. Typical run is ~$0.20-0.40.
+    "max_cost_usd": float(os.environ.get("CONTENT_WRITER_MAX_COST_USD", "0.75")),
+    # Claude web-search server tool for competitor discovery + Bajaj-rank
+    # corroboration. Bills ~$0.01 per search.
+    "use_web_search": os.environ.get("CONTENT_WRITER_USE_WEB_SEARCH", "true").lower()
+    in ("1", "true", "yes", "on"),
+    "web_search_max_uses": int(os.environ.get("CONTENT_WRITER_WEB_SEARCH_MAX_USES", "4")),
+    # Set true only if the Anthropic account gates web search behind the
+    # beta header.
+    "web_search_beta": os.environ.get("CONTENT_WRITER_WEB_SEARCH_BETA", "false").lower()
+    in ("1", "true", "yes", "on"),
+    # SERP fan-out: synthesize this many queries, run the top-K through
+    # SerpAPI and aggregate competitors across them (SerpAPI is billed on
+    # its own key, NOT the Anthropic budget).
+    "serp_query_count": int(os.environ.get("CONTENT_WRITER_SERP_QUERY_COUNT", "10")),
+    "serp_run_top_k": int(os.environ.get("CONTENT_WRITER_SERP_RUN_TOP_K", "4")),
+    # Minimum distinct insurer competitors to crawl successfully. The
+    # orchestrator substitutes the next-ranking insurer when one blocks.
+    "min_competitors": int(os.environ.get("CONTENT_WRITER_MIN_COMPETITORS", "4")),
+    "enable_prompt_cache": os.environ.get("CONTENT_WRITER_PROMPT_CACHE", "true").lower()
+    in ("1", "true", "yes", "on"),
 }
 
 SEMRUSH = {
