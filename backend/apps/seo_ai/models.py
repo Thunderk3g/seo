@@ -239,6 +239,9 @@ class GapPipelineQuery(models.Model):
     rationale = models.CharField(max_length=512, blank=True, default="")
     source_keywords = models.JSONField(default=list, blank=True)
     order = models.IntegerField(default=0)
+    # G5: where this query came from — "seed" (static seed list),
+    # "semrush" (keyword-derived), or "expansion" (LLM-expanded universe).
+    source = models.CharField(max_length=16, default="seed")
 
     class Meta:
         ordering = ("run", "order")
@@ -664,6 +667,10 @@ class BrandMention(models.Model):
     # Lets the orchestrator skip already-enriched rows on re-runs.
     page_fetched_at = models.DateTimeField(null=True, blank=True)
 
+    # G6: prominence of the mention (0-100) — how visible/authoritative.
+    # Computed deterministically from SERP/source-tier/is_linked signals.
+    prominence_score = models.IntegerField(default=0, db_index=True)
+
     # Raw payload from the source adapter — useful for debugging and
     # for adding new fields without a migration. Per-adapter shape.
     raw_payload = models.JSONField(default=dict, blank=True)
@@ -932,4 +939,140 @@ class ContentWriterRun(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - admin
         return f"ContentWriterRun {self.our_url} {self.status} @ {self.created_at:%Y-%m-%d}"
+
+
+# ── GEO / AI-search enhancements (G1, G3, G7, G8, G9, G10) ────────────
+# All additive: new tables (CreateModel) + two AddField above. No existing
+# table is altered destructively, so applying migration 0014 preserves
+# every crawled page, proposal, run, and mention already stored.
+
+
+class GapLLMVisibilitySnapshot(models.Model):
+    """G1: a point-in-time snapshot of AI-search visibility for a run, so
+    the dashboard can chart share-of-AI-voice over time instead of showing
+    only the latest one-off run."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(
+        GapPipelineRun, on_delete=models.CASCADE, related_name="visibility_snapshots"
+    )
+    domain = models.CharField(max_length=255, db_index=True)
+    taken_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    our_mention_rate = models.FloatField(default=0.0)       # 0-1
+    web_grounded_rate = models.FloatField(default=0.0)      # 0-1
+    total_calls = models.IntegerField(default=0)
+    competitor_rates = models.JSONField(default=dict, blank=True)   # {domain: rate}
+    provider_breakdown = models.JSONField(default=dict, blank=True)  # {provider: rate}
+    ai_bot_hits_30d = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ("-taken_at",)
+        indexes = [models.Index(fields=["domain", "-taken_at"])]
+
+
+class GapCitationAttribution(models.Model):
+    """G3: maps a URL an AI engine cited back to one of OUR pages (or a
+    competitor's), so we can see which content earns AI citations."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(
+        GapPipelineRun, on_delete=models.CASCADE, related_name="citation_attributions"
+    )
+    llm_result = models.ForeignKey(
+        GapLLMResult, on_delete=models.CASCADE, related_name="attributions",
+        null=True, blank=True,
+    )
+    provider = models.CharField(max_length=32, blank=True, default="")
+    cited_url = models.URLField(max_length=2048)
+    cited_domain = models.CharField(max_length=255, blank=True, default="")
+    is_ours = models.BooleanField(default=False, db_index=True)
+    matched_url = models.URLField(max_length=2048, blank=True, default="")
+    match_confidence = models.FloatField(default=0.0)
+    method = models.CharField(max_length=32, default="url_exact")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("run", "-match_confidence")
+        indexes = [models.Index(fields=["run", "is_ours"])]
+
+
+class GapContentOptimization(models.Model):
+    """G7: answer-engine optimization recommendations for one of our pages
+    — concrete edits to raise its citation-density / extractability."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(
+        GapPipelineRun, on_delete=models.CASCADE, related_name="content_optimizations"
+    )
+    our_url = models.URLField(max_length=2048)
+    current_score = models.IntegerField(default=0)     # citation-density 0-100
+    target_score = models.IntegerField(default=0)
+    recommendations = models.JSONField(default=list, blank=True)   # [str, ...]
+    missing_schema = models.JSONField(default=list, blank=True)    # [schema type, ...]
+    priority = models.IntegerField(default=50, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("run", "-priority")
+        indexes = [models.Index(fields=["run", "-priority"])]
+
+
+class GapCitationGap(models.Model):
+    """G9: per-page content-to-citation gap — how often our page is cited
+    by AI vs the competitor median for similar pages."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(
+        GapPipelineRun, on_delete=models.CASCADE, related_name="citation_gaps"
+    )
+    our_url = models.URLField(max_length=2048)
+    our_citation_count = models.IntegerField(default=0)
+    competitor_citation_median = models.IntegerField(default=0)
+    gap_estimate = models.IntegerField(default=0)       # competitor_median - ours
+    priority = models.IntegerField(default=50, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("run", "-priority")
+        indexes = [models.Index(fields=["run", "-priority"])]
+
+
+class GapEntityGap(models.Model):
+    """G10: entity / knowledge-graph coverage gap for one page — entities
+    we mention vs competitors, plus Wikidata reinforcement opportunities."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(
+        GapPipelineRun, on_delete=models.CASCADE, related_name="entity_gaps"
+    )
+    our_url = models.URLField(max_length=2048)
+    our_entities = models.JSONField(default=list, blank=True)      # [{name,type}]
+    missing_entities = models.JSONField(default=list, blank=True)  # [{name,type}]
+    wikidata = models.JSONField(default=dict, blank=True)          # {qid,label,...}
+    audit_score = models.IntegerField(default=0)                   # EEAT markup 0-100
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("run", "our_url")
+
+
+class AICrawlerDirective(models.Model):
+    """G8: an operator-managed allow/disallow directive for an AI crawler
+    (GPTBot/ClaudeBot/PerplexityBot/Google-Extended…) — the source of
+    truth for generating robots.txt + llms.txt AI-crawler rules."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    domain = models.CharField(max_length=255, default="bajajlifeinsurance.com", db_index=True)
+    bot = models.CharField(max_length=64)
+    action = models.CharField(
+        max_length=16,
+        choices=[("allow", "Allow"), ("disallow", "Disallow")],
+        default="allow",
+    )
+    reason = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("domain", "bot")
+        unique_together = (("domain", "bot"),)
 

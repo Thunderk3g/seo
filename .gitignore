@@ -96,3 +96,7 @@ backend/certs/*.crt
 # under this dir — runs/, captured HARs, screenshots, request logs.
 # Keep local so we don't ship fake PII or live response captures.
 test_script_buy_journey/
+
+# Local DB backups (never commit)
+_db_backups/
+*.sql
