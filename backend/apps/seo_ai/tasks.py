@@ -67,6 +67,11 @@ def run_gap_pipeline_task(
     max_retries=0,
     time_limit=4 * 3600,
     soft_time_limit=4 * 3600 - 60,
+    # acks_late=False (overrides the global late-ack): a multi-hour crawl
+    # must NOT be redelivered when the worker is recycled/restarted, or it
+    # re-spawns forever and leaves orphaned 'running' snapshots. It is
+    # idempotent and re-runs on the next manual/scheduled cycle anyway.
+    acks_late=False,
 )
 def walk_competitor_task(
     self,
@@ -226,6 +231,8 @@ def walk_competitor_task(
     bind=True,
     max_retries=0,
     time_limit=8 * 3600,
+    # See walk_competitor_task — never redeliver an 8h roster crawl.
+    acks_late=False,
 )
 def walk_competitor_roster_task(
     self,
@@ -273,6 +280,11 @@ def walk_competitor_roster_task(
 
     results: list[dict] = []
     for d in domains:
+        # Re-check the pause flag BETWEEN domains so an operator can halt a
+        # long roster walk mid-flight (not only before it starts).
+        if SystemSetting.get_bool("competitor_walk_paused", default=False):
+            logger.info("walk_competitor_roster: paused mid-run — stopping after %d domains", len(results))
+            return {"ok": True, "paused_midrun": True, "domains": len(results), "results": results}
         try:
             res = walk_competitor_task.run(
                 d, None, mode=mode, sitemap_url_cap=sitemap_url_cap,
@@ -334,6 +346,8 @@ def refresh_content_map_task(
     bind=True,
     max_retries=0,
     time_limit=2 * 60 * 60,
+    # See walk_competitor_task — never redeliver a long PSI enrichment.
+    acks_late=False,
 )
 def psi_enrich_snapshot_task(
     self,
