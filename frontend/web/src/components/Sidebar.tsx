@@ -26,7 +26,6 @@ const PRIMARY_NAV: NavItem[] = [
   { id: 'chat', label: 'Assistant', icon: 'analytics', path: '/' },
   { id: 'briefings', label: 'Weekly Briefing', icon: 'analytics', path: '/briefings' },
   { id: 'reports', label: 'Reports', icon: 'pages', path: '/reports' },
-  { id: 'content-writer', label: 'Content Writer', icon: 'zap', path: '/content-writer' },
   { id: 'content-writer-v2', label: 'Content Writer (SERP)', icon: 'zap', path: '/content-writer-v2' },
   { id: 'custodians', label: 'Data Custodians', icon: 'analytics', path: '/custodians' },
   { id: 'competitor-changes', label: 'Competitor Changes', icon: 'issues', path: '/competitor-changes' },

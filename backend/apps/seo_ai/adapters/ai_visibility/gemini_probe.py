@@ -1,8 +1,15 @@
-"""Google Gemini visibility probe.
+"""Google Gemini visibility probe (REST, web-grounded).
 
-Uses the ``google-generativeai`` SDK. When the model has Google-Search
-grounding enabled it returns ``grounding_metadata`` with citation URLs;
-we extract those alongside the answer text.
+Uses the Generative Language REST API over httpx instead of the
+``google-generativeai`` SDK — the SDK isn't installed in the runtime
+image and corp-CA TLS makes a runtime pip install unreliable, whereas
+httpx + truststore already work for every other adapter.
+
+Grounding (G2): the request sends ``tools=[{"google_search": {}}]`` so
+Gemini answers from live Google Search and returns ``groundingMetadata``
+with real citation URLs (not training-data recall). If the model/tier
+rejects the tool, we retry once without it so the probe still returns an
+answer (flagged as ungrounded by the empty citation list).
 """
 from __future__ import annotations
 
@@ -25,9 +32,26 @@ _AI_VISIBILITY_PROMPT = (
     "User query: {query}"
 )
 
+# Gemini list price per 1M tokens (Nov 2025). Flash is the default.
+_GEMINI_PRICING: dict[str, tuple[float, float]] = {
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-2.0-flash-001": (0.10, 0.40),
+    "gemini-1.5-flash": (0.075, 0.30),
+    "gemini-1.5-pro": (1.25, 5.0),
+    "gemini-2.5-flash": (0.15, 0.60),
+    "gemini-2.5-pro": (1.25, 10.0),
+}
+
+
+def _gemini_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    pin, pout = _GEMINI_PRICING.get(model, (0.10, 0.40))
+    return (tokens_in * pin + tokens_out * pout) / 1_000_000
+
 
 class GeminiProbe(AILLMProbeAdapter):
     provider = "google"
+
+    _BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def __init__(self) -> None:
         super().__init__()
@@ -35,57 +59,65 @@ class GeminiProbe(AILLMProbeAdapter):
         key = (cfg.get("google_api_key") or "").strip()
         if not key:
             raise AdapterDisabledError("GOOGLE_API_KEY not set")
-        try:
-            import google.generativeai as genai  # type: ignore
-        except ImportError as exc:
-            raise AdapterDisabledError(
-                "google-generativeai SDK not installed; "
-                "pip install google-generativeai"
-            ) from exc
+        self._key = key
         self.model_name = cfg.get("google_model") or "gemini-2.0-flash"
-        genai.configure(api_key=key)
-        self._genai = genai
+
+    def _post(self, body: dict[str, Any]):
+        import httpx
+
+        url = f"{self._BASE}/{self.model_name}:generateContent"
+        return httpx.post(
+            url,
+            params={"key": self._key},
+            json=body,
+            headers={"content-type": "application/json"},
+            timeout=float(self.request_timeout_sec),
+            verify=self.ssl_verify,
+        )
 
     def _probe(self, query: str) -> AIProbeResult:
         prompt = _AI_VISIBILITY_PROMPT.format(query=query)
-        model = self._genai.GenerativeModel(self.model_name)
-        resp = model.generate_content(prompt)
-        text = getattr(resp, "text", None) or ""
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
 
-        # Pull grounding citations when present.
+        # G2: ask for live Google-Search grounding. Retry once without the
+        # tool if the tier/model rejects it, so we always get an answer.
+        grounded = {"contents": contents, "tools": [{"google_search": {}}]}
+        resp = self._post(grounded)
+        if resp.status_code != 200:
+            logger.info(
+                "gemini grounded call %s — retrying ungrounded", resp.status_code,
+            )
+            resp = self._post({"contents": contents})
+        if resp.status_code != 200:
+            return AIProbeResult(
+                provider=self.provider, query=query,
+                error=f"gemini http {resp.status_code}: {resp.text[:300]}",
+            )
+        data = resp.json()
+
+        text_parts: list[str] = []
         cited: list[str] = []
-        try:
-            candidates = getattr(resp, "candidates", None) or []
-            for cand in candidates:
-                meta = getattr(cand, "grounding_metadata", None)
-                if not meta:
-                    continue
-                for chunk in getattr(meta, "grounding_chunks", None) or []:
-                    web = getattr(chunk, "web", None)
-                    uri = getattr(web, "uri", None) if web else None
-                    if uri:
-                        cited.append(uri)
-        except Exception as exc:  # noqa: BLE001 - grounding is optional
-            logger.debug("gemini grounding extract failed: %s", exc)
-
-        usage = getattr(resp, "usage_metadata", None)
-        tokens_in = (
-            getattr(usage, "prompt_token_count", 0) if usage else 0
-        )
-        tokens_out = (
-            getattr(usage, "candidates_token_count", 0) if usage else 0
-        )
-        raw: dict[str, Any]
-        try:
-            raw = resp.to_dict() if hasattr(resp, "to_dict") else {}
-        except Exception:  # noqa: BLE001
-            raw = {}
+        for cand in (data.get("candidates") or []):
+            content = cand.get("content") or {}
+            for part in (content.get("parts") or []):
+                if isinstance(part, dict) and part.get("text"):
+                    text_parts.append(part["text"])
+            meta = cand.get("groundingMetadata") or {}
+            for chunk in (meta.get("groundingChunks") or []):
+                web = (chunk or {}).get("web") or {}
+                uri = web.get("uri")
+                if uri:
+                    cited.append(uri)
+        usage = data.get("usageMetadata") or {}
+        tokens_in = int(usage.get("promptTokenCount") or 0)
+        tokens_out = int(usage.get("candidatesTokenCount") or 0)
         return AIProbeResult(
             provider=self.provider,
             query=query,
-            answer_text=text,
+            answer_text="".join(text_parts),
             cited_urls=cited,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            raw=raw,
+            cost_usd=_gemini_cost(self.model_name, tokens_in, tokens_out),
+            raw=data,
         )

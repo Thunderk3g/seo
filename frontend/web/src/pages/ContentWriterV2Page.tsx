@@ -130,6 +130,25 @@ export default function ContentWriterV2Page() {
         </p>
       </header>
 
+      {payload?.llm_enabled === false && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '10px 14px',
+            borderRadius: 6,
+            background: '#fef3c7',
+            border: '1px solid #f59e0b',
+            color: '#92400e',
+            fontSize: 13,
+          }}
+        >
+          <strong>Content Writer LLM is disabled.</strong> The Anthropic key
+          has been turned off, so new generation is paused — saved runs below
+          remain fully viewable and downloadable. Re-enable the key in{' '}
+          <code>.env</code> to resume new revamps.
+        </div>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Revamp a page</CardTitle>

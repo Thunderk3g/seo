@@ -263,7 +263,9 @@ COMPETITOR = {
         d.strip().lower().lstrip("www.")
         for d in os.environ.get(
             "COMPETITOR_ROSTER",
-            "iciciprulife.com,hdfclife.com,maxlifeinsurance.com,"
+            # axismaxlife.com (Max Life rebranded to Axis Max Life, 2024) —
+            # the old maxlifeinsurance.com only yielded redirect stubs.
+            "iciciprulife.com,hdfclife.com,axismaxlife.com,"
             "tataaia.com,sbilife.co.in,kotaklife.com,pnbmetlife.com,"
             "adityabirlasunlifeinsurance.com",
         ).split(",")
