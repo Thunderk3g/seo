@@ -109,6 +109,65 @@ def _bare_host(url_or_host: str) -> str:
     return s[4:] if s.startswith("www.") else s
 
 
+# Page-type classification — so a PRODUCT page is benchmarked against
+# competitor PRODUCT pages (not blogs/comparison articles), a BLOG vs
+# blogs, etc. Heuristic over URL + title; URL slug is the strongest
+# signal for Indian insurer sites. Order matters: comparison/calculator
+# are checked before blog/product because their URLs often also contain
+# product/plan tokens (e.g. "term-insurance-vs-ulip").
+_BLOG_MARKERS = (
+    "/blog", "blogs/", "/article", "insurance-library", "knowledge-centre",
+    "knowledge-center", "/learning", "/learn", "/guide", "/guides",
+    "/resources", "/wealth/", "/news/", "/tips/", "/posts/", "-guide",
+)
+_PRODUCT_MARKERS = (
+    "-plan", "-plans", "/plans", "/plan/", "/investment-plans",
+    "/insurance-plans", "/ulip", "/term-insurance", "/savings",
+    "/retirement", "/child-plan", "/pension", "/products/", "/buy-",
+)
+
+
+def classify_page_type(url: str, title: str = "", snippet: str = "") -> str:
+    """Return one of: product | comparison | calculator | blog | other.
+
+    Used to match like-for-like pages in the SERP benchmark so product
+    pages compete against product pages (the ones that actually rank for
+    transactional intent), not against knowledge-base articles.
+    """
+    u = (url or "").lower()
+    t = (title or "").lower()
+    if any(k in u for k in ("-vs-", "/vs/", "-vs.", "vs-", "/compare", "comparison")) \
+            or " vs " in t or "vs." in t or " versus " in t:
+        return "comparison"
+    if "calculator" in u or "calculator" in t:
+        return "calculator"
+    if any(k in u for k in _BLOG_MARKERS):
+        return "blog"
+    if t.startswith((
+        "what is", "what are", "how to", "how does", "how do", "why ",
+        "when ", "should ", "top ", "benefits of", "types of",
+    )) or "guide" in t or re.search(r"\b(in|for)\s*20\d\d\b", t):
+        return "blog"
+    if any(k in u for k in _PRODUCT_MARKERS):
+        return "product"
+    if t.startswith("buy ") or "plans" in t or t.endswith(" plan"):
+        return "product"
+    return "other"
+
+
+def _dedupe_by_domain(cands: list) -> list:
+    """Keep first occurrence per bare domain (preserves input priority)."""
+    seen: set[str] = set()
+    out: list = []
+    for c in cands:
+        d = _bare_host(getattr(c, "domain", "") or getattr(c, "url", ""))
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        out.append(c)
+    return out
+
+
 @dataclass
 class SerpCandidate:
     position: int
@@ -118,6 +177,12 @@ class SerpCandidate:
     snippet: str
     # Which synthesized query first surfaced this URL (multi-query runs).
     found_via_query: str = ""
+    # product | comparison | calculator | blog | other — for like-for-like matching.
+    page_type: str = ""
+    # serp | web_search | custom — where this candidate came from.
+    source: str = "serp"
+    # True when this candidate's page_type matches OUR page type.
+    type_match: bool = False
 
 
 @dataclass
@@ -145,6 +210,8 @@ class SerpDiscoveryResult:
     llm_model: str = ""
     llm_cost_usd: float = 0.0
     web_search_used: bool = False
+    # Page type of OUR url — competitors are matched to this type.
+    our_page_type: str = ""
     notes: list[str] = field(default_factory=list)
 
 
@@ -345,6 +412,7 @@ def find_serp_competitors(
     top_n: int = 10,
     provider=None,
     budget=None,
+    custom_urls: list[str] | None = None,
 ) -> SerpDiscoveryResult:
     """Discover SERP competitors for ``our_url``'s search intent.
 
@@ -395,6 +463,12 @@ def find_serp_competitors(
         if isinstance(h, dict) and int(h.get("level") or 0) == 1
     ]
     h1 = h1_list[0] if h1_list else ""
+
+    # Classify OUR page so competitors are matched like-for-like
+    # (product↔product, blog↔blog) rather than a product page being
+    # benchmarked against a knowledge-base article.
+    our_page_type = classify_page_type(our_url, title or h1)
+    notes.append(f"our page type: {our_page_type}")
 
     # 2) Synthesize ≥10 search queries (cheap model).
     queries_obj, llm_cost, llm_model = synthesize_queries(
@@ -546,9 +620,49 @@ def find_serp_competitors(
         except Exception as exc:  # noqa: BLE001
             notes.append(f"web search enrichment failed: {exc}")
 
-    competitors = ranked[:top_n]
-    substitution_pool = ranked[top_n:top_n + 8]
+    # ── Page-type matching + custom URLs ────────────────────────────
+    # Classify every SERP/web-search candidate and tag whether it matches
+    # OUR page type. Operator-supplied custom URLs are ALWAYS included and
+    # crawled (the operator knows best which rival page to compare against).
+    for c in ranked:
+        c.page_type = classify_page_type(c.url, c.title, c.snippet)
+        c.type_match = (c.page_type == our_page_type)
 
+    custom_cands: list[SerpCandidate] = []
+    for cu in (custom_urls or []):
+        cu = (cu or "").strip()
+        if not cu:
+            continue
+        if "://" not in cu:
+            cu = "https://" + cu
+        dom = _bare_host(cu)
+        if not dom or _is_bajaj(cu):
+            continue
+        ptype = classify_page_type(cu)
+        custom_cands.append(SerpCandidate(
+            position=0, url=cu, domain=dom, title="", snippet="",
+            found_via_query="custom", page_type=ptype, source="custom",
+            type_match=(ptype == our_page_type),
+        ))
+    if custom_cands:
+        notes.append(f"{len(custom_cands)} custom competitor URL(s) added")
+
+    # Priority: custom first, then SAME-type SERP results (by position),
+    # then other-type only to backfill if same-type is short. This makes a
+    # product page compete against product pages and only falls back to
+    # blogs/comparisons when there aren't enough same-type rivals.
+    same_type = [c for c in ranked if c.type_match]
+    other_type = [c for c in ranked if not c.type_match]
+    ordered = _dedupe_by_domain(custom_cands + same_type + other_type)
+
+    competitors = ordered[:top_n]
+    substitution_pool = ordered[top_n:top_n + 8]
+
+    same_in_set = sum(1 for c in competitors if c.type_match or c.source == "custom")
+    notes.append(
+        f"competitor match: {same_in_set}/{len(competitors)} are {our_page_type}-type "
+        f"(custom={len(custom_cands)}, same_serp={len(same_type)}, other={len(other_type)})"
+    )
     if len(competitors) < min_comp:
         notes.append(
             f"only {len(competitors)} unblocked competitor(s) found "
@@ -575,6 +689,7 @@ def find_serp_competitors(
         llm_model=llm_model,
         llm_cost_usd=llm_cost,
         web_search_used=web_search_used,
+        our_page_type=our_page_type,
         notes=notes,
     )
 
@@ -599,5 +714,6 @@ def to_dict(r: SerpDiscoveryResult) -> dict[str, Any]:
         "llm_model": r.llm_model,
         "llm_cost_usd": r.llm_cost_usd,
         "web_search_used": r.web_search_used,
+        "our_page_type": r.our_page_type,
         "notes": list(r.notes),
     }

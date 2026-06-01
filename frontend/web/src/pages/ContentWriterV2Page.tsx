@@ -79,6 +79,7 @@ export default function ContentWriterV2Page() {
   const [urlInput, setUrlInput] = useState('');
   const [promptInput, setPromptInput] = useState('');
   const [maxComps, setMaxComps] = useState(5);
+  const [customUrlsInput, setCustomUrlsInput] = useState('');
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
@@ -102,11 +103,16 @@ export default function ContentWriterV2Page() {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim()) return;
+    const custom = customUrlsInput
+      .split('\n')
+      .map((u) => u.trim())
+      .filter(Boolean);
     start.mutate(
       {
         our_url: urlInput.trim(),
         operator_prompt: promptInput.trim() || undefined,
         max_competitors: maxComps,
+        custom_urls: custom.length ? custom : undefined,
       },
       {
         onSuccess: (data) => setActiveRunId(data.run_id),
@@ -167,6 +173,25 @@ export default function ContentWriterV2Page() {
               placeholder="Optional steer — e.g. 'focus on tax benefits' or 'compare with HDFC only'"
               value={promptInput}
               onChange={(e) => setPromptInput(e.target.value)}
+            />
+            <textarea
+              placeholder={
+                'Optional: paste exact competitor URLs to compare against (one per line).\n' +
+                'These are always crawled. Tip: match the page type — for a product page, paste competitor product pages.\n' +
+                'e.g. https://www.sbilife.co.in/ulip-plans'
+              }
+              value={customUrlsInput}
+              onChange={(e) => setCustomUrlsInput(e.target.value)}
+              rows={3}
+              style={{
+                width: '100%',
+                padding: 8,
+                border: '1px solid #cbd5e1',
+                borderRadius: 4,
+                fontSize: 13,
+                fontFamily: 'inherit',
+                resize: 'vertical',
+              }}
             />
             <div
               style={{ display: 'flex', alignItems: 'center', gap: 16 }}
@@ -489,23 +514,45 @@ function SerpDiscoveryPanel({ data }: { data: CWV2SerpStage }) {
             SERP error: {data.serp_error}
           </p>
         )}
-        <h4 style={{ marginTop: 16, marginBottom: 8 }}>
+        <h4 style={{ marginTop: 16, marginBottom: 4 }}>
           Top {data.competitors.length} ranking pages
         </h4>
+        {data.our_page_type && (
+          <p style={{ margin: '0 0 8px', fontSize: 12, color: '#475569' }}>
+            Matching like-for-like: our page is a{' '}
+            <strong style={{ color: '#0f172a' }}>{data.our_page_type}</strong>{' '}
+            page, so <strong>{data.our_page_type}</strong> competitors are
+            compared first (blogs / comparison articles drop to the fallback
+            pool).
+          </p>
+        )}
         <table style={{ width: '100%', fontSize: 12 }}>
           <thead style={{ textAlign: 'left', color: '#475569' }}>
             <tr>
               <th style={{ padding: 4, width: 40 }}>#</th>
               <th style={{ padding: 4 }}>Title / URL</th>
               <th style={{ padding: 4 }}>Domain</th>
+              <th style={{ padding: 4 }}>Type</th>
             </tr>
           </thead>
           <tbody>
             {data.competitors.map((c) => (
               <tr key={c.url} style={{ borderTop: '1px solid #e2e8f0' }}>
-                <td style={{ padding: 4 }}>{c.position}</td>
+                <td style={{ padding: 4 }}>{c.position || '—'}</td>
                 <td style={{ padding: 4 }}>
-                  <div style={{ fontWeight: 500 }}>{c.title}</div>
+                  <div style={{ fontWeight: 500 }}>
+                    {c.title || c.domain}
+                    {c.source === 'custom' && (
+                      <span style={{ marginLeft: 6, fontSize: 10, color: '#7c3aed', fontWeight: 600 }}>
+                        ★ custom
+                      </span>
+                    )}
+                    {c.source === 'web_search' && (
+                      <span style={{ marginLeft: 6, fontSize: 10, color: '#0891b2' }}>
+                        web
+                      </span>
+                    )}
+                  </div>
                   <a
                     href={c.url}
                     target="_blank"
@@ -517,6 +564,22 @@ function SerpDiscoveryPanel({ data }: { data: CWV2SerpStage }) {
                 </td>
                 <td style={{ padding: 4, fontFamily: 'monospace', fontSize: 11 }}>
                   {c.domain}
+                </td>
+                <td style={{ padding: 4 }}>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      padding: '1px 6px',
+                      borderRadius: 4,
+                      background: c.type_match ? '#dcfce7' : '#f1f5f9',
+                      color: c.type_match ? '#166534' : '#64748b',
+                      fontWeight: c.type_match ? 600 : 400,
+                    }}
+                    title={c.type_match ? 'Matches our page type' : 'Different page type (fallback)'}
+                  >
+                    {c.type_match ? '✓ ' : ''}
+                    {c.page_type || 'other'}
+                  </span>
                 </td>
               </tr>
             ))}

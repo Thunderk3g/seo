@@ -46,6 +46,7 @@ def run_revamp(
     max_competitors: int = 5,
     provider=None,
     on_stage=None,         # optional callback(stage_name, payload_dict)
+    custom_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """Execute the full content_writer pipeline for ``our_url``.
 
@@ -130,6 +131,7 @@ def run_revamp(
         top_n=max_competitors,
         provider=provider,
         budget=budget,
+        custom_urls=custom_urls,
     )
     serp_payload = serp_discovery.to_dict(serp)
     emit("serp_discovery", serp_payload)
