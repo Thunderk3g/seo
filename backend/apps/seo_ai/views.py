@@ -3357,6 +3357,14 @@ def content_writer_v2_start(request: Request):
         max_competitors = 5
     max_competitors = max(1, min(max_competitors, 10))
 
+    # Optional operator-supplied competitor URLs — accept a list or a
+    # newline/comma-separated string. Always crawled + compared (page-type
+    # matched alongside the SERP results), capped at 10.
+    raw_custom = payload.get("custom_urls") or payload.get("competitor_urls") or []
+    if isinstance(raw_custom, str):
+        raw_custom = raw_custom.replace(",", "\n").split("\n")
+    custom_urls = [u.strip() for u in raw_custom if isinstance(u, str) and u.strip()][:10]
+
     if not our_url:
         return Response({"detail": "our_url required"}, status=400)
 
@@ -3391,6 +3399,7 @@ def content_writer_v2_start(request: Request):
             our_url=our_url,
             operator_prompt=operator_prompt,
             max_competitors=max_competitors,
+            custom_urls=custom_urls,
         )
     except Exception as exc:  # noqa: BLE001 — surface to operator
         logging.getLogger("seo.ai.content_writer.views").exception(

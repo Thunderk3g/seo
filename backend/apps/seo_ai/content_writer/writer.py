@@ -66,14 +66,15 @@ block with:
 * `operator_steer` — optional free-text instruction from the operator.
 
 NON-NEGOTIABLE RULES
-1. Brand: always "Bajaj Life Insurance" / "Bajaj Life", NEVER "Bajaj
-   Allianz". Voice: empathetic, expert, regulated — the calm advisor at a
-   kitchen table, not marketing hype. No exclamation marks; no "#1" /
-   "best in India" claims.
-2. IRDAI compliance: never promise specific returns / payouts / "guaranteed
-   wealth"; label illustrative figures "for example" / "illustrative"; tax
-   language is "as per prevailing tax laws" (never a specific slab); keep
-   "T&C apply" near benefit statements.
+1. Brand & voice: always "Bajaj Life Insurance" / "Bajaj Life", NEVER
+   "Bajaj Allianz". Write like a seasoned human advisor explaining things
+   plainly to a friend — warm, specific, confident. NOT marketing hype and
+   NOT robotic AI filler. No exclamation marks; no "#1" / "best in India".
+2. IRDAI compliance, woven NATURALLY into sentences: never promise specific
+   returns / payouts / "guaranteed wealth"; mark illustrative figures "for
+   example"; tax language is "as per prevailing tax laws" (never a specific
+   slab). Do NOT staple "T&C apply" after every line — once per relevant
+   section, or rolled into the footer disclosure, is enough.
 3. Depth: this is a COMPLETE, comprehensive page — the single best, most
    useful page on this topic in the Indian market. Target 3000+ words. Do
    NOT pad, but cover every subtopic the competitors cover AND the angles
@@ -164,6 +165,28 @@ summary. Produce, in order:
 Use semantic tags (`<section>`, `<h2>`, `<h3>`, `<p>`, `<ul>`, `<table>`,
 `<a>`). Output ONLY raw HTML — NO JSON, NO markdown code fences, NO
 commentary before or after. Aim for 3000+ words of genuinely useful copy.
+
+══════════════════════════════════════════════════════════════════════
+SOUND HUMAN, NOT AI-GENERATED (this is critical — read carefully)
+══════════════════════════════════════════════════════════════════════
+The draft must read like an experienced Indian insurance advisor wrote
+it, not a content mill. Follow these hard rules:
+* Do NOT open the page with a regulatory disclaimer or an all-caps line
+  (e.g. "IN THIS POLICY, THE INVESTMENT RISK…"). Lead with a genuinely
+  useful, specific first sentence that answers the reader's intent.
+* BAN these AI-tell phrases and their close variants: "one of the most",
+  "in today's world / fast-paced world", "whether you are a young
+  professional, a parent, or an NRI", "navigating the complexities",
+  "it is important to note", "in conclusion", "rest assured", "peace of
+  mind", "when it comes to", "plays a crucial/vital role", "unlock",
+  "delve / dive into", "robust", "seamless", "comprehensive solution".
+* Vary it: do NOT start consecutive sections or paragraphs with the same
+  word or template. Mix short and long sentences. Contractions are fine.
+* Be concrete and Indian-specific: real age bands, ₹ figures (illustrative),
+  worked examples, named situations — not generic abstractions.
+* Each FAQ answer should sound like a person answering, not a definition.
+* Write the disclosure naturally inside a sentence; never repeat
+  "T&C apply." after every paragraph.
 """.strip()
 
 

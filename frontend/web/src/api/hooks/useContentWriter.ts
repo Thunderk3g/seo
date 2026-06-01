@@ -25,6 +25,9 @@ export interface CWV2SerpCandidate {
   title: string;
   snippet: string;
   found_via_query?: string;
+  page_type?: string; // product | comparison | calculator | blog | other
+  source?: string; // serp | web_search | custom
+  type_match?: boolean; // matches OUR page type
 }
 
 export interface CWV2BajajPresence {
@@ -53,6 +56,7 @@ export interface CWV2SerpStage {
   llm_model: string;
   llm_cost_usd: number;
   web_search_used?: boolean;
+  our_page_type?: string; // type we matched competitors against
   notes: string[];
 }
 
@@ -261,6 +265,7 @@ export interface StartCWV2Input {
   our_url: string;
   operator_prompt?: string;
   max_competitors?: number;
+  custom_urls?: string[]; // operator-supplied exact competitor URLs
 }
 
 const V2_LIST_KEY = ['content-writer-v2', 'runs'] as const;

@@ -17,6 +17,34 @@ from .models import GapPipelineRun, SEORun
 logger = logging.getLogger("seo.ai.tasks")
 
 
+def _cwv_record_to_columns(record) -> dict:
+    """Map a CWVRecord (lab_*/field_*/performance_score) to page CWV column
+    suffixes. Prefers CrUX field data, falls back to Lighthouse lab. The
+    old code read non-existent names (lcp_ms/pagespeed_score) and silently
+    wrote nothing — this is the corrected mapping."""
+    def pick(*vals):
+        for v in vals:
+            if v is not None and v != "":
+                return v
+        return None
+    score = getattr(record, "performance_score", None)
+    out = {
+        "lcp_ms": pick(record.field_lcp_ms, record.lab_lcp_ms),
+        "cls": pick(record.field_cls, record.lab_cls),
+        "inp_ms": record.field_inp_ms,
+        "fcp_ms": pick(record.field_fcp_ms, record.lab_fcp_ms),
+        "ttfb_ms": pick(record.field_ttfb_ms, record.lab_ttfb_ms),
+        "tbt_ms": record.lab_tbt_ms,
+        "si_ms": record.lab_si_ms,
+        "pagespeed_score": round(score * 100) if score is not None else None,
+        "lcp_category": record.field_lcp_category or None,
+        "cls_category": record.field_cls_category or None,
+        "inp_category": record.field_inp_category or None,
+        "has_field_data": record.has_field_data,
+    }
+    return {k: v for k, v in out.items() if v is not None and v != ""}
+
+
 @shared_task(name="seo_ai.run_grade", bind=True, max_retries=0)
 def run_grade_task(self, run_id: str) -> str:
     """Execute a grading run that was already created in the DB.
@@ -56,6 +84,102 @@ def run_gap_pipeline_task(
         return "not_found"
     GapPipelineOrchestrator(run).execute(top_n=top_n, query_count=query_count)
     return str(run.status)
+
+
+def _fallback_competitor_fetch(domain: str, seed_urls: list[str] | None = None) -> dict:
+    """Last-resort competitor fetch when the Scrapy walk pulls 0 pages.
+
+    Some competitors (e.g. ICICI behind Cloudflare, or sites that detect
+    headless Chrome) block the Scrapy/Playwright engine but still answer a
+    plain requests call with a browser UA. This uses the SEPARATE
+    requests-based CompetitorCrawler to grab the homepage + a few seed URLs
+    and persists them as real competitor CrawlerPageResult rows, so a
+    blocked rival is never silently empty. Returns counts; marks the run
+    'blocked' (honestly) when even this fails. Never raises, never loops.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    from django.utils import timezone as _tz
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    from .adapters.competitor_crawler import CompetitorCrawler
+
+    max_urls = max(1, int(os.environ.get("COMPETITOR_FALLBACK_MAX_URLS", "8")))
+    # Build a small, de-duped URL list: homepage variants first, then seeds.
+    candidates = [f"https://www.{domain}/", f"https://{domain}/"] + list(seed_urls or [])
+    urls: list[str] = []
+    seen: set[str] = set()
+    for u in candidates:
+        if u and u not in seen:
+            seen.add(u)
+            urls.append(u)
+        if len(urls) >= max_urls:
+            break
+
+    try:
+        crawler = CompetitorCrawler()           # requests-based, browser UA
+        pages = crawler.fetch_pages(urls)
+    except Exception as exc:  # noqa: BLE001 — never crash the roster
+        logger.warning("fallback fetch failed to init for %s: %s", domain, exc)
+        return {"ok_pages": 0, "attempted": len(urls), "blocked": True, "error": str(exc)[:200]}
+
+    snap = None
+    ok_pages = 0
+    for page in pages:
+        if page is None or getattr(page, "error", None):
+            continue
+        if (page.status_code or 0) != 200 or not (page.body_text or page.title):
+            continue
+        if snap is None:
+            snap = CrawlSnapshot.objects.create(
+                kind=CrawlSnapshot.Kind.COMPETITOR,
+                target_domain=domain,
+                status=CrawlSnapshot.Status.RUNNING,
+                engine=CrawlSnapshot.Engine.LEGACY,
+                seed_url=urls[0],
+                allowed_domains=[domain],
+                notes="requests fallback (primary crawl blocked/empty)",
+            )
+        page_url = (page.url or "")[:2048]
+        CrawlerPageResult.objects.update_or_create(
+            snapshot=snap, url=page_url,
+            defaults={
+                "final_url": (page.final_url or page_url)[:2048],
+                "status_code": str(page.status_code or "")[:4],
+                "status": "ok",
+                "content_type": "text/html",
+                "response_time_ms": int(page.response_time_ms or 0),
+                "title": (page.title or "")[:1024],
+                "word_count": int(page.word_count or 0),
+                "body_text": page.body_text or "",
+                "meta_description": (page.meta_description or "")[:1024],
+                "canonical": (page.canonical or "")[:2048],
+                "meta_robots": (page.meta_robots or "")[:256],
+                "subdomain": "",
+                "page_type": "",
+                "from_sitemap": False,
+                "indexed_status": CrawlerPageResult.IndexedStatus.UNKNOWN,
+                "headings_json": list(getattr(page, "headings", None) or []),
+                "internal_links_json": list(getattr(page, "internal_links", None) or []),
+                "external_links_json": list(getattr(page, "external_links", None) or []),
+                "images_json": list(getattr(page, "images", None) or []),
+                "videos_json": list(getattr(page, "videos", None) or []),
+                "jsonld_types": list(getattr(page, "schema_types", None) or []),
+                "jsonld_count": len(getattr(page, "schema_types", None) or []),
+            },
+        )
+        ok_pages += 1
+
+    if snap is not None:
+        CrawlSnapshot.objects.filter(id=snap.id).update(
+            status=CrawlSnapshot.Status.COMPLETE,
+            pages_attempted=len(urls),
+            pages_ok=ok_pages,
+            finished_at=_tz.now(),
+        )
+    return {"ok_pages": ok_pages, "attempted": len(urls), "blocked": ok_pages == 0}
 
 
 # ── Periodic tasks (Celery beat) ─────────────────────────────────────
@@ -184,6 +308,16 @@ def walk_competitor_task(
     )
     ok = sum(1 for p in pages if (p.status_code or 0) == 200)
 
+    # Fallback: the Scrapy/Playwright engine got 0 usable pages (blocked
+    # WAF, headless detection, or no sitemap + dead homepage). Try the
+    # separate requests-based engine before giving up, so a rival is never
+    # silently empty. Runs once; the roster moves on regardless (no loop).
+    fallback_info = None
+    if ok == 0:
+        logger.info("walk_competitor: %s got 0 pages via %s — trying requests fallback", domain, mode)
+        fallback_info = _fallback_competitor_fetch(domain, seeds)
+        ok = int(fallback_info.get("ok_pages", 0) or 0)
+
     # Chain follow-ups: find the just-created snapshot for this domain
     # and kick off PSI enrichment + content-map refresh. Both are
     # best-effort — failures here log but don't fail the crawl result.
@@ -223,6 +357,8 @@ def walk_competitor_task(
         "max_depth": max_depth,
         "max_pages": max_pages,
         "follow_ups": follow_ups,
+        "fallback": fallback_info,
+        "blocked": bool(fallback_info and fallback_info.get("blocked")),
     }
 
 
@@ -402,24 +538,16 @@ def psi_enrich_snapshot_task(
             if record.error:
                 continue
             prefix = "mobile_" if strategy == "mobile" else "desktop_"
-            for fld in (
-                "pagespeed_score", "lcp_ms", "cls", "inp_ms",
-                "fcp_ms", "ttfb_ms", "tbt_ms", "si_ms",
-            ):
-                val = getattr(record, fld, None)
-                if val is not None:
-                    setattr(page, f"{prefix}{fld}", val)
-            for fld in ("lcp_category", "cls_category", "inp_category", "has_field_data"):
-                val = getattr(record, fld, None)
-                if val is not None:
-                    setattr(page, f"{prefix}{fld}", val)
-            # Legacy mirror columns (mobile-only)
+            colvals = _cwv_record_to_columns(record)
+            for suffix, val in colvals.items():
+                setattr(page, f"{prefix}{suffix}", val)
+            # Legacy mirror columns (mobile-only) that the page-detail UI reads.
             if strategy == "mobile":
                 for fld in ("pagespeed_score", "lcp_ms", "cls", "inp_ms"):
-                    val = getattr(record, fld, None)
-                    if val is not None:
-                        setattr(page, fld, val)
-            enriched += 1
+                    if fld in colvals:
+                        setattr(page, fld, colvals[fld])
+            if colvals:
+                enriched += 1
         try:
             page.save(update_fields=[
                 "pagespeed_score", "lcp_ms", "cls", "inp_ms",
