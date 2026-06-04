@@ -100,3 +100,11 @@ test_script_buy_journey/
 # Local DB backups (never commit)
 _db_backups/
 *.sql
+
+# ── Standalone Claude Code plugin (its OWN git repo — never tracked here) ─
+# Cloned/worked-on inside this folder for convenience, but it is an
+# independent repository with its own remote and .gitignore. Excluding it
+# here prevents the two git repos from clashing.
+content-gap-plugin/
+# Plugin run outputs (contain real URLs) — never commit to this repo either.
+content-gap-runs/
