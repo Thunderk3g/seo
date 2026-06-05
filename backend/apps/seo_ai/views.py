@@ -142,6 +142,330 @@ def overview(request: Request):
     return Response(build_overview(domain))
 
 
+# ── In-house content clustering — deterministic topic rules ──────────────
+# No embeddings, no env LLM. Each topic is a set of keyword/phrase matches
+# run against the crawler's stored page title + heading outline at request
+# time, so it works over whatever the latest crawl stored and scales to the
+# whole site. Order here = display order on the Content page.
+_CONTENT_TOPIC_RULES = [
+    ("term", "Term Insurance",
+     ["term insurance", "term plan", "term life", "return of premium", "trop",
+      "claim settlement ratio", "1 crore cover", "pure protection"]),
+    ("ulip", "ULIP / Unit-Linked",
+     ["ulip", "unit linked", "unit-linked", "fund switch", "fund value",
+      "fund option", "market-linked", "market linked"]),
+    ("savings", "Savings Plans",
+     ["savings plan", "endowment", "guaranteed return", "money back",
+      "maturity benefit", "guaranteed savings"]),
+    ("investment", "Investment Plans",
+     ["investment plan", "wealth creation", "power of compounding",
+      "lumpsum", "wealth"]),
+    ("life", "Life Insurance",
+     ["life insurance", "life cover", "whole life", "life insurance plan"]),
+    ("nri", "NRI Insurance",
+     ["nri", "non-resident", "fatca", "crs", "repatriation",
+      "tax residency", "non resident indian"]),
+    ("retirement", "Retirement / Pension",
+     ["retirement", "pension", "annuity", "retire"]),
+    ("child", "Child Plans",
+     ["child plan", "child insurance", "child education", "child future"]),
+    ("health", "Health / Critical Illness",
+     ["health insurance", "critical illness", "health plan", "wellness"]),
+    ("tax", "Tax & GST",
+     ["tax benefit", "section 80c", "80c", "10(10d)", "gst", "ltcg",
+      "tds", "income tax", "tax saving"]),
+    ("riders", "Riders / Add-ons",
+     ["rider", "add-on", "waiver of premium", "accidental death"]),
+    ("claims", "Claims & Settlement",
+     ["claim process", "claim settlement", "death benefit", "file a claim",
+      "claim rejection", "nominee"]),
+    ("fund_nav", "Fund Performance / NAV",
+     ["fund performance", "net asset value", "fund switch", "portfolio",
+      "fund manager"]),
+    ("premium", "Premium & Calculators",
+     ["premium calculator", "calculate premium", "premium payment",
+      "calculator", "premium frequency"]),
+]
+
+
+def _content_page_label(row: dict) -> str:
+    title = (row.get("title") or "").strip()
+    if title:
+        return title[:90]
+    from urllib.parse import urlparse
+    path = urlparse(row.get("url") or "").path or "/"
+    return path.rstrip("/") or "/"
+
+
+def _inhouse_clusters_from_crawl():
+    """Cluster the latest Bajaj crawl's stored headings by topic.
+
+    Returns the Content-page response dict, or None when there's no usable
+    crawl yet (so the caller falls back to the pre-extracted demo corpus).
+    Pure keyword rules — runs at request time, no ML, no env LLM.
+    """
+    try:
+        from django.db.models import Count
+        from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    except Exception:  # noqa: BLE001 — crawler app missing/migrating
+        return None
+
+    # Latest Bajaj snapshot that actually has pages — skips empty/duplicate
+    # snapshots left behind by rejected re-starts.
+    snap = (CrawlSnapshot.objects.filter(kind="bajaj")
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-started_at").first())
+    if snap is None:
+        return None
+    rows = list(
+        CrawlerPageResult.objects
+        .filter(snapshot=snap, status_code="200")
+        .values("url", "title", "headings_json", "word_count")
+    )
+    rows = [r for r in rows if r.get("headings_json")]
+    if not rows:
+        return None
+
+    clusters = []
+    for tid, tname, kws in _CONTENT_TOPIC_RULES:
+        kws_l = [k.lower() for k in kws]
+        pages = []
+        for r in rows:
+            headings = r.get("headings_json") or []
+            title_l = (r.get("title") or "").lower()
+            matched = []
+            for h in headings:
+                ht = (h.get("text") or "").strip()
+                if ht and any(k in ht.lower() for k in kws_l):
+                    matched.append(h)
+            if not matched and not any(k in title_l for k in kws_l):
+                continue
+            secs = matched if matched else headings[:6]
+            pages.append({
+                "key": r["url"],
+                "name": _content_page_label(r),
+                "url": r["url"],
+                "words": r.get("word_count") or 0,
+                "sections": [{
+                    "level": h.get("level", 2),
+                    "tag": "INTRO" if h.get("level") == 0 else f"H{h.get('level', 2)}",
+                    "heading": h.get("text", ""),
+                    "words": 0,
+                    "text": "",
+                } for h in secs],
+            })
+        if not pages:
+            continue
+        pages.sort(key=lambda p: -p["words"])
+        clusters.append({
+            "id": tid,
+            "name": tname,
+            "intro": f"{tname} content found on {len(pages)} crawled page(s).",
+            "page_count": len(pages),
+            "section_count": sum(len(p["sections"]) for p in pages),
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+    if not clusters:
+        return None
+
+    started = snap.started_at.isoformat() if snap.started_at else ""
+    return {
+        "available": True,
+        "brand": "Bajaj Life Insurance",
+        "source": "crawl",
+        "note": (f"Live content clustering over the latest crawl "
+                 f"({len(rows)} pages · {started}). Topic assignment is deterministic "
+                 f"keyword rules — no embeddings, no env LLM."),
+        "clusters": clusters,
+    }
+
+
+@api_view(["GET"])
+def inhouse_content_clusters(request: Request):
+    """GET /api/v1/seo/content/clusters/ — in-house cross-page content
+    segregation for the Content page.
+
+    Live path: cluster the latest Bajaj crawl's stored heading outline by
+    deterministic topic keyword rules (scales to the whole site). Before
+    any crawl exists, falls back to the pre-extracted demo corpus under
+    ``{data_dir}/inhouse_content/``. No embeddings, no env LLM either way.
+    """
+    live = _inhouse_clusters_from_crawl()
+    if live is not None:
+        return Response(live)
+
+    import json
+    import re
+    from pathlib import Path
+
+    from django.conf import settings
+
+    base = Path(settings.SEO_AI["data_dir"]) / "inhouse_content"
+    corpus_path = base / "corpus_full.json"
+    spec_path = base / "clusters_v2.json"
+    if not corpus_path.exists() or not spec_path.exists():
+        return Response({"available": False, "error": "in-house content not built yet"})
+
+    try:
+        corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:  # noqa: BLE001
+        return Response({"available": False, "error": str(exc)[:200]})
+
+    by_key = {p["key"]: p for p in corpus}
+
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+    def _sections_for(member: dict) -> list[dict]:
+        page = by_key.get(member.get("page"))
+        if not page:
+            return []
+        if member.get("mode") == "all":
+            return page["sections"]
+        wants = [_norm(h) for h in member.get("headings", [])]
+        out = []
+        for s in page["sections"]:
+            hn = _norm(s.get("h", ""))
+            if any(w and (w in hn or hn in w) for w in wants):
+                out.append(s)
+        return out
+
+    clusters_out = []
+    for c in spec.get("clusters", []):
+        pages_out = []
+        for m in c.get("members", []):
+            secs = [s for s in _sections_for(m) if (s.get("text") or s.get("h"))]
+            if not secs:
+                continue
+            page = by_key[m["page"]]
+            pages_out.append({
+                "key": page["key"],
+                "name": page["name"],
+                "url": page["url"],
+                "words": sum(s.get("w", 0) for s in secs),
+                "sections": [{
+                    "level": s.get("lvl", 2),
+                    "tag": "INTRO" if s.get("lvl") == 0 else f"H{s.get('lvl', 2)}",
+                    "heading": s.get("h", ""),
+                    "words": s.get("w", 0),
+                    "text": s.get("text", ""),
+                } for s in secs],
+            })
+        pages_out.sort(key=lambda p: -p["words"])
+        clusters_out.append({
+            "id": c["id"],
+            "name": c["name"],
+            "intro": c.get("intro", ""),
+            "page_count": len(pages_out),
+            "section_count": sum(len(p["sections"]) for p in pages_out),
+            "word_count": sum(p["words"] for p in pages_out),
+            "pages": pages_out,
+        })
+
+    return Response({
+        "available": True,
+        "brand": spec.get("brand", "Bajaj Life Insurance"),
+        "note": spec.get("note", ""),
+        "clusters": clusters_out,
+    })
+
+
+@api_view(["GET"])
+def gsc_index_reconciliation(request: Request):
+    """GET /api/v1/seo/index-reconciliation/ — crawler index buckets vs GSC.
+
+    Cross-references the latest Bajaj crawl's indexability buckets against
+    GSC's served pages, split by subdomain so the main site (www) can be
+    compared to GSC's reported index count. Answers "GSC says N indexed but
+    the crawler shows M" by breaking the gap into noindex / canonicalized /
+    404 / error.
+    """
+    from collections import defaultdict
+    from pathlib import Path
+
+    from django.conf import settings
+    from django.db.models import Count
+
+    try:
+        from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    except Exception:  # noqa: BLE001
+        return Response({"available": False, "error": "crawler app unavailable"})
+
+    snap = (CrawlSnapshot.objects.filter(kind="bajaj")
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-started_at").first())
+    if snap is None:
+        return Response({"available": False, "error": "no crawl with pages yet"})
+
+    qs = CrawlerPageResult.objects.filter(snapshot=snap)
+
+    def _blank():
+        return {"total": 0, "status_200": 0, "status_404": 0, "status_error": 0,
+                "indexable": 0, "noindex": 0, "canonicalized": 0}
+
+    subs = defaultdict(_blank)
+    for r in qs.values("subdomain", "status_code", "indexability_status"):
+        b = subs[(r.get("subdomain") or "www")]
+        b["total"] += 1
+        sc = r.get("status_code") or ""
+        if sc == "200":
+            b["status_200"] += 1
+        elif sc == "404":
+            b["status_404"] += 1
+        elif sc in ("0", "") or sc.startswith("5"):
+            b["status_error"] += 1
+        ix = r.get("indexability_status") or ""
+        if ix in ("indexable", "noindex", "canonicalized"):
+            b[ix] += 1
+
+    # SEO-correct indexable count: a 200-OK page is indexable unless it is
+    # noindex or canonicalized away. This captures the OK pages whose Phase-A
+    # verdict wasn't explicitly computed (otherwise undercounted). We keep the
+    # explicitly-verified count under `indexable_verified`.
+    for b in subs.values():
+        b["indexable_verified"] = b["indexable"]
+        b["indexable"] = max(0, b["status_200"] - b["noindex"] - b["canonicalized"])
+
+    gsc_pages = 0
+    try:
+        p = (Path(settings.SEO_AI["data_dir"]) / "gsc"
+             / "www.bajajlifeinsurance.com" / "web__page.csv")
+        if p.exists():
+            with p.open(encoding="utf-8") as f:
+                gsc_pages = max(0, sum(1 for _ in f) - 1)
+    except OSError:
+        pass
+
+    main = subs.get("www", _blank())
+    return Response({
+        "available": True,
+        "snapshot": {
+            "id": str(snap.id),
+            "started_at": snap.started_at.isoformat() if snap.started_at else "",
+            "status": snap.status,
+            "total_pages": qs.count(),
+        },
+        "by_subdomain": {k: v for k, v in sorted(subs.items(), key=lambda kv: -kv[1]["total"])},
+        "main_site": main,
+        "gsc": {
+            "pages_with_impressions": gsc_pages,
+            "note": "Pages receiving Google impressions — a proxy for served/indexed. "
+                    "Compare against the 'Indexed' count in Search Console > Pages.",
+        },
+        "reconciliation": {
+            "gsc_served_proxy": gsc_pages,
+            "crawler_main_total": main["total"],
+            "crawler_main_indexable": main["indexable"],
+            "crawler_main_noindex": main["noindex"],
+            "crawler_main_canonicalized": main["canonicalized"],
+            "crawler_main_404": main["status_404"],
+            "crawler_main_error": main["status_error"],
+        },
+    })
+
+
 # ── source-data dashboards (GSC / SEMrush / Sitemap) ─────────────────────
 
 
@@ -729,70 +1053,6 @@ def adobe_seo_join(request: Request):
     return Response(body)
 
 
-@api_view(["GET"])
-def sitemap_dashboard(_request: Request):
-    """AEM sitemap page list and authoring rollup.
-
-    The list payload is intentionally slim — metadata + word count + a
-    short content preview. Full content lives behind
-    ``/api/v1/seo/sitemap/page/?path=...`` and is fetched on-demand by
-    the frontend drawer. With ~600 pages averaging 18 KB of content
-    each, returning the full text inline would push the response past
-    11 MB and stall the browser.
-    """
-    adapter = SitemapAEMAdapter()
-    try:
-        summary = adapter.summary()
-        pages = list(adapter.iter_pages())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("sitemap dashboard failed: %s", exc)
-        return Response({"available": False, "error": str(exc)})
-
-    def _page_dict(p):
-        return {
-            "public_url": p.public_url,
-            "aem_path": p.aem_path,
-            "title": p.title,
-            "description": p.description,
-            "template_name": p.template_name,
-            "last_modified": p.last_modified.isoformat() if p.last_modified else None,
-            "component_count": p.component_count,
-            "title_length": len(p.title or ""),
-            "description_length": len(p.description or ""),
-            "word_count": p.word_count,
-            "content_preview": (p.content or "")[:240],
-        }
-
-    return Response(
-        {
-            "available": True,
-            "snapshot_path": summary.snapshot_path,
-            "totals": {
-                "pages": summary.total_pages,
-                "with_description": summary.pages_with_description,
-                "without_description": summary.pages_without_description,
-                "short_title": summary.pages_with_short_title,
-                "long_title": summary.pages_with_long_title,
-                "short_desc": summary.pages_with_short_desc,
-                "long_desc": summary.pages_with_long_desc,
-            },
-            "distinct_templates": summary.distinct_templates,
-            "component_usage": summary.component_usage,
-            "most_recent_modification": (
-                summary.most_recent_modification.isoformat()
-                if summary.most_recent_modification
-                else None
-            ),
-            "least_recent_modification": (
-                summary.least_recent_modification.isoformat()
-                if summary.least_recent_modification
-                else None
-            ),
-            "pages": [_page_dict(p) for p in pages],
-        }
-    )
-
-
 def _competitor_dashboard_cache_path(domain: str):
     """File-cache location for the competitor_dashboard payload.
 
@@ -889,48 +1149,6 @@ def competitor_dashboard(request: Request):
 
     payload["_cache"] = {"hit": False, "age_sec": 0, "ttl_sec": ttl_sec}
     return Response(payload)
-
-
-@api_view(["GET"])
-def sitemap_page_detail(request: Request):
-    """Return the full extracted content for one AEM page.
-
-    Match by ``aem_path`` (preferred — stable identifier) or
-    ``public_url`` (fallback). Returns 404 if the path isn't in the
-    current AEM snapshot.
-    """
-    aem_path = request.query_params.get("path", "").strip()
-    public_url = request.query_params.get("url", "").strip()
-    if not aem_path and not public_url:
-        return Response(
-            {"detail": "path or url query param is required"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    adapter = SitemapAEMAdapter()
-    for p in adapter.iter_pages():
-        if (aem_path and p.aem_path == aem_path) or (
-            public_url and p.public_url == public_url
-        ):
-            return Response(
-                {
-                    "public_url": p.public_url,
-                    "aem_path": p.aem_path,
-                    "title": p.title,
-                    "description": p.description,
-                    "template_name": p.template_name,
-                    "last_modified": (
-                        p.last_modified.isoformat() if p.last_modified else None
-                    ),
-                    "word_count": p.word_count,
-                    "content": p.content,
-                    "component_types": p.component_types,
-                }
-            )
-    return Response(
-        {"detail": "page not found in current AEM snapshot"},
-        status=status.HTTP_404_NOT_FOUND,
-    )
 
 
 # ── competitor gap detection ─────────────────────────────────────────────
@@ -2317,387 +2535,6 @@ def competitor_detail_view(_request, domain: str):
     })
 
 
-def _clean_chunk_preview(text: str, max_chars: int = 280) -> str:
-    """Snap chunk text to word boundaries for human display.
-
-    The embedder chunker splits on raw chars (intentional for cosine
-    similarity), so chunks usually start mid-word ("olicy" instead of
-    "Policy") and end mid-sentence. That's fine for vector math but
-    ugly to read in the UI. We trim leading + trailing partial words
-    so the preview looks like a clean snippet.
-    """
-    if not text:
-        return ""
-    t = text.strip()
-    # Drop leading partial word: if first char is lowercase (likely a
-    # cut-off mid-word) AND a space exists within the first 40 chars,
-    # skip to that space. We keep proper-nouned starts intact.
-    if t and t[0].islower():
-        sp = t.find(" ")
-        if 0 < sp < 40:
-            t = t[sp + 1 :].lstrip()
-    if len(t) > max_chars:
-        cut = t[:max_chars]
-        last_space = cut.rfind(" ")
-        if last_space > max_chars * 0.6:
-            t = cut[:last_space].rstrip()
-        else:
-            t = cut.rstrip()
-        t += "…"
-    return t
-
-
-def _topic_cluster_chunks(chunks: list[dict], vectors: list[list[float]]) -> list[dict]:
-    """Cluster a single page's chunks by topical similarity and label
-    each cluster from its own dominant TF-IDF terms.
-
-    The rule classifier (``classify_row``) labels each chunk by the
-    page-level URL/title — so on a homepage every chunk inherits
-    page_type="home" with no products, which is useless for "what does
-    this page cover" analysis. We re-cluster the chunk vectors with
-    KMeans and derive a label per cluster from its TF-IDF top terms.
-
-    k is picked heuristically — ``n_chunks // 14``, clamped to [3, 10].
-    Sufficient for a long homepage with ~100 chunks (yields ~7 clusters)
-    and degrades gracefully on shorter pages (a 25-chunk product page
-    gets k=3).
-    """
-    n = len(chunks)
-    if n < 3:
-        return []
-
-    try:
-        import numpy as np
-        from sklearn.cluster import KMeans
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.feature_extraction import _stop_words as _sw_module
-    except ImportError:
-        return []
-
-    # Sanity-check vector shape — skip clustering if vectors are missing
-    # or jagged (e.g. mid-migration data).
-    if not vectors or not vectors[0]:
-        return []
-    try:
-        X = np.asarray(vectors, dtype=np.float32)
-    except (TypeError, ValueError):
-        return []
-    if X.ndim != 2 or X.shape[0] != n:
-        return []
-
-    k = max(3, min(10, n // 14))
-    try:
-        km = KMeans(n_clusters=k, random_state=42, n_init=10).fit(X)
-    except Exception:  # noqa: BLE001
-        return []
-    labels = km.labels_
-
-    # Build per-cluster TF-IDF over chunk text — gives us auto-derived
-    # topic labels ("term insurance", "tax saving", "retirement
-    # calculator") instead of relying on the page-level classifier.
-    from .keywords.content_keywords import (
-        DOMAIN_STOPWORDS, SEARCH_INTENT_TERMS,
-    )
-    stop = set(_sw_module.ENGLISH_STOP_WORDS) | DOMAIN_STOPWORDS
-
-    docs_per_cluster: dict[int, list[str]] = {}
-    indices_per_cluster: dict[int, list[int]] = {}
-    for i, c in enumerate(chunks):
-        cid = int(labels[i])
-        docs_per_cluster.setdefault(cid, []).append(c["text"] or "")
-        indices_per_cluster.setdefault(cid, []).append(i)
-
-    # Discriminative TF-IDF: one document per cluster, not per chunk.
-    # This surfaces terms UNIQUE to each cluster (high tf in this doc,
-    # low df across all clusters), so labels don't all start with the
-    # corpus-wide "insurance" / "plan" noise.
-    cluster_ids = sorted(docs_per_cluster.keys())
-    cluster_docs = [" ".join(docs_per_cluster[cid]) for cid in cluster_ids]
-    cluster_term_ranking: dict[int, list[str]] = {cid: [] for cid in cluster_ids}
-    if cluster_docs:
-        try:
-            cluster_vec = TfidfVectorizer(
-                ngram_range=(1, 3),
-                stop_words=list(stop),
-                lowercase=True,
-                token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]{1,}\b",
-                max_features=400,
-            )
-            ctfidf = cluster_vec.fit_transform(cluster_docs)
-        except ValueError:
-            ctfidf = None
-        else:
-            cterms = cluster_vec.get_feature_names_out()
-            for row, cid in enumerate(cluster_ids):
-                arr = ctfidf.getrow(row).toarray().ravel()
-                ranked = sorted(
-                    zip(cterms, arr.tolist()),
-                    key=lambda x: -x[1],
-                )
-                # Prefer search-intent-shaped terms but fall back when
-                # none rank high.
-                with_intent = [
-                    t
-                    for t, _s in ranked
-                    if _s > 0
-                    and any(tok in SEARCH_INTENT_TERMS for tok in t.split())
-                ]
-                fallback = [t for t, _s in ranked if _s > 0]
-                cluster_term_ranking[cid] = (with_intent or fallback)[:8]
-
-    out: list[dict] = []
-    used_lead_tokens: set[str] = set()  # disambiguate labels across clusters
-    for cid in cluster_ids:
-        terms = cluster_term_ranking[cid]
-
-        # Label picking with cross-cluster disambiguation: choose the
-        # highest-ranked term whose primary token isn't already used
-        # as the lead for another cluster. Prefer multi-word terms.
-        sorted_terms = sorted(
-            terms,
-            key=lambda t: (
-                # 1. Penalise terms whose tokens are already a lead.
-                any(tok in used_lead_tokens for tok in t.split()),
-                # 2. Prefer multi-word (more specific) labels.
-                " " not in t,
-                # 3. Stable original order.
-                terms.index(t),
-            ),
-        )
-        lead = sorted_terms[0] if sorted_terms else ""
-        lead_tokens = set(lead.split())
-        # Secondary: same logic but must not overlap the lead.
-        secondary = ""
-        for t in sorted_terms[1:]:
-            t_tokens = set(t.split())
-            if t_tokens & lead_tokens:
-                continue
-            secondary = t
-            break
-
-        used_lead_tokens.update(lead_tokens)
-        label = (
-            (lead + (" + " + secondary if secondary else "")).title()
-            if lead
-            else f"Cluster {cid}"
-        )
-
-        cluster_indices = indices_per_cluster[cid]
-        cluster_vecs = X[cluster_indices]
-        centroid = km.cluster_centers_[cid]
-        dists = np.linalg.norm(cluster_vecs - centroid, axis=1)
-        ordered = [cluster_indices[j] for j in dists.argsort()]
-
-        out.append({
-            "cluster_id": cid,
-            "label": label,
-            "keywords": terms,
-            "chunk_count": len(cluster_indices),
-            "pct": round(100.0 * len(cluster_indices) / n, 1),
-            "sample_chunks": [
-                {
-                    "chunk_idx": chunks[idx]["chunk_idx"],
-                    "text": _clean_chunk_preview(chunks[idx]["text"]),
-                }
-                for idx in ordered[:3]
-            ],
-            "chunk_indices": [chunks[idx]["chunk_idx"] for idx in cluster_indices],
-        })
-    out.sort(key=lambda c: -c["chunk_count"])
-    return out
-
-
-@api_view(["GET"])
-def page_clusters_view(_request, snapshot_id: str, url_b64: str):
-    """Per-URL content clusters — how this single page's chunks distribute
-    across (a) rule-based page-type + product taxonomy, AND (b) auto-
-    discovered topical clusters from semantic similarity. Counterpart of
-    the corpus-wide content map (/content/map/3d), scoped to one URL.
-
-    Reads PageEmbedding rows for the (snapshot, url) pair and returns:
-      - chunks: [{chunk_idx, text, page_type, products, confidence,
-                  coord_x, coord_y, coord_z, topic_cluster_id}]
-      - page_type_breakdown: [{page_type, label, count, pct}]
-      - product_breakdown:   [{product, label, count, pct}]
-      - topic_clusters: [{cluster_id, label, keywords, chunk_count, pct,
-                          sample_chunks}]  ← auto-discovered topics
-
-    Returns 404 if the URL has no PageEmbedding rows yet (operator needs
-    to run refresh_content_map for that snapshot first).
-    """
-    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult, PageEmbedding
-    from apps.crawler.content.taxonomy import (
-        PAGE_TYPE_LABELS, PRODUCT_LABELS,
-    )
-
-    snap = CrawlSnapshot.objects.filter(id=snapshot_id).first()
-    if snap is None:
-        return Response(
-            {"error": f"snapshot {snapshot_id} not found"},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    decoded = _b64url_decode(url_b64)
-    if decoded is None:
-        return Response(
-            {"error": "invalid base64url segment"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    page = CrawlerPageResult.objects.filter(
-        snapshot=snap, url=decoded.strip(),
-    ).first()
-    if page is None:
-        return Response(
-            {"error": f"URL {decoded} not in snapshot {snapshot_id}"},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    chunks_qs = (
-        PageEmbedding.objects
-        .filter(page=page)
-        .only(
-            "chunk_idx", "chunk_text", "products", "page_type",
-            "confidence", "coord_x", "coord_y", "coord_z",
-            "embedding_json",
-        )
-        .order_by("chunk_idx")
-    )
-
-    # If there are no PageEmbedding rows yet, do a live embed inline
-    # rather than asking the operator to run a management command. This
-    # is the "fix this for live clustering" path: chunker + MiniLM run
-    # synchronously, write rows, then we re-query and proceed. Costs
-    # ~5-15 s on the cold path; subsequent loads are instant since the
-    # rows now exist.
-    if not chunks_qs.exists():
-        try:
-            from apps.crawler.content.embedder import embed_one_page_live
-            wrote = embed_one_page_live(page)
-        except Exception as exc:  # noqa: BLE001 — surface as fallback msg
-            return Response(
-                {
-                    "error": (
-                        "live embed failed; run `python manage.py "
-                        "refresh_content_map` for snapshot "
-                        f"{snapshot_id}: {exc}"
-                    ),
-                    "url": decoded,
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        if wrote == 0:
-            return Response(
-                {
-                    "error": (
-                        "page has no body text to chunk — nothing to "
-                        "cluster. Re-crawl the URL first."
-                    ),
-                    "url": decoded,
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        chunks_qs = (
-            PageEmbedding.objects
-            .filter(page=page)
-            .only(
-                "chunk_idx", "chunk_text", "products", "page_type",
-                "confidence", "coord_x", "coord_y", "coord_z",
-                "embedding_json",
-            )
-            .order_by("chunk_idx")
-        )
-
-    chunks: list[dict] = []
-    vectors: list[list[float]] = []
-    pt_counter: dict[str, int] = {}
-    prod_counter: dict[str, int] = {}
-    for c in chunks_qs:
-        text_preview = _clean_chunk_preview(c.chunk_text or "")
-        products = list(c.products or [])
-        chunks.append({
-            "chunk_idx": c.chunk_idx,
-            "text": text_preview,
-            "page_type": c.page_type or "other",
-            "products": products,
-            "confidence": float(c.confidence or 0.0),
-            "coord_x": c.coord_x,
-            "coord_y": c.coord_y,
-            "coord_z": c.coord_z,
-            # Filled in below after clustering.
-            "topic_cluster_id": None,
-        })
-        vectors.append(list(c.embedding_json or []))
-        pt_counter[c.page_type or "other"] = (
-            pt_counter.get(c.page_type or "other", 0) + 1
-        )
-        for prod in products:
-            if isinstance(prod, dict):
-                key = (prod.get("key") or prod.get("label") or "").strip().lower()
-            else:
-                key = str(prod).strip().lower()
-            if key:
-                prod_counter[key] = prod_counter.get(key, 0) + 1
-
-    if not chunks:
-        return Response(
-            {
-                "error": (
-                    "page has no body text to chunk — live embed wrote "
-                    "no rows. Re-crawl the URL first."
-                ),
-                "url": decoded,
-                "snapshot_id": str(snap.id),
-            },
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    total = len(chunks)
-    page_type_breakdown = [
-        {
-            "page_type": pt,
-            "label": PAGE_TYPE_LABELS.get(pt, pt),
-            "count": cnt,
-            "pct": round(100.0 * cnt / total, 1),
-        }
-        for pt, cnt in sorted(pt_counter.items(), key=lambda x: -x[1])
-    ]
-    product_breakdown = [
-        {
-            "product": p,
-            "label": PRODUCT_LABELS.get(p, p),
-            "count": cnt,
-            "pct": round(100.0 * cnt / total, 1),
-        }
-        for p, cnt in sorted(prod_counter.items(), key=lambda x: -x[1])
-    ]
-
-    # Auto-discovered topical clusters from chunk vectors. This is the
-    # "what topics does this page actually cover" view — independent of
-    # the page-level rule classifier (which often labels every chunk
-    # identically e.g. as "home" on a sprawling homepage).
-    topic_clusters = _topic_cluster_chunks(chunks, vectors)
-    for tc in topic_clusters:
-        for idx in tc["chunk_indices"]:
-            # Find the chunk with this chunk_idx and stamp it.
-            for ch in chunks:
-                if ch["chunk_idx"] == idx:
-                    ch["topic_cluster_id"] = tc["cluster_id"]
-                    break
-
-    return Response({
-        "snapshot_id": str(snap.id),
-        "snapshot_kind": snap.kind,
-        "snapshot_domain": snap.target_domain or "",
-        "url": decoded,
-        "url_b64": url_b64,
-        "page_title": page.title or "",
-        "total_chunks": total,
-        "chunks": chunks,
-        "page_type_breakdown": page_type_breakdown,
-        "product_breakdown": product_breakdown,
-        "topic_clusters": topic_clusters,
-    })
-
-
 @api_view(["GET"])
 def page_detail_view(_request, snapshot_id: str, url_b64: str):
     """Per-URL detail by snapshot — works for any kind (Bajaj / competitor / ad-hoc).
@@ -3328,24 +3165,89 @@ def competitor_page_history(request: Request):
 # ── Content Writer V2 — SERP-discovery-driven page revamp ───────────
 
 
+def _run_revamp_worker(run_id, our_url, operator_prompt, max_competitors, custom_urls):
+    """Execute a Content Writer v2 revamp in a background thread.
+
+    Persists the result onto the :class:`ContentWriterRun` row. Runs outside
+    the request/response cycle so the HTTP call can return immediately and the
+    UI can poll for progress. Always closes the thread's DB connection so we
+    don't leak connections per run.
+    """
+    import logging
+
+    from django.db import connection
+    from django.utils import timezone
+
+    from .content_writer.orchestrator import run_revamp
+    from .models import ContentWriterRun
+
+    log = logging.getLogger("seo.ai.content_writer.views")
+    try:
+        try:
+            result = run_revamp(
+                our_url=our_url,
+                operator_prompt=operator_prompt,
+                max_competitors=max_competitors,
+                custom_urls=custom_urls,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface to the run row
+            log.exception("content_writer_v2 background run failed for %s", our_url)
+            run = ContentWriterRun.objects.get(id=run_id)
+            run.status = ContentWriterRun.Status.FAILED
+            run.error = f"{type(exc).__name__}: {exc}"
+            run.finished_at = timezone.now()
+            run.save(update_fields=["status", "error", "finished_at"])
+            return
+
+        stages = result.get("stages") or {}
+        telemetry = result.get("telemetry") or {}
+        run = ContentWriterRun.objects.get(id=run_id)
+        run.serp_discovery = stages.get("serp_discovery") or {}
+        run.our_page_analysis = stages.get("our_page_analysis") or {}
+        run.competitor_analyses = stages.get("competitor_analyses") or []
+        run.our_sections = stages.get("our_sections") or {}
+        run.competitor_sections = stages.get("competitor_sections") or {}
+        run.gap_report = stages.get("gap_report") or {}
+        run.seo_overlay = stages.get("seo_overlay") or {}
+        run.revamp = stages.get("revamp") or {}
+        run.our_structure = stages.get("our_structure") or {}
+        run.competitor_structures = stages.get("competitor_structures") or {}
+        run.warnings = result.get("warnings") or []
+        run.telemetry = telemetry
+        run.error = stages.get("revamp_error") or ""
+        run.model_used = telemetry.get("model_used") or ""
+        run.tokens_in = int(telemetry.get("tokens_in") or 0)
+        run.tokens_out = int(telemetry.get("tokens_out") or 0)
+        run.cost_usd = float(telemetry.get("cost_usd") or 0.0)
+        run.status = (
+            ContentWriterRun.Status.COMPLETE
+            if run.revamp and not run.error
+            else ContentWriterRun.Status.FAILED
+        )
+        run.finished_at = timezone.now()
+        run.save()
+    except Exception:  # noqa: BLE001
+        log.exception("content_writer_v2 worker failed to persist run %s", run_id)
+    finally:
+        connection.close()
+
+
 @api_view(["POST"])
 def content_writer_v2_start(request: Request):
-    """Run the new content_writer pipeline synchronously.
+    """Run the new content_writer pipeline asynchronously.
 
     Body:
       * our_url (required)
       * operator_prompt (optional)
       * max_competitors (optional, default 5)
 
-    Persists a :class:`ContentWriterRun` and returns the full result so
-    the UI can render every stage panel without polling. We could fan
-    this out into a Celery task later — for now sync is fine because
-    the writer takes 30-90s end-to-end and the operator is sitting on
-    the page waiting.
+    Creates a :class:`ContentWriterRun` (status=running), kicks the pipeline
+    off in a background thread, and returns the run_id immediately (202). The
+    full revamp (SERP fetch + parallel competitor crawls + writer) takes
+    several minutes — longer than a browser/proxy will hold a single request
+    open — so the UI polls the detail endpoint until status flips to
+    complete/failed instead of blocking on this call.
     """
-    from django.utils import timezone
-
-    from .content_writer.orchestrator import run_revamp
     from .models import ContentWriterRun
 
     payload = request.data if isinstance(request.data, dict) else {}
@@ -3394,66 +3296,33 @@ def content_writer_v2_start(request: Request):
         status=ContentWriterRun.Status.RUNNING,
     )
 
-    try:
-        result = run_revamp(
-            our_url=our_url,
-            operator_prompt=operator_prompt,
-            max_competitors=max_competitors,
-            custom_urls=custom_urls,
-        )
-    except Exception as exc:  # noqa: BLE001 — surface to operator
-        logging.getLogger("seo.ai.content_writer.views").exception(
-            "content_writer_v2_start failed for %s", our_url,
-        )
-        run.status = ContentWriterRun.Status.FAILED
-        run.error = f"{type(exc).__name__}: {exc}"
-        run.finished_at = timezone.now()
-        run.save(update_fields=["status", "error", "finished_at"])
-        return Response(
-            {"detail": "pipeline crashed", "error": run.error, "run_id": str(run.id)},
-            status=500,
-        )
+    # Kick the pipeline off in a daemon thread and return at once. Blocking
+    # here previously timed the request out (the UI saw a 500/"failed") even
+    # though the run completed + persisted, so the draft never reached the
+    # page. The frontend polls the detail endpoint until done. Returning fast
+    # also frees runserver so concurrent status polls stop 500-ing.
+    import threading
 
-    stages = result.get("stages") or {}
-    telemetry = result.get("telemetry") or {}
-    run.serp_discovery = stages.get("serp_discovery") or {}
-    run.our_page_analysis = stages.get("our_page_analysis") or {}
-    run.competitor_analyses = stages.get("competitor_analyses") or []
-    run.our_sections = stages.get("our_sections") or {}
-    run.competitor_sections = stages.get("competitor_sections") or {}
-    run.gap_report = stages.get("gap_report") or {}
-    run.seo_overlay = stages.get("seo_overlay") or {}
-    run.revamp = stages.get("revamp") or {}
-    run.our_structure = stages.get("our_structure") or {}
-    run.competitor_structures = stages.get("competitor_structures") or {}
-    run.warnings = result.get("warnings") or []
-    run.telemetry = telemetry
-    run.error = stages.get("revamp_error") or ""
-    run.model_used = telemetry.get("model_used") or ""
-    run.tokens_in = int(telemetry.get("tokens_in") or 0)
-    run.tokens_out = int(telemetry.get("tokens_out") or 0)
-    run.cost_usd = float(telemetry.get("cost_usd") or 0.0)
-    run.status = (
-        ContentWriterRun.Status.COMPLETE
-        if run.revamp and not run.error
-        else ContentWriterRun.Status.FAILED
-    )
-    run.finished_at = timezone.now()
-    run.save()
+    threading.Thread(
+        target=_run_revamp_worker,
+        args=(str(run.id), our_url, operator_prompt, max_competitors, custom_urls),
+        daemon=True,
+        name=f"cwv2-{run.id}",
+    ).start()
 
     return Response({
         "run_id": str(run.id),
         "status": run.status,
         "our_url": run.our_url,
         "operator_prompt": run.operator_prompt,
-        "stages": stages,
-        "telemetry": telemetry,
-        "warnings": run.warnings,
+        "max_competitors": run.max_competitors,
+        "llm_enabled": True,
+        "stages": {},
+        "telemetry": {},
+        "warnings": [],
         "created_at": run.created_at.isoformat() if run.created_at else None,
-        "finished_at": (
-            run.finished_at.isoformat() if run.finished_at else None
-        ),
-    })
+        "finished_at": None,
+    }, status=202)
 
 
 @api_view(["GET"])

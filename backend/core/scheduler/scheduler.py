@@ -53,17 +53,6 @@ CELERY_BEAT_SCHEDULE: dict = {
         "options": {"expires": 6 * 60 * 60},
     },
 
-    # ── Content-map refresh ───────────────────────────────────────
-    # 02:45 IST — ~45 min after the Bajaj crawl kicks off, giving the
-    # static-fetch + Playwright passes time to finish before we re-
-    # embed. UMAP itself is fast; sentence-transformers embedding is
-    # the heavy step.
-    "refresh-content-map-daily": {
-        "task": "seo_ai.refresh_content_map",
-        "schedule": crontab(hour=2, minute=45),
-        "options": {"expires": 60 * 60},
-    },
-
     # ── GC: prune old history + events ───────────────────────────
     # Weekly Sunday 04:30 IST. 90-day retention covers the operator-
     # visible "what changed in the last quarter" view; longer-horizon

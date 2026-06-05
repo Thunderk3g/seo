@@ -235,6 +235,15 @@ class CrawlerPageResult(models.Model):
     meta_description = models.CharField(max_length=1024, blank=True, default="")
     canonical = models.CharField(max_length=2048, blank=True, default="")
     meta_robots = models.CharField(max_length=256, blank=True, default="")
+    # ── Indexability verdict (Phase A.6) ──────────────────────────
+    # On-page robots + canonical collapsed into a GSC-style status so
+    # the crawler↔GSC reconciliation can join on it. Populated by
+    # sf_parity_helpers.indexability_signals_from(). status values:
+    #   indexable | noindex | canonicalized | non_200   ("" = not computed)
+    x_robots_tag = models.CharField(max_length=256, blank=True, default="")
+    is_indexable = models.BooleanField(default=False)
+    indexability_status = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    indexability_reason = models.CharField(max_length=64, blank=True, default="")
     # Error metadata
     error_type = models.CharField(max_length=64, blank=True, default="")
     error_message = models.TextField(blank=True, default="")
@@ -701,48 +710,6 @@ class Backlink(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_domain} -> {self.target_url}"
-
-
-class PageEmbedding(models.Model):
-    """One vector per content chunk per page. Drives similarity search
-    and the 3D content-map projection.
-
-    Schema decision: we use pgvector through django-pgvector's VectorField
-    when available; falls back to JSONField in environments without the
-    extension. The migration uses RunSQL for the actual `vector(384)`
-    column so the ORM stays version-tolerant.
-    """
-
-    id              = models.BigAutoField(primary_key=True)
-    page            = models.ForeignKey(
-        "CrawlerPageResult", on_delete=models.CASCADE, related_name="embeddings",
-    )
-    chunk_idx       = models.IntegerField(default=0)
-    chunk_text      = models.TextField(blank=True, default="")
-    # vector(384) column added via RunSQL migration; this field is for
-    # ORM completeness only (raw selects use the SQL column directly).
-    embedding_json  = models.JSONField(default=list, blank=True)
-    # Classification copy — denormalised so similarity search can filter
-    # without joining to a separate classifications table.
-    products        = models.JSONField(default=list, blank=True)
-    page_type       = models.CharField(max_length=32, blank=True, default="")
-    confidence      = models.FloatField(default=0.0)
-    # 3D projection coords cached per snapshot. Updated by Phase 3.
-    coord_x         = models.FloatField(null=True, blank=True)
-    coord_y         = models.FloatField(null=True, blank=True)
-    coord_z         = models.FloatField(null=True, blank=True)
-    created_at      = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["page_type"]),
-            models.Index(fields=["confidence"]),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["page", "chunk_idx"], name="uniq_page_embedding_chunk",
-            ),
-        ]
 
 
 class CustomExtractor(models.Model):

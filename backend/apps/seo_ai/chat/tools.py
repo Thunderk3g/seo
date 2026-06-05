@@ -1000,68 +1000,6 @@ def get_competitor_detail(domain: str) -> dict[str, Any]:
     }
 
 
-# ── Content clusters / 3D map ─────────────────────────────────────────
-
-
-@_safe
-def get_content_clusters(domain: str = "") -> dict[str, Any]:
-    """Content cluster breakdown (page-type + detected products) for our
-    site OR a competitor. Reads PageEmbedding rows for the latest
-    relevant snapshot. ``domain`` empty → Bajaj; non-empty → that
-    competitor."""
-    from django.db.models import Count
-
-    from apps.crawler.models import CrawlSnapshot
-
-    if domain:
-        snap = (
-            CrawlSnapshot.objects.annotate(n=Count("pages"))
-            .filter(
-                kind="competitor",
-                status="complete",
-                target_domain__iexact=domain.strip().lower().lstrip("www."),
-                n__gte=1,
-            )
-            .order_by("-started_at")
-            .first()
-        )
-    else:
-        snap = (
-            CrawlSnapshot.objects.annotate(n=Count("pages"))
-            .filter(kind="bajaj", n__gte=5)
-            .order_by("-started_at")
-            .first()
-        )
-
-    if snap is None:
-        return {
-            "ok": False,
-            "error": f"no snapshot for {'competitor=' + domain if domain else 'us'}",
-        }
-
-    from apps.crawler.content.projection import get_3d_points
-
-    points = get_3d_points(snap)
-    pt_counts: dict[str, int] = {}
-    prod_counts: dict[str, int] = {}
-    for p in points:
-        pt = p.get("page_type") or "other"
-        pt_counts[pt] = pt_counts.get(pt, 0) + 1
-        for prod in (p.get("products") or []):
-            prod_counts[prod] = prod_counts.get(prod, 0) + 1
-    return {
-        "ok": True,
-        "snapshot_id": str(snap.id),
-        "snapshot_kind": snap.kind,
-        "domain": snap.target_domain or "bajajlifeinsurance.com",
-        "total_embedded_pages": len(points),
-        "page_type_counts": pt_counts,
-        "product_counts": dict(
-            sorted(prod_counts.items(), key=lambda kv: kv[1], reverse=True)[:15]
-        ),
-    }
-
-
 # ── Data-sources introspection (the meta-tool) ────────────────────────
 
 
@@ -1103,8 +1041,6 @@ def list_data_sources() -> dict[str, Any]:
              "data": "every competitor we've Scrapy-walked + live crawl status"},
             {"name": "Per-competitor detail", "tool": "get_competitor_detail",
              "data": "sample pages, page-type mix, schema coverage, avg word count"},
-            {"name": "Content clusters", "tool": "get_content_clusters",
-             "data": "page-type + detected-product breakdown of embedded pages (Bajaj or any competitor)"},
             {"name": "Health score", "tool": "get_health_score",
              "data": "single SEO health rollup across crawler + GSC + audits"},
             {"name": "Latest grading run", "tool": "get_latest_grade",
@@ -1941,26 +1877,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
-    # ── Content clusters ────────────────────────────────────────────
-    {
-        "type": "function",
-        "function": {
-            "name": "get_content_clusters",
-            "description": (
-                "Content cluster breakdown (page-type + detected "
-                "products) from the embedding pipeline. Pass "
-                "`domain=''` (or omit) for Bajaj; pass a competitor "
-                "domain for that competitor's clusters. Each competitor "
-                "has its own isolated map."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "domain": {"type": "string"},
-                },
-            },
-        },
-    },
     # ── Data-sources introspection (always available) ──────────────
     {
         "type": "function",
@@ -2019,7 +1935,6 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_geo_score": get_geo_score,
     "list_competitors_crawled": list_competitors_crawled,
     "get_competitor_detail": get_competitor_detail,
-    "get_content_clusters": get_content_clusters,
     "list_data_sources": list_data_sources,
 }
 
@@ -2095,9 +2010,6 @@ CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
        "SEMrush-driven competitor gap (topics / keywords / hygiene). Cached 7 days.",
        {"domain": _STR}),
     # ── Content / sitemap ─────────────────────────────────────────
-    _f("get_content_clusters",
-       "Page-type + product cluster breakdown. Empty domain = ours, otherwise the competitor's clusters.",
-       {"domain": _STR}),
     _f("get_sitemap_pages",
        "AEM authored-page list. query= filter.",
        {"query": _STR, "limit": _INT}),

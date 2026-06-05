@@ -319,8 +319,8 @@ def walk_competitor_task(
         ok = int(fallback_info.get("ok_pages", 0) or 0)
 
     # Chain follow-ups: find the just-created snapshot for this domain
-    # and kick off PSI enrichment + content-map refresh. Both are
-    # best-effort — failures here log but don't fail the crawl result.
+    # and kick off PSI enrichment. Best-effort — failures here log but
+    # don't fail the crawl result.
     follow_ups: dict[str, str] = {}
     try:
         from apps.crawler.models import CrawlSnapshot
@@ -336,13 +336,6 @@ def walk_competitor_task(
                 follow_ups["psi_task"] = psi_task.id
             except Exception as exc:  # noqa: BLE001
                 logger.warning("psi follow-up enqueue failed: %s", exc)
-            try:
-                map_task = refresh_content_map_task.delay(
-                    competitor_domain=domain,
-                )
-                follow_ups["content_map_task"] = map_task.id
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("content-map follow-up enqueue failed: %s", exc)
     except Exception as exc:  # noqa: BLE001
         logger.info("walk_competitor follow-up lookup failed: %s", exc)
 
@@ -430,51 +423,6 @@ def walk_competitor_roster_task(
             res = {"ok": False, "domain": d, "error": str(exc)}
         results.append(res)
     return {"ok": True, "domains": len(results), "results": results}
-
-
-@shared_task(
-    name="seo_ai.refresh_content_map",
-    bind=True,
-    max_retries=0,
-    time_limit=2 * 60 * 60,  # 2h envelope — competitor refresh adds time
-)
-def refresh_content_map_task(
-    self,
-    *,
-    snapshot_id: str = "",
-    include_competitors: bool = True,
-    competitor_domain: str = "",
-) -> dict:
-    """Re-embed + re-project snapshot(s) for the 3D content map.
-
-    Defaults to refreshing the latest Bajaj snapshot AND every
-    competitor snapshot (one map per competitor). Pass
-    ``competitor_domain='hdfclife.com'`` to refresh just one.
-
-    Scheduled to fire ~30 min after the daily Bajaj crawl. Each
-    competitor's embeddings live under its own snapshot_id so per-
-    competitor content maps stay isolated.
-    """
-    from django.core.management import call_command
-
-    args = []
-    if snapshot_id:
-        args.extend(["--snapshot", snapshot_id])
-    if competitor_domain:
-        args.extend(["--competitor-domain", competitor_domain])
-    elif include_competitors:
-        args.append("--include-competitors")
-    try:
-        call_command("refresh_content_map", *args)
-        return {
-            "ok": True,
-            "snapshot_id": snapshot_id or "latest",
-            "competitor_domain": competitor_domain or None,
-            "include_competitors": include_competitors and not competitor_domain,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("refresh_content_map_task failed")
-        return {"ok": False, "error": str(exc)}
 
 
 @shared_task(

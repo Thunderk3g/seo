@@ -40,7 +40,7 @@ const DATA_SOURCE_NAV: NavItem[] = [
   { id: 'brand-monitor', label: 'Brand Mentions', icon: 'analytics', path: '/brand-monitor' },
   // Our own Meta ad library, kept separate from each competitor's section.
   { id: 'meta-ads', label: 'Our Meta Ads', icon: 'zap', path: '/meta-ads' },
-  { id: 'sitemap', label: 'Content via Sitemap', icon: 'visualizations', path: '/sitemap' },
+  { id: 'content', label: 'Content', icon: 'visualizations', path: '/content' },
   { id: 'competitors', label: 'Competitor Gap', icon: 'issues', path: '/competitors' },
 ];
 
@@ -48,20 +48,12 @@ const DATA_SOURCE_NAV: NavItem[] = [
 // crawler-engine/ (proxied at /crawler-api). See src/crawler/*.
 const CRAWLER_NAV: NavItem[] = [
   { id: 'crawler-dash', label: 'Crawler Dashboard', icon: 'globe', path: '/crawler' },
-  { id: 'crawler-health', label: 'Health Overview', icon: 'analytics', path: '/health' },
-  { id: 'crawler-issues', label: 'Issues', icon: 'issues', path: '/crawler/issues' },
-  { id: 'crawler-compliance', label: 'Compliance', icon: 'issues', path: '/crawler/compliance' },
-  { id: 'crawler-content-map', label: 'Content Map (3D)', icon: 'visualizations', path: '/crawler/content-map' },
-  { id: 'crawler-content-clusters', label: 'Content Clusters', icon: 'pages', path: '/crawler/content-clusters' },
   { id: 'crawler-pages', label: 'Page Explorer', icon: 'pages', path: '/crawler/pages' },
-  { id: 'crawler-trends', label: 'Trends', icon: 'analytics', path: '/trends' },
-  { id: 'crawler-compare', label: 'Compare Crawls', icon: 'visualizations', path: '/compare' },
-  { id: 'crawler-geo', label: 'GEO suite', icon: 'zap', path: '/geo' },
   { id: 'crawler-tree', label: 'Site Tree', icon: 'visualizations', path: '/crawler/tree' },
   { id: 'crawler-logs', label: 'Live Logs', icon: 'zap', path: '/crawler/logs' },
   { id: 'crawler-reports', label: 'Reports', icon: 'pages', path: '/crawler/reports' },
-  // 'Crawler Settings' removed per request — page file kept at
-  // crawler/pages/CrawlerSettings.tsx if it ever needs to come back.
+  // Removed per request (2026-06-05): Health Overview, Issues, Compliance,
+  // Content Map (3D), Content Clusters, Trends, Compare Crawls, GEO suite.
 ];
 
 function isActive(path: string, current: string): boolean {

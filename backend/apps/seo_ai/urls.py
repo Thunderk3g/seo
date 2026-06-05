@@ -19,7 +19,6 @@ from .views import (
     competitor_page_detail_view,
     competitor_page_history,
     competitor_walk_pause_view,
-    page_clusters_view,
     page_detail_view,
     page_topic_sections_view,
     content_comparison,
@@ -40,12 +39,12 @@ from .views import (
     gap_pipeline_start,
     gap_pipeline_status,
     gsc_dashboard,
+    gsc_index_reconciliation,
+    inhouse_content_clusters,
     llm_pool_stats,
     meta_ads_dashboard,
     overview,
     semrush_dashboard,
-    sitemap_dashboard,
-    sitemap_page_detail,
     start_grade,
 )
 
@@ -56,6 +55,8 @@ _router.register(r"grade", SEORunViewSet, basename="grade")
 
 urlpatterns = [
     path("overview/", overview, name="overview"),
+    path("content/clusters/", inhouse_content_clusters, name="content-clusters"),
+    path("index-reconciliation/", gsc_index_reconciliation, name="index-reconciliation"),
     path("grade/start/", start_grade, name="start-grade"),
     path("gsc/", gsc_dashboard, name="gsc-dashboard"),
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
@@ -74,8 +75,6 @@ urlpatterns = [
     # Surfaces in the existing Competitor section (CompetitorDetailPage)
     # and the CompetitorsPage overview — NOT in the Data Sources rail.
     path("meta-ads/", meta_ads_dashboard, name="meta-ads-dashboard"),
-    path("sitemap/", sitemap_dashboard, name="sitemap-dashboard"),
-    path("sitemap/page/", sitemap_page_detail, name="sitemap-page-detail"),
     path("competitor/", competitor_dashboard, name="competitor-dashboard"),
     path(
         "competitor/gap/",
@@ -210,19 +209,8 @@ urlpatterns = [
         page_detail_view,
         name="page-detail",
     ),
-    # Per-URL content cluster view — scoped counterpart of the corpus-
-    # wide content map. Returns this single page's PageEmbedding chunks
-    # grouped by classified page_type + product so the operator can see
-    # how the page's content distributes (e.g. 60% product info, 25% FAQ,
-    # 15% calculator-CTA). Used by the Clusters tab on PageDetailPage.
-    path(
-        "page/<uuid:snapshot_id>/<str:url_b64>/clusters/",
-        page_clusters_view,
-        name="page-clusters",
-    ),
     # LLM-clustered topical sections WITHIN one page (Calculator,
-    # Tax Benefits, FAQ, etc.) — different from /clusters/ which
-    # uses KMeans on sentence-transformer chunk vectors.
+    # Tax Benefits, FAQ, etc.).
     path(
         "page/<uuid:snapshot_id>/<str:url_b64>/sections/",
         page_topic_sections_view,

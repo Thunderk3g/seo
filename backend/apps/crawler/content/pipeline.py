@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Iterable
 
 from .rules import classify_tier1, ClassificationResult
-from .taxonomy import UNCERTAIN_THRESHOLD
 
 
 def classify_row(row: dict) -> dict:
@@ -21,55 +20,13 @@ def classify_row(row: dict) -> dict:
     Tier order:
       1. classify_tier1   — rules over URL + title + JSON-LD
       2. (placeholder)    — TF-IDF profile scoring [Phase 1b]
-      3. classify_tier3   — MiniLM seed-based cosine fallback
 
-    Tiers 2/3 only fire when Tier 1 returns `uncertain` to keep
-    runtime tight on the 80% of pages with clear signals.
+    The former Tier-3 MiniLM embedding fallback was removed with the
+    embedding stack. Tier-1's rules + UNCERTAIN flag carry the result;
+    rows Tier 1 can't resolve simply stay marked ``uncertain``.
     """
     tier1 = classify_tier1(row)
-    result_dict = tier1.to_dict()
-
-    if tier1.is_uncertain:
-        # Lazy-import so non-classification code paths don't pay the
-        # sentence-transformers import cost.
-        try:
-            from .embedding_classifier import classify_tier3
-            visible = _visible_text(row)
-            t3 = classify_tier3(visible)
-            # Merge: Tier 3 fills in fields Tier 1 left empty.
-            if t3["products"] and not result_dict["products"]:
-                result_dict["products"] = t3["products"]
-                result_dict["tier"] = 3
-                result_dict["signals"].extend(t3["signals"])
-            if t3["page_type"] != "other" and result_dict["page_type"] == "other":
-                result_dict["page_type"] = t3["page_type"]
-                result_dict["page_type_confidence"] = t3["page_type_confidence"]
-                result_dict["tier"] = 3
-                result_dict["signals"].extend(
-                    [s for s in t3["signals"] if "page_type" in s]
-                )
-            # Recompute the uncertain flag after merging.
-            has_pt = result_dict["page_type_confidence"] >= UNCERTAIN_THRESHOLD
-            has_prod = any(
-                p.get("confidence", 0) >= UNCERTAIN_THRESHOLD
-                for p in result_dict["products"]
-            )
-            result_dict["uncertain"] = not (has_pt or has_prod)
-        except Exception as exc:  # noqa: BLE001 — never break the pipeline
-            result_dict["signals"].append(f"tier3:error:{type(exc).__name__}")
-
-    return result_dict
-
-
-def _visible_text(row: dict) -> str:
-    """Concatenate the searchable text fields for Tier 3 embedding.
-    The crawler doesn't keep full body_text for Bajaj rows (only meta
-    + title + h1), so we work with what we have."""
-    parts = [
-        row.get("title", "") or "",
-        row.get("meta_description", "") or "",
-    ]
-    return " ".join(p for p in parts if p)
+    return tier1.to_dict()
 
 
 def classify_batch(rows: Iterable[dict]) -> list[dict]:

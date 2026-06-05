@@ -49,7 +49,9 @@ import {
   exportPdf,
 } from '../lib/revampExport';
 
-const EXPECTED_DURATION_S = 60;
+// A full SERP revamp (competitor crawls + clustering + Claude writer) runs a
+// few minutes; this just paces the cosmetic progress bar.
+const EXPECTED_DURATION_S = 300;
 
 function fmtUSD(n: number | undefined | null): string {
   return n == null ? '—' : `$${Number(n).toFixed(4)}`;
@@ -83,22 +85,29 @@ export default function ContentWriterV2Page() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
+  // The run executes in a background thread server-side; we poll its detail
+  // (useCWV2Run) until it reaches a terminal state. `start.data` is only the
+  // immediate 202 ack (status=running, empty stages) used as a fallback until
+  // the first poll returns.
+  const runQuery = useCWV2Run(activeRunId);
+  const payload: CWV2RunPayload | undefined =
+    runQuery.data ??
+    (start.data && start.data.run_id === activeRunId ? start.data : undefined);
+
+  const isRunning =
+    !!payload && (payload.status === 'running' || payload.status === 'pending');
+  const busy = start.isPending || isRunning;
+
+  // Drive the elapsed ticker + progress bar while a run is in flight (the
+  // initial POST or the background pipeline we're polling).
   useEffect(() => {
-    if (!start.isPending) {
+    if (!busy) {
       setElapsed(0);
       return;
     }
     const t = setInterval(() => setElapsed((e) => e + 1), 1000);
     return () => clearInterval(t);
-  }, [start.isPending]);
-
-  const liveRun = start.data?.run_id ?? null;
-  const storedRun = useCWV2Run(
-    activeRunId && activeRunId !== liveRun ? activeRunId : null,
-  );
-
-  const payload: CWV2RunPayload | undefined =
-    activeRunId === liveRun ? start.data : storedRun.data;
+  }, [busy]);
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -214,12 +223,12 @@ export default function ContentWriterV2Page() {
                   ))}
                 </select>
               </label>
-              <Button type="submit" disabled={start.isPending || !urlInput.trim()}>
-                {start.isPending
+              <Button type="submit" disabled={busy || !urlInput.trim()}>
+                {busy
                   ? `Running… (${elapsed}s)`
                   : 'Run SERP revamp'}
               </Button>
-              {start.isPending && (
+              {busy && (
                 <div style={{ flex: 1, minWidth: 200 }}>
                   <div
                     style={{
@@ -269,25 +278,41 @@ export default function ContentWriterV2Page() {
       {payload && (
         <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
           <TelemetryStrip payload={payload} />
-          {payload.warnings?.length > 0 && (
-            <WarningsCard warnings={payload.warnings} />
+
+          {isRunning && <RunningCard elapsed={elapsed} url={payload.our_url} />}
+
+          {!isRunning &&
+            payload.status === 'failed' &&
+            !payload.stages?.serp_discovery?.competitors && (
+              <FailedCard error={payload.stages?.revamp_error} />
+            )}
+
+          {/* Stage panels render once the background run finishes and the
+              stages are populated. Gating on serp_discovery.competitors keeps
+              the panels from reading half-empty stage objects mid-run. */}
+          {!isRunning && payload.stages?.serp_discovery?.competitors && (
+            <>
+              {payload.warnings?.length > 0 && (
+                <WarningsCard warnings={payload.warnings} />
+              )}
+              <SerpDiscoveryPanel data={payload.stages.serp_discovery} />
+              <StructuralAnalyzerPanel
+                ours={payload.stages.our_page_analysis}
+                competitors={payload.stages.competitor_analyses}
+              />
+              <PageStructurePanel
+                ourStructure={payload.stages.our_structure}
+                competitorStructures={payload.stages.competitor_structures}
+              />
+              <GapReportPanel data={payload.stages.gap_report} />
+              <SEOOverlayPanel data={payload.stages.seo_overlay} />
+              <RevampDraftPanel
+                data={payload.stages.revamp}
+                error={payload.stages.revamp_error}
+                ourUrl={payload.our_url}
+              />
+            </>
           )}
-          <SerpDiscoveryPanel data={payload.stages.serp_discovery} />
-          <StructuralAnalyzerPanel
-            ours={payload.stages.our_page_analysis}
-            competitors={payload.stages.competitor_analyses}
-          />
-          <PageStructurePanel
-            ourStructure={payload.stages.our_structure}
-            competitorStructures={payload.stages.competitor_structures}
-          />
-          <GapReportPanel data={payload.stages.gap_report} />
-          <SEOOverlayPanel data={payload.stages.seo_overlay} />
-          <RevampDraftPanel
-            data={payload.stages.revamp}
-            error={payload.stages.revamp_error}
-            ourUrl={payload.our_url}
-          />
         </div>
       )}
 
@@ -360,6 +385,50 @@ export default function ContentWriterV2Page() {
 }
 
 // ── sub-panels ──────────────────────────────────────────────────────
+
+
+function RunningCard({ elapsed, url }: { elapsed: number; url: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Generating revamp…</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p style={{ fontSize: 13, color: '#475569', margin: 0 }}>
+          Working on{' '}
+          <code style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>
+            {url}
+          </code>{' '}
+          — synthesising queries → SERP fetch → parallel competitor crawls →
+          analysis → clustering → gap → Claude writer. This runs in the
+          background (a few minutes); the full draft appears here automatically
+          the moment it finishes. Elapsed {elapsed}s.
+        </p>
+        <p style={{ fontSize: 12, color: '#94a3b8', margin: '8px 0 0' }}>
+          You can leave this page — the run keeps going and you can re-open it
+          later from “Recent runs”.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+function FailedCard({ error }: { error?: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Run failed</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p style={{ color: '#b91c1c', fontSize: 13, margin: 0 }}>
+          {error ||
+            'The pipeline did not finish. Check the backend logs for details, then try again.'}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
 
 
 function TelemetryStrip({ payload }: { payload: CWV2RunPayload }) {
