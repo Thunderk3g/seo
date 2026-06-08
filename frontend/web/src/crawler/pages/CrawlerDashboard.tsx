@@ -4,6 +4,9 @@ import HealthScoreCard from '../components/HealthScoreCard';
 import LiveLogPanel from '../components/LiveLogPanel';
 import RecentPagesTable from '../components/RecentPagesTable';
 import StatCard from '../components/StatCard';
+import CrawlStatsPanel from '../components/CrawlStatsPanel';
+import InternalLinkingPanel from '../components/InternalLinkingPanel';
+import IndexCoveragePanel from '../components/IndexCoveragePanel';
 import { crawlerApi, type CrawlerLogMessage, type CrawlerSummary } from '../api';
 import { useCrawlerStatus } from '../useCrawlerStatus';
 import { useCrawlerLogs } from '../useCrawlerLogs';
@@ -163,6 +166,17 @@ export default function CrawlerDashboard() {
         <StatCard tone="red" icon="error" label="Errors" value={display.errors} />
         <StatCard tone="muted" icon="group_work" label="Workers" value={display.workers} />
       </div>
+
+      {/* Index coverage — what Google actually indexed vs crawled-but-not-
+          indexed (reads /summary/breakdown; URL Inspection action inside). */}
+      <IndexCoveragePanel />
+
+      {/* Internal linking — top pages by inbound internal links + orphans. */}
+      <InternalLinkingPanel />
+
+      {/* Google Crawl Stats — Googlebot's own crawl behaviour (export-only
+          GSC report; ingested from data/gsc_crawl_stats/). */}
+      <CrawlStatsPanel />
 
       <div className="grid-2">
         <LiveLogPanel entries={logs} />

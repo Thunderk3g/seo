@@ -695,6 +695,20 @@ PSI = {
     # Google PSI tolerates ~8 concurrent calls per IP before 429s.
     "inline_workers": int(os.environ.get("PSI_WORKERS", "4")),
     "ssl_verify": os.environ.get("PSI_SSL_VERIFY", "").strip(),
+    # ── Rate limiting + retry (fixes "key fails after certain URLs") ──
+    # PSI returns HTTP 429 (RESOURCE_EXHAUSTED) once a burst exceeds the
+    # per-minute quota. The adapter previously had no client-side throttle
+    # and no retry, so the first 429 cascaded — every later call in the
+    # run errored out. A shared token-bucket keeps all worker threads
+    # under PSI_QPS req/s; transient 429/500/503 are retried with
+    # exponential backoff (honoring Retry-After).
+    #
+    # ~1.7 req/s ≈ 100/min — comfortably under PSI's documented ceiling
+    # while still letting a 100-URL run finish in a few minutes.
+    "qps": float(os.environ.get("PSI_QPS", "1.7")),
+    "max_retries": int(os.environ.get("PSI_MAX_RETRIES", "4")),
+    "backoff_base_sec": float(os.environ.get("PSI_BACKOFF_BASE", "2.0")),
+    "backoff_cap_sec": float(os.environ.get("PSI_BACKOFF_CAP", "60.0")),
 }
 
 # ─────────────────────────────────────────────────────────────

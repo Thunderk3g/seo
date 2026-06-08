@@ -682,7 +682,14 @@ def _dual_write_pageresult(row: dict) -> None:
                 "meta_description": _s(row.get("meta_description"), 1024),
                 "canonical": _s(row.get("canonical"), 2048),
                 "meta_robots": _s(row.get("meta_robots"), 256),
-                "body_text": (row.get("body_text") or ""),
+                # Content capture is gated: for the technical-SEO round we
+                # do NOT persist body_text (parse_page doesn't emit it
+                # either). Flip CRAWLER_STORE_CONTENT=true to re-enable.
+                "body_text": (
+                    (row.get("body_text") or "")
+                    if getattr(settings, "store_content", False)
+                    else ""
+                ),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

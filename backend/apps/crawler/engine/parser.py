@@ -133,6 +133,11 @@ def parse_page(html: str, base_url: str) -> dict:
     text = _WS.sub(" ", soup.get_text(separator=" ", strip=True)).strip()
     word_count = len(text.split()) if text else 0
 
+    # NOTE: ``text`` (the full visible body) is intentionally NOT returned
+    # this round — we only derive word_count from it. Persisting body_text
+    # + content classification is deferred (see CRAWLER_STORE_CONTENT in
+    # apps/crawler/conf.py). To re-enable, add ``"body_text": text`` here
+    # and have the fetcher stamp it onto the result row.
     return {
         "title": title,
         "meta_description": meta_description,

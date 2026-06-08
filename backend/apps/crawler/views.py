@@ -214,6 +214,26 @@ def gsc_coverage_refresh_view(_request):
     return Response({"ok": True, "loaded_urls": len(cov)})
 
 
+@api_view(["GET", "POST"])
+def gsc_crawl_stats_view(request):
+    """Serve the ingested GSC *Crawl stats* export (Googlebot's own crawl
+    behaviour on the site — request volume, response-code mix, file-type /
+    Googlebot-type mix, host status, 90-day trend).
+
+    This report is export-only in GSC (no Search Console API), so the data
+    comes from the CSV bundle the operator drops into
+    ``backend/data/gsc_crawl_stats/``. A POST flushes the cache so a freshly
+    dropped export is picked up without a restart.
+
+    Returns ``{"present": false, ...}`` when no export is on disk yet — the
+    UI renders a "drop your Crawl stats export here" empty state.
+    """
+    from .storage import gsc_crawl_stats
+    if request.method == "POST":
+        gsc_crawl_stats.refresh()
+    return Response(gsc_crawl_stats.load())
+
+
 # ── GSC freeze switch ─────────────────────────────────────────────
 # When GSC_FROZEN=true in env, the two endpoints below that can issue
 # live Search Console API calls (sitemap backfill + URL Inspection)

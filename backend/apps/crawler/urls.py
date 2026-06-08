@@ -62,6 +62,11 @@ urlpatterns = [
     # indexed / not_indexed / excluded verdicts. Rate-limited (2000/day).
     path("gsc/coverage/inspect", views.gsc_inspect_unknowns_view,
          name="gsc-coverage-inspect"),
+    # GSC Crawl Stats — ingest of the export-only Settings > Crawl stats
+    # report (no Search Console API exists for it). GET reads the parsed
+    # bundle; POST flushes the cache after a fresh export is dropped into
+    # data/gsc_crawl_stats/.
+    path("gsc/crawl-stats", views.gsc_crawl_stats_view, name="gsc-crawl-stats"),
 
     # Browser-side console capture (Playwright headless Chromium)
     path("console/capture", views.console_capture_start_view,

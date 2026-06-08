@@ -152,6 +152,38 @@ export interface GscRefreshResponse {
   loaded_urls: number;
 }
 
+export interface GscCrawlStatsRatioRow {
+  label: string;
+  ratio: number;
+  pct: number;
+}
+
+export interface GscCrawlStats {
+  present: boolean;
+  source_dir?: string;
+  files?: string[];
+  exported_at?: string;
+  totals?: {
+    total_requests: number;
+    total_download_bytes: number;
+    avg_response_time_ms: number;
+    date_start: string;
+    date_end: string;
+    days: number;
+  };
+  series?: Array<{
+    date: string;
+    requests: number;
+    download_bytes: number;
+    avg_response_ms: number;
+  }>;
+  by_response?: GscCrawlStatsRatioRow[];
+  by_file_type?: GscCrawlStatsRatioRow[];
+  by_googlebot_type?: GscCrawlStatsRatioRow[];
+  by_purpose?: GscCrawlStatsRatioRow[];
+  hosts?: Array<{ host: string; requests: number; status: string }>;
+}
+
 export interface GscCoverageBuildResponse {
   ok: boolean;
   error?: string;
@@ -274,6 +306,15 @@ export const crawlerApi = {
   xlsxUrl: () => `${BASE}/reports/xlsx`,
   refreshGscCoverage: () =>
     request<GscRefreshResponse>('/gsc/coverage/refresh', { method: 'POST' }),
+
+  // GSC Crawl Stats — Googlebot's own crawl behaviour on the site. This
+  // report is export-only in GSC (no Search Console API), so the backend
+  // serves the parsed CSV bundle dropped into data/gsc_crawl_stats/.
+  // `refresh:true` POSTs to flush the cache after a fresh export is added.
+  crawlStats: (opts: { refresh?: boolean } = {}) =>
+    request<GscCrawlStats>('/gsc/crawl-stats', {
+      method: opts.refresh ? 'POST' : 'GET',
+    }),
   buildGscCoverage: (opts: { backfill?: boolean } = {}) => {
     const qs = new URLSearchParams();
     if (opts.backfill) qs.set('backfill', '1');

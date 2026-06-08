@@ -215,6 +215,18 @@ class CrawlerSettings:
         default_factory=lambda: _env_bool("DUAL_WRITE_POSTGRES", True)
     )
 
+    # ── Content capture toggle ───────────────────────────────
+    # When False (default for this technical-SEO round), the crawler does
+    # NOT persist page body_text and no content classification/clustering
+    # runs. The crawl stays focused on technical signals: status codes,
+    # headings, links, redirects, robots, sitemap, indexability, CWV.
+    # Flip CRAWLER_STORE_CONTENT=true to re-enable body_text persistence
+    # once the content pipeline is wired (parse_page would need to emit
+    # body_text — see apps/crawler/engine/parser.py).
+    store_content: bool = field(
+        default_factory=lambda: _env_bool("STORE_CONTENT", False)
+    )
+
     # ── Data dirs ────────────────────────────────────────────
     data_dir: str = field(default_factory=lambda: _env_str("DATA_DIR", ""))
     reports_dir: str = field(default_factory=lambda: _env_str("REPORTS_DIR", ""))
