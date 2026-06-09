@@ -2,9 +2,10 @@ version: "3.8"
 
 services:
   db:
-    # pgvector image (postgres 15 + vector extension) — required for the
-    # Phase 2 content-embedding similarity search. Drop-in compatible with
-    # vanilla postgres:15; pg_data volume migrates without recreate.
+    # pgvector image (postgres 15 + vector extension). The embedding stack
+    # was removed (migration 0018) but the image stays: it is drop-in
+    # compatible with vanilla postgres:15 and the existing pg_data volume
+    # migrates without recreate.
     image: pgvector/pgvector:pg15
     # Credentials match the local-dev `.env` (DB_USER=postgres / DB_PASSWORD=postgres)
     # so `docker compose up` and bare-metal Django agree on creds.
@@ -67,11 +68,6 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
-      # HuggingFace embedding model (all-MiniLM-L6-v2 ~87MB) — gitignored
-      # but bind-mounted so weights survive `docker compose down` and the
-      # embedder doesn't re-download from the HF hub on every container
-      # restart. Path matches MINILM_PATH default in crawler/content/__init__.py.
-      - ./backend/models:/app/models
     depends_on: [db, redis]
 
   # ── Celery workers (Phase 5 queue isolation) ──────────────────────────
@@ -96,7 +92,6 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
-      - ./backend/models:/app/models
     depends_on: [db, redis]
 
   worker_bajaj:
@@ -115,7 +110,6 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
-      - ./backend/models:/app/models
     depends_on: [db, redis]
 
   worker_comp:
@@ -134,7 +128,6 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
-      - ./backend/models:/app/models
     depends_on: [db, redis]
 
   # ── Celery beat — fires the periodic tasks defined in
@@ -154,7 +147,6 @@ services:
       - ./backend:/app
       - ./backend/data:/app/data
       - ./backend/reports:/app/reports
-      - ./backend/models:/app/models
     depends_on: [db, redis, worker]
     restart: unless-stopped
 
