@@ -384,6 +384,23 @@ def run_crawl() -> None:
             finally:
                 psi_scheduler.set_current(None)
 
+        # Post-crawl PSI sweep: score HTML-200 pages the inline pass left
+        # without CWV (no-field pages that need a slow lab run). Runs
+        # sequentially now that the frontier is drained — waits for the lab
+        # runs so coverage reaches ~100 % of crawlable pages. Skipped on stop.
+        if (not STATE.should_stop
+                and getattr(settings, "psi_sweep_after_crawl", True)):
+            try:
+                from . import psi_capture
+                res = psi_capture.sweep_missing_cwv()
+                if res.get("swept"):
+                    log.info(
+                        "post-crawl PSI sweep: scored %d gap page(s), merged %d",
+                        res.get("swept", 0), res.get("rows_written", 0),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("post-crawl PSI sweep failed: %s", exc)
+
 
 def _finalise_psi_scheduler(sched) -> None:
     """Drain workers + atomic-merge the sidecar into crawl_results.csv.

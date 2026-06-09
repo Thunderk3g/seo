@@ -93,6 +93,8 @@ urlpatterns = [
     # Frontend polls this every ~5 s while is_running is true. Returns
     # {} when no crawl/scheduler is in flight.
     path("psi/progress", views.psi_progress_view, name="psi-progress"),
+    # Post-crawl PSI sweep — fill CWV gaps (GET=count, POST=start sweep).
+    path("psi/sweep", views.psi_sweep_view, name="psi-sweep"),
 
     # Site tree
     path("tree", views.tree_view, name="tree"),

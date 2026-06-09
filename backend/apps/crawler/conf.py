@@ -186,6 +186,13 @@ class CrawlerSettings:
     psi_capture_limit: int = field(
         default_factory=lambda: _env_int("PSI_CAPTURE_LIMIT", 0)
     )
+    # After the crawl, run a sequential PSI sweep over any HTML-200 page that
+    # still has no CWV (no-field pages whose slow lab run the inline pass
+    # raced past) so coverage reaches ~100 %. Set PSI_SWEEP_AFTER_CRAWL=false
+    # to skip (e.g. to keep crawl-task wall-time short).
+    psi_sweep_after_crawl: bool = field(
+        default_factory=lambda: _env_bool("PSI_SWEEP_AFTER_CRAWL", True)
+    )
 
     # ── Inline PSI scheduler (concurrent, per-URL during crawl) ──────
     # When True (default), every crawled URL is submitted to a small
