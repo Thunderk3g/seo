@@ -55,9 +55,15 @@ class CompetitorDualWritePipeline:
                 except ValueError:
                     seed_host = ""
             target = (getattr(spider, "target_domain", "") or "").lower()
+            # Own-site content crawls reuse this pipeline with
+            # spider.snapshot_kind='content'; anything unrecognised
+            # falls back to 'competitor' (the historical behaviour).
+            kind = (getattr(spider, "snapshot_kind", "") or "").lower()
+            if kind not in CrawlSnapshot.Kind.values:
+                kind = CrawlSnapshot.Kind.COMPETITOR
             snap = CrawlSnapshot.objects.create(
                 engine=CrawlSnapshot.Engine.SCRAPY_COMPETITOR,
-                kind=CrawlSnapshot.Kind.COMPETITOR,
+                kind=kind,
                 seed_url=seed[:2048] if seed else "",
                 target_domain=target or seed_host or "",
                 allowed_domains=[target] if target else [],

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api } from '../api/client';
 import {
   useContentClusters,
   type ContentCluster,
@@ -56,6 +58,81 @@ function IndexCoveragePanel() {
 
 function fmt(n: number): string {
   return n.toLocaleString();
+}
+
+interface ContentCrawlSnapshot {
+  snapshot_id: string;
+  status: 'running' | 'complete' | 'failed' | 'stopped';
+  started_at: string;
+  finished_at: string;
+  target_domain: string;
+  pages_attempted: number;
+  pages_ok: number;
+}
+
+interface ContentCrawlStatus {
+  available: boolean;
+  latest: ContentCrawlSnapshot | null;
+}
+
+/** Trigger + status for the own-site content crawl (sitemap-seeded walk
+ *  that stores body text + zoned structure per page; the clusters below
+ *  re-fill from it when it finishes). */
+function ContentCrawlButton() {
+  const qc = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ['content-crawl-status'],
+    queryFn: () => api.get<ContentCrawlStatus>('/seo/content/crawl/'),
+    // Poll only while a crawl is in flight; otherwise check on focus.
+    refetchInterval: (query) =>
+      query.state.data?.latest?.status === 'running' ? 10_000 : false,
+  });
+  const start = useMutation({
+    mutationFn: () => api.post('/seo/content/crawl/'),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['content-crawl-status'] }),
+  });
+  const latest = data?.latest ?? null;
+  const running = latest?.status === 'running';
+  // A finished crawl means fresher clusters — drop the cache ONCE per
+  // run (keyed by snapshot id, not on every render).
+  const doneKey = latest && latest.status === 'complete' ? latest.snapshot_id : '';
+  useEffect(() => {
+    if (doneKey) qc.invalidateQueries({ queryKey: ['content-clusters'] });
+  }, [doneKey, qc]);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <button
+        type="button"
+        onClick={() => start.mutate()}
+        disabled={running || start.isPending}
+        style={{
+          background: running ? '#94a3b8' : BAJAJ_BLUE,
+          color: '#fff',
+          border: 'none',
+          borderRadius: 8,
+          padding: '8px 16px',
+          fontWeight: 700,
+          fontSize: 13,
+          cursor: running ? 'default' : 'pointer',
+        }}
+      >
+        {running ? 'Content crawl running…' : 'Crawl site content'}
+      </button>
+      {latest && (
+        <span style={{ fontSize: 12, color: '#475569' }}>
+          {running
+            ? `${fmt(latest.pages_ok)} pages captured so far`
+            : `Last crawl: ${latest.status} · ${fmt(latest.pages_ok)} pages` +
+              (latest.finished_at ? ` · ${new Date(latest.finished_at).toLocaleString()}` : '')}
+        </span>
+      )}
+      {start.isError && (
+        <span style={{ fontSize: 12, color: '#b91c1b' }}>
+          Could not start — is a crawl already running?
+        </span>
+      )}
+    </div>
+  );
 }
 
 function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: string }) {
@@ -210,6 +287,7 @@ export default function ContentPage() {
             more, pulled from wherever it appears. Click a page to read its real sections.
           </div>
         </div>
+        <ContentCrawlButton />
       </header>
 
       {isLoading && <div className="seo-empty">Loading content clusters…</div>}

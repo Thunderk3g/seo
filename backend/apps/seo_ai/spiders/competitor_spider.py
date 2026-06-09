@@ -154,10 +154,14 @@ class CompetitorSpider(Spider):
         mode: str = "urls",
         max_depth: int = 2,
         max_pages: int = 0,
+        snapshot_kind: str = "competitor",
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.target_domain = (target_domain or "").lower().lstrip("www.")
+        # CrawlSnapshot.kind the dual-write pipeline stamps. 'competitor'
+        # (default) or 'content' (own-site content crawl).
+        self.snapshot_kind = (snapshot_kind or "competitor").lower()
         self._urls: list[str] = list(urls or [])
         self.body_text_max_chars = int(body_text_max_chars or 0)
         # Link-walking parameters.

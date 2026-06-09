@@ -502,6 +502,252 @@ def generate_llms_txt(max_pages_per_section: int = 30) -> dict[str, Any]:
     return {"ok": True, **draft.as_dict()}
 
 
+# ── Live crawl tools — the assistant's own crawler ─────────────────────
+# Any URL (ours or a competitor's), on demand, full structural mirror:
+# zoned headings/links/images, body stats, schema, optional CWV. Results
+# are deliberately compact — the router truncates tool output at 4 000
+# chars, so we ship counts + capped samples, never raw lists.
+
+
+def _live_page_digest(row) -> dict[str, Any]:
+    """Compact structural digest of one ``CrawlerPageResult`` row
+    produced by ``crawl_live`` — small enough that an 8-page comparison
+    survives the router's 4k tool-result cap."""
+    headings = list(row.headings_json or [])
+    internal = list(row.internal_links_json or [])
+    external = list(row.external_links_json or [])
+    images = list(row.images_json or [])
+
+    h_by_level: dict[int, list[str]] = {}
+    for h in headings:
+        h_by_level.setdefault(int(h.get("level") or 0), []).append(
+            (h.get("text") or "")[:120]
+        )
+
+    def _zone_counts(entries: list[dict]) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for e in entries:
+            z = (e.get("zone") or "content") or "content"
+            out[z] = out.get(z, 0) + 1
+        return out
+
+    missing_alt = [i for i in images if not (i.get("alt") or "").strip()]
+    return {
+        "url": row.url,
+        "status_code": row.status_code,
+        "response_time_ms": row.response_time_ms,
+        "title": (row.title or "")[:160],
+        "title_length": len(row.title or ""),
+        "meta_description_length": len(row.meta_description or ""),
+        "canonical": (row.canonical or "")[:200],
+        "meta_robots": row.meta_robots or "",
+        "word_count": row.word_count,
+        "headings": {
+            "h1": h_by_level.get(1, [])[:3],
+            "h1_count": len(h_by_level.get(1, [])),
+            "h2_count": len(h_by_level.get(2, [])),
+            "h3_count": len(h_by_level.get(3, [])),
+            "h2_outline": h_by_level.get(2, [])[:12],
+        },
+        "links": {
+            "internal": len(internal),
+            "external": len(external),
+            "internal_by_zone": _zone_counts(internal),
+            # In-body links = anything outside the chrome landmarks.
+            # _classify_zone emits main/other for body content (plus
+            # header/nav/footer/aside for chrome).
+            "content_link_samples": [
+                {"anchor": (l.get("anchor") or "")[:60],
+                 "href": (l.get("href") or "")[:140]}
+                for l in internal
+                if (l.get("zone") or "other") in ("content", "main", "other")
+            ][:5],
+        },
+        "images": {
+            "total": len(images),
+            "missing_alt": len(missing_alt),
+            "missing_alt_pct": (
+                round(100.0 * len(missing_alt) / len(images), 1) if images else 0.0
+            ),
+            "missing_alt_samples": [
+                (i.get("src") or "")[:140] for i in missing_alt
+            ][:5],
+        },
+        "schema_types": list(row.jsonld_types or [])[:8],
+        "videos": len(row.videos_json or []),
+    }
+
+
+def _cwv_for_url(url: str) -> dict[str, Any]:
+    """Single-URL Core Web Vitals via PSI (mobile). Disk-cached 7 days
+    at the adapter, so repeat questions cost zero quota."""
+    from ..adapters.cwv_psi import AdapterDisabledError, PSIAdapter
+    try:
+        rec = PSIAdapter().fetch(url, strategy="mobile")
+    except AdapterDisabledError as exc:
+        return {"available": False, "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}
+    if rec is None or rec.error:
+        return {"available": False,
+                "reason": (rec.error if rec else "no record")[:200]}
+    return {
+        "available": True,
+        "strategy": "mobile",
+        "performance_score": rec.performance_score,
+        "lab": {"lcp_ms": rec.lab_lcp_ms, "cls": rec.lab_cls,
+                "fcp_ms": rec.lab_fcp_ms, "ttfb_ms": rec.lab_ttfb_ms},
+        "field": ({
+            "lcp_ms": rec.field_lcp_ms, "lcp_category": rec.field_lcp_category,
+            "inp_ms": rec.field_inp_ms, "inp_category": rec.field_inp_category,
+            "cls": rec.field_cls, "cls_category": rec.field_cls_category,
+        } if rec.has_field_data else None),
+        "cached": rec.cached,
+    }
+
+
+@_safe
+def crawl_page(url: str, include_cwv: bool = False) -> dict[str, Any]:
+    """LIVE-CRAWL one URL right now (ours or any competitor's) and return
+    its full page structure: h1/h2/h3 outline + counts, every-link
+    inventory split by zone (header/nav/content/footer), image alt-text
+    coverage with offending samples, word count, title/meta/canonical/
+    robots, schema types. Set include_cwv=true to also run PageSpeed
+    (mobile lab + CrUX field LCP/INP/CLS) for that page. Use when the
+    user pastes a URL and asks "crawl this", "check this page", "what's
+    the structure of …", or "LCP of this page"."""
+    from apps.crawler.views import CrawlLiveError, crawl_live
+    try:
+        _snap, row = crawl_live(url)
+    except CrawlLiveError as exc:
+        return {"ok": False, "error": str(exc)[:300],
+                "status_code": exc.status_code}
+    out: dict[str, Any] = {"ok": True, "page": _live_page_digest(row)}
+    if include_cwv:
+        out["cwv"] = _cwv_for_url(row.final_url or row.url)
+    return out
+
+
+@_safe
+def crawl_pages(urls: list[str] | None = None) -> dict[str, Any]:
+    """LIVE-CRAWL up to 8 URLs in parallel and return each page's
+    compact structure digest (headings, zoned links, image alt coverage,
+    word count, schema). Use when the user asks to "compare these
+    pages", "crawl these 5 URLs", or hands over a list of competitor
+    pages to inspect. For a single URL prefer crawl_page."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from apps.crawler.views import CrawlLiveError, crawl_live
+
+    wanted = [u.strip() for u in (urls or []) if u and u.strip()][:8]
+    if not wanted:
+        return {"ok": False, "error": "pass urls=[...] — at least one URL"}
+
+    def _one(u: str) -> dict[str, Any]:
+        try:
+            _s, row = crawl_live(u)
+            return _live_page_digest(row)
+        except CrawlLiveError as exc:
+            return {"url": u, "error": str(exc)[:200]}
+        except Exception as exc:  # noqa: BLE001
+            return {"url": u, "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        digests = list(pool.map(_one, wanted))
+    crawled = [d for d in digests if not d.get("error")]
+    return {"ok": True, "requested": len(wanted),
+            "crawled": len(crawled), "pages": digests}
+
+
+def _heading_tokens(text: str) -> set[str]:
+    """Normalised token set for heading-topic overlap. Drops stopwords
+    so "What is Term Insurance?" ≈ "Term Insurance Meaning"."""
+    import re as _re
+    stop = {"the", "a", "an", "of", "in", "on", "for", "to", "and", "or",
+            "is", "are", "what", "how", "why", "your", "you", "with",
+            "our", "we", "do", "does", "vs"}
+    toks = {t for t in _re.findall(r"[a-z0-9]+", (text or "").lower())
+            if len(t) > 2 and t not in stop}
+    return toks
+
+
+@_safe
+def compare_page_structures(
+    our_url: str, competitor_urls: list[str] | None = None,
+) -> dict[str, Any]:
+    """CONTENT-GAP comparison: live-crawl OUR page plus up to 5
+    competitor pages, then report side-by-side structure (word count,
+    h2/h3 counts, image alt %, internal links, schema) AND the heading
+    topics competitors cover that our page does not (the gap list). Use
+    when the user asks "compare our term page with HDFC's", "what do
+    competitor pages cover that we don't", or any our-page-vs-rivals
+    content question."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from apps.crawler.views import CrawlLiveError, crawl_live
+
+    rivals = [u.strip() for u in (competitor_urls or []) if u and u.strip()][:5]
+    if not (our_url or "").strip():
+        return {"ok": False, "error": "our_url required"}
+    if not rivals:
+        return {"ok": False, "error": "pass competitor_urls=[...] — at least one"}
+
+    def _one(u: str):
+        try:
+            _s, row = crawl_live(u)
+            return row, None
+        except (CrawlLiveError, Exception) as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {exc}"[:200]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(_one, [our_url.strip(), *rivals]))
+
+    ours_row, ours_err = results[0]
+    if ours_row is None:
+        return {"ok": False, "error": f"our page failed: {ours_err}"}
+    ours = _live_page_digest(ours_row)
+
+    our_tokens: set[str] = set()
+    for h in (ours_row.headings_json or []):
+        our_tokens |= _heading_tokens(h.get("text") or "")
+
+    rival_digests: list[dict[str, Any]] = []
+    gap_counter: dict[str, int] = {}
+    for (row, err), url in zip(results[1:], rivals):
+        if row is None:
+            rival_digests.append({"url": url, "error": err})
+            continue
+        rival_digests.append(_live_page_digest(row))
+        page_gaps: set[str] = set()  # dedupe repeated headings per page
+        for h in (row.headings_json or []):
+            text = (h.get("text") or "").strip()
+            toks = _heading_tokens(text)
+            # Skip stat/number headings ("652", "~5 crore") — need at
+            # least two meaningful word tokens to be a topic.
+            word_toks = [t for t in toks if not t.isdigit()]
+            if len(word_toks) < 2:
+                continue
+            # A heading is "uncovered" when under half its meaningful
+            # tokens appear anywhere in our heading vocabulary.
+            if len(toks & our_tokens) < max(1, len(toks) // 2):
+                page_gaps.add(text[:90])
+        for key in page_gaps:
+            gap_counter[key] = gap_counter.get(key, 0) + 1
+
+    gaps = sorted(gap_counter.items(), key=lambda kv: -kv[1])[:15]
+    return {
+        "ok": True,
+        "ours": ours,
+        "competitors": rival_digests,
+        "topics_competitors_cover_we_dont": [
+            {"heading": k, "competitor_pages": v} for k, v in gaps
+        ],
+        "note": ("Gap list = competitor h1-h6 headings whose topic tokens "
+                 "don't appear in our page's headings. Verify against body "
+                 "copy before acting — content can exist without a heading."),
+    }
+
+
 @_safe
 def get_ai_bot_hits(limit: int = 50) -> dict[str, Any]:
     """Recent verified AI-bot hits on Bajaj pages (GPTBot, ClaudeBot,
@@ -1936,6 +2182,10 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "list_competitors_crawled": list_competitors_crawled,
     "get_competitor_detail": get_competitor_detail,
     "list_data_sources": list_data_sources,
+    # ── live crawl tools — the assistant's own crawler ──
+    "crawl_page": crawl_page,
+    "crawl_pages": crawl_pages,
+    "compare_page_structures": compare_page_structures,
 }
 
 
@@ -2000,6 +2250,17 @@ CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _f("get_geo_score",
        "GEO score: citations, E-E-A-T, AI bots, llms.txt, Reddit/Quora, YouTube, Wikidata. deep=true for slow external calls.",
        {"deep": _BOOL}),
+    # ── Live crawl — the assistant's own crawler ──────────────────
+    _f("crawl_page",
+       "LIVE-crawl one URL NOW (ours or competitor): h1/h2/h3 outline, links by zone (header/nav/content/footer), image alt coverage, schema. include_cwv=true adds PageSpeed LCP/INP/CLS.",
+       {"url": _STR, "include_cwv": _BOOL}, required=["url"]),
+    _f("crawl_pages",
+       "LIVE-crawl up to 8 URLs in parallel, compact structure digest each. For user-supplied URL lists.",
+       {"urls": {"type": "array", "items": _STR}}, required=["urls"]),
+    _f("compare_page_structures",
+       "Content-gap compare: live-crawl our page + up to 5 rival pages; side-by-side structure + heading topics rivals cover that we don't.",
+       {"our_url": _STR, "competitor_urls": {"type": "array", "items": _STR}},
+       required=["our_url", "competitor_urls"]),
     # ── Competitors ───────────────────────────────────────────────
     _f("list_competitors_crawled",
        "Every competitor domain the Scrapy walker has visited, with live page counts + status."),

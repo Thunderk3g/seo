@@ -210,9 +210,11 @@ def _inhouse_clusters_from_crawl():
     except Exception:  # noqa: BLE001 — crawler app missing/migrating
         return None
 
-    # Latest Bajaj snapshot that actually has pages — skips empty/duplicate
-    # snapshots left behind by rejected re-starts.
-    snap = (CrawlSnapshot.objects.filter(kind="bajaj")
+    # Latest own-site snapshot that actually has pages — skips empty/
+    # duplicate snapshots left behind by rejected re-starts. Prefers the
+    # dedicated CONTENT crawl (body_text + zoned structure from the
+    # Content-page button) over the nightly technical crawl when newer.
+    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
             .annotate(n=Count("pages")).filter(n__gt=0)
             .order_by("-started_at").first())
     if snap is None:
@@ -370,6 +372,55 @@ def inhouse_content_clusters(request: Request):
         "note": spec.get("note", ""),
         "clusters": clusters_out,
     })
+
+
+@api_view(["GET", "POST"])
+def content_crawl_view(request: Request):
+    """Content-page crawl trigger + status.
+
+    POST → enqueue ``seo_ai.crawl_own_content`` (sitemap-seeded walk of
+           our own domain via the Scrapy content pipeline; persists
+           body_text + zoned headings/links/images per page under a
+           ``kind='content'`` snapshot). 409 if one is already running.
+    GET  → latest content-crawl snapshot status for the button/poller.
+    """
+    from apps.crawler.models import CrawlSnapshot
+
+    def _snap_payload(snap):
+        if snap is None:
+            return None
+        return {
+            "snapshot_id": str(snap.id),
+            "status": snap.status,
+            "started_at": snap.started_at.isoformat() if snap.started_at else "",
+            "finished_at": snap.finished_at.isoformat() if snap.finished_at else "",
+            "target_domain": snap.target_domain,
+            "pages_attempted": snap.pages_attempted,
+            "pages_ok": snap.pages_ok,
+        }
+
+    latest = (CrawlSnapshot.objects.filter(kind="content")
+              .order_by("-started_at").first())
+
+    if request.method == "GET":
+        return Response({"available": True, "latest": _snap_payload(latest)})
+
+    if latest is not None and latest.status == CrawlSnapshot.Status.RUNNING:
+        return Response(
+            {"started": False,
+             "message": "A content crawl is already running.",
+             "latest": _snap_payload(latest)},
+            status=409,
+        )
+
+    from .tasks import crawl_own_content_task
+    domain = (request.data.get("domain") or "bajajlifeinsurance.com").strip()
+    task = crawl_own_content_task.delay(domain)
+    return Response(
+        {"started": True, "task_id": task.id, "domain": domain,
+         "message": "Content crawl queued — poll GET for snapshot status."},
+        status=202,
+    )
 
 
 @api_view(["GET"])

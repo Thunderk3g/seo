@@ -68,6 +68,12 @@ class CrawlSnapshot(models.Model):
         # host so repeated ad-hoc fetches of the same site aggregate
         # naturally (instead of one snapshot per URL).
         ADHOC = "adhoc", "Ad-hoc URL"
+        # Own-site CONTENT crawl — the competitor walk machinery pointed
+        # at our own domain (sitemap-seeded, body_text + zoned structure
+        # persisted). Kept distinct from `bajaj` (the technical nightly
+        # crawl) so competitor lists and crawl-diff views never confuse
+        # the two, and the Content page can prefer the richer snapshot.
+        CONTENT = "content", "Content crawl (own site)"
 
     class Status(models.TextChoices):
         RUNNING = "running", "Running"

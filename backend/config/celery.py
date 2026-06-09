@@ -33,6 +33,9 @@ app.conf.task_routes = {
     "seo_ai.walk_competitor": {"queue": "comp_crawl"},
     "seo_ai.walk_competitor_roster": {"queue": "comp_crawl"},
     "seo_ai.psi_enrich_snapshot": {"queue": "comp_crawl"},
+    # Own-site content crawl shares the Scrapy queue — same engine,
+    # same RAM profile as a competitor walk.
+    "seo_ai.crawl_own_content": {"queue": "comp_crawl"},
 }
 app.conf.task_default_queue = "default"
 
