@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import {
@@ -277,6 +277,34 @@ export default function ContentPage() {
   const { data, isLoading, isError } = useContentClusters();
   const clusters = data?.clusters ?? [];
 
+  // Page search — pure client-side filter over the already-fetched
+  // cluster payload (no extra API calls, zero impact on the crawler).
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const visibleClusters = useMemo(() => {
+    if (!q) return clusters;
+    return clusters
+      .map((c) => {
+        const pages = c.pages.filter(
+          (p) =>
+            p.name.toLowerCase().includes(q) ||
+            p.url.toLowerCase().includes(q) ||
+            p.sections.some((s) => (s.heading || '').toLowerCase().includes(q))
+        );
+        return {
+          ...c,
+          pages,
+          page_count: pages.length,
+          section_count: pages.reduce((n, p) => n + p.sections.length, 0),
+          word_count: pages.reduce((n, p) => n + p.words, 0),
+        };
+      })
+      .filter((c) => c.pages.length > 0);
+  }, [clusters, q]);
+  const matchCount = q
+    ? visibleClusters.reduce((n, c) => n + c.pages.length, 0)
+    : 0;
+
   return (
     <div className="seo-page">
       <header className="seo-page-header">
@@ -307,6 +335,27 @@ export default function ContentPage() {
 
       {clusters.length > 0 && (
         <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0 0' }}>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search pages — title, URL or heading (e.g. term calculator)…"
+              style={{
+                flex: '1 1 320px',
+                maxWidth: 480,
+                padding: '8px 12px',
+                border: '1px solid #cbd5e1',
+                borderRadius: 8,
+                fontSize: 13,
+              }}
+            />
+            {q && (
+              <span style={{ fontSize: 12.5, color: '#475569' }}>
+                {matchCount.toLocaleString()} page(s) match in {visibleClusters.length} topic(s)
+              </span>
+            )}
+          </div>
           <div
             style={{
               background: '#f8fafc',
@@ -318,19 +367,22 @@ export default function ContentPage() {
             }}
           >
             <b style={{ color: BAJAJ_NAVY }}>Topics:</b>{' '}
-            {clusters.map((c) => (
+            {visibleClusters.map((c) => (
               <a
                 key={c.id}
                 href={`#${c.id}`}
                 style={{ color: '#1e40af', marginRight: 14, textDecoration: 'none' }}
               >
-                {c.name}
+                {c.name}{q ? ` (${c.pages.length})` : ''}
               </a>
             ))}
           </div>
-          {clusters.map((c) => (
+          {visibleClusters.map((c) => (
             <ClusterSection key={c.id} cluster={c} />
           ))}
+          {q && visibleClusters.length === 0 && (
+            <div className="seo-empty">No crawled page matches “{query}”.</div>
+          )}
         </>
       )}
     </div>

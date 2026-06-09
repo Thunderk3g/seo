@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
@@ -120,6 +120,27 @@ export default function CompetitorStructureClustersSection({ domain }: { domain:
     staleTime: 60_000,
   });
 
+  // Page search — client-side filter over the fetched payload only
+  // (no extra API calls; the crawler is untouched).
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const visibleClusters = useMemo(() => {
+    const clusters = data?.clusters ?? [];
+    if (!q) return clusters;
+    return clusters
+      .map((c) => {
+        const pages = c.pages.filter(
+          (p) =>
+            p.name.toLowerCase().includes(q) ||
+            p.url.toLowerCase().includes(q) ||
+            p.sections.some((s) => (s.heading || '').toLowerCase().includes(q))
+        );
+        return { ...c, pages, page_count: pages.length, word_count: pages.reduce((n, p) => n + p.words, 0) };
+      })
+      .filter((c) => c.pages.length > 0);
+  }, [data, q]);
+  const matchCount = q ? visibleClusters.reduce((n, c) => n + c.pages.length, 0) : 0;
+
   if (isLoading) return <div className="seo-empty">Loading content segregation…</div>;
   if (!data?.available) {
     return (
@@ -166,9 +187,33 @@ export default function CompetitorStructureClustersSection({ domain }: { domain:
           ))}
         </div>
       )}
-      {(data.clusters ?? []).map((c) => (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 10px' }}>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search their pages — title, URL or heading…"
+          style={{
+            flex: '1 1 300px',
+            maxWidth: 460,
+            padding: '8px 12px',
+            border: '1px solid #cbd5e1',
+            borderRadius: 8,
+            fontSize: 13,
+          }}
+        />
+        {q && (
+          <span style={{ fontSize: 12.5, color: '#475569' }}>
+            {matchCount.toLocaleString()} page(s) match
+          </span>
+        )}
+      </div>
+      {visibleClusters.map((c) => (
         <ClusterBlock key={c.id} cluster={c} />
       ))}
+      {q && visibleClusters.length === 0 && (
+        <div className="seo-empty">No crawled page matches “{query}”.</div>
+      )}
     </section>
   );
 }
