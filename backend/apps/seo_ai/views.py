@@ -197,6 +197,280 @@ def _content_page_label(row: dict) -> str:
     return path.rstrip("/") or "/"
 
 
+def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
+    """Shared deterministic topic segregation — same rules for our own
+    site AND every competitor, so the Content page and the competitor
+    detail page segregate identically.
+
+    Returns ``(clusters, heading_totals)``. Pages that match NO topic
+    rule — including pages with no title or headings at all — land in a
+    final ``uncategorised`` cluster. Nothing is ever dropped.
+    """
+    heading_totals = {"h1": 0, "h2": 0, "h3": 0}
+    for r in rows:
+        for h in (r.get("headings_json") or []):
+            lvl = h.get("level")
+            if lvl == 1:
+                heading_totals["h1"] += 1
+            elif lvl == 2:
+                heading_totals["h2"] += 1
+            elif lvl == 3:
+                heading_totals["h3"] += 1
+
+    def _sections(headings: list[dict]) -> list[dict]:
+        return [{
+            "level": h.get("level", 2),
+            "tag": "INTRO" if h.get("level") == 0 else f"H{h.get('level', 2)}",
+            "heading": h.get("text", ""),
+            "words": 0,
+            "text": "",
+        } for h in headings]
+
+    clusters: list[dict] = []
+    clustered_urls: set[str] = set()
+    for tid, tname, kws in _CONTENT_TOPIC_RULES:
+        kws_l = [k.lower() for k in kws]
+        pages = []
+        for r in rows:
+            headings = r.get("headings_json") or []
+            title_l = (r.get("title") or "").lower()
+            matched = []
+            for h in headings:
+                ht = (h.get("text") or "").strip()
+                if ht and any(k in ht.lower() for k in kws_l):
+                    matched.append(h)
+            if not matched and not any(k in title_l for k in kws_l):
+                continue
+            secs = matched if matched else headings[:6]
+            clustered_urls.add(r["url"])
+            pages.append({
+                "key": r["url"],
+                "name": _content_page_label(r),
+                "url": r["url"],
+                "words": r.get("word_count") or 0,
+                "sections": _sections(secs),
+            })
+        if not pages:
+            continue
+        pages.sort(key=lambda p: -p["words"])
+        clusters.append({
+            "id": tid,
+            "name": tname,
+            "intro": f"{tname} content found on {len(pages)} crawled page(s).",
+            "page_count": len(pages),
+            "section_count": sum(len(p["sections"]) for p in pages),
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+
+    # Catch-all bucket — pages no topic rule claimed, including pages
+    # with no title/headings (operator rule: segregate, never remove).
+    leftovers = [r for r in rows if r["url"] not in clustered_urls]
+    if leftovers:
+        pages = [{
+            "key": r["url"],
+            "name": _content_page_label(r),
+            "url": r["url"],
+            "words": r.get("word_count") or 0,
+            "sections": _sections((r.get("headings_json") or [])[:6]),
+        } for r in leftovers]
+        pages.sort(key=lambda p: -p["words"])
+        clusters.append({
+            "id": "uncategorised",
+            "name": "Uncategorised / Other",
+            "intro": (f"{len(pages)} page(s) matched no topic rule — "
+                      "including pages with no title or headings. Kept "
+                      "for completeness; nothing is dropped."),
+            "page_count": len(pages),
+            "section_count": sum(len(p["sections"]) for p in pages),
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+    return clusters, heading_totals
+
+
+def _cluster_page_entry(r: dict) -> dict:
+    headings = (r.get("headings_json") or [])[:6]
+    return {
+        "key": r["url"],
+        "name": _content_page_label(r),
+        "url": r["url"],
+        "words": r.get("word_count") or 0,
+        "sections": [{
+            "level": h.get("level", 2),
+            "tag": "INTRO" if h.get("level") == 0 else f"H{h.get('level', 2)}",
+            "heading": h.get("text", ""),
+            "words": 0,
+            "text": "",
+        } for h in headings],
+    }
+
+
+def _load_competitor_cluster_spec(domain: str) -> dict | None:
+    """Per-domain cluster spec written by the Claude Code smart-
+    segregation pass after a crawl populates the DB. Lives at
+    ``{data_dir}/content_clusters/<domain>.json``::
+
+        {"generated_at": "...", "note": "...",
+         "clusters": [{"id": "...", "name": "...",
+                       "url_patterns": ["/term-insurance"],
+                       "keywords": ["term plan", ...]}, ...]}
+
+    Missing/invalid file → None (endpoint falls back to clustering by
+    the competitor's own URL structure).
+    """
+    import json
+    from pathlib import Path
+
+    from django.conf import settings as dj_settings
+
+    safe = "".join(c if (c.isalnum() or c in ".-") else "_" for c in domain)
+    path = (Path(dj_settings.SEO_AI["data_dir"]) / "content_clusters"
+            / f"{safe}.json")
+    if not path.exists():
+        return None
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+        return spec if isinstance(spec.get("clusters"), list) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _clusters_from_spec(rows: list[dict], spec: dict) -> list[dict]:
+    """Apply a Claude-generated per-domain spec: URL-pattern matches
+    first (their site structure), keyword matches against title +
+    headings second. Unclaimed pages → uncategorised, never dropped."""
+    clusters: list[dict] = []
+    clustered: set[str] = set()
+    for c in spec.get("clusters", []):
+        pats = [p.lower() for p in (c.get("url_patterns") or []) if p]
+        kws = [k.lower() for k in (c.get("keywords") or []) if k]
+        pages = []
+        for r in rows:
+            url_l = (r["url"] or "").lower()
+            title_l = (r.get("title") or "").lower()
+            hit = any(p in url_l for p in pats)
+            if not hit and kws:
+                if any(k in title_l for k in kws):
+                    hit = True
+                else:
+                    hit = any(
+                        k in (h.get("text") or "").lower()
+                        for h in (r.get("headings_json") or [])
+                        for k in kws
+                    )
+            if not hit:
+                continue
+            clustered.add(r["url"])
+            pages.append(_cluster_page_entry(r))
+        if not pages:
+            continue
+        pages.sort(key=lambda p: -p["words"])
+        clusters.append({
+            "id": str(c.get("id") or c.get("name") or len(clusters)),
+            "name": c.get("name") or str(c.get("id") or "Cluster"),
+            "intro": c.get("intro") or f"{len(pages)} page(s).",
+            "page_count": len(pages),
+            "section_count": sum(len(p["sections"]) for p in pages),
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+    leftovers = [r for r in rows if r["url"] not in clustered]
+    if leftovers:
+        pages = sorted((_cluster_page_entry(r) for r in leftovers),
+                       key=lambda p: -p["words"])
+        clusters.append({
+            "id": "uncategorised",
+            "name": "Uncategorised / Other",
+            "intro": (f"{len(pages)} page(s) the spec didn't claim — "
+                      "kept, never dropped."),
+            "page_count": len(pages),
+            "section_count": sum(len(p["sections"]) for p in pages),
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+    return clusters
+
+
+def _clusters_by_url_structure(rows: list[dict]) -> list[dict]:
+    """Default competitor segregation — THEIR site's own structure, not
+    our topic rules: group by first URL path segment (each rival's IA
+    names its own clusters), with pages that have no title AND no
+    headings split into a dedicated bucket so thin/odd pages stay
+    visible but separate. Every page lands somewhere; nothing dropped.
+    """
+    from collections import defaultdict
+    from urllib.parse import urlparse
+
+    by_seg: dict[str, list[dict]] = defaultdict(list)
+    no_content: list[dict] = []
+    for r in rows:
+        if not (r.get("title") or "").strip() and not (r.get("headings_json") or []):
+            no_content.append(r)
+            continue
+        segs = [s for s in (urlparse(r["url"]).path or "/").strip("/").split("/") if s]
+        by_seg[segs[0] if segs else "(root)"].append(r)
+
+    def _label(seg: str) -> str:
+        if seg == "(root)":
+            return "Homepage & root pages"
+        return seg.replace("-", " ").replace("_", " ").strip().title()
+
+    clusters: list[dict] = []
+    for seg, seg_rows in by_seg.items():
+        pages = sorted((_cluster_page_entry(r) for r in seg_rows),
+                       key=lambda p: -p["words"])
+        clusters.append({
+            "id": seg,
+            "name": _label(seg),
+            "intro": f"/{seg} — {len(pages)} page(s) in this section of their site.",
+            "page_count": len(pages),
+            "section_count": sum(len(p["sections"]) for p in pages),
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+    clusters.sort(key=lambda c: -c["page_count"])
+    if no_content:
+        pages = sorted((_cluster_page_entry(r) for r in no_content),
+                       key=lambda p: -p["words"])
+        clusters.append({
+            "id": "no_title_no_headings",
+            "name": "No title / headings captured",
+            "intro": (f"{len(pages)} page(s) with no title or headings — "
+                      "segregated separately, never removed."),
+            "page_count": len(pages),
+            "section_count": 0,
+            "word_count": sum(p["words"] for p in pages),
+            "pages": pages,
+        })
+    return clusters
+
+
+def _url_hierarchy(urls: list[str], *, max_top: int = 15,
+                   max_children: int = 8) -> list[dict]:
+    """Two-level URL-path tree ("/life-insurance-plans → term-…") with
+    page counts — the competitor page-hierarchy panel."""
+    from collections import Counter, defaultdict
+    from urllib.parse import urlparse
+
+    top: Counter = Counter()
+    child: dict[str, Counter] = defaultdict(Counter)
+    for u in urls:
+        segs = [s for s in (urlparse(u).path or "/").strip("/").split("/") if s]
+        t = segs[0] if segs else "(root)"
+        top[t] += 1
+        if len(segs) > 1:
+            child[t][segs[1]] += 1
+    return [{
+        "segment": t,
+        "pages": n,
+        "children": [
+            {"segment": c, "pages": m}
+            for c, m in child[t].most_common(max_children)
+        ],
+    } for t, n in top.most_common(max_top)]
+
+
 def _inhouse_clusters_from_crawl():
     """Cluster the latest Bajaj crawl's stored headings by topic.
 
@@ -224,50 +498,10 @@ def _inhouse_clusters_from_crawl():
         .filter(snapshot=snap, status_code="200")
         .values("url", "title", "headings_json", "word_count")
     )
-    rows = [r for r in rows if r.get("headings_json")]
     if not rows:
         return None
 
-    clusters = []
-    for tid, tname, kws in _CONTENT_TOPIC_RULES:
-        kws_l = [k.lower() for k in kws]
-        pages = []
-        for r in rows:
-            headings = r.get("headings_json") or []
-            title_l = (r.get("title") or "").lower()
-            matched = []
-            for h in headings:
-                ht = (h.get("text") or "").strip()
-                if ht and any(k in ht.lower() for k in kws_l):
-                    matched.append(h)
-            if not matched and not any(k in title_l for k in kws_l):
-                continue
-            secs = matched if matched else headings[:6]
-            pages.append({
-                "key": r["url"],
-                "name": _content_page_label(r),
-                "url": r["url"],
-                "words": r.get("word_count") or 0,
-                "sections": [{
-                    "level": h.get("level", 2),
-                    "tag": "INTRO" if h.get("level") == 0 else f"H{h.get('level', 2)}",
-                    "heading": h.get("text", ""),
-                    "words": 0,
-                    "text": "",
-                } for h in secs],
-            })
-        if not pages:
-            continue
-        pages.sort(key=lambda p: -p["words"])
-        clusters.append({
-            "id": tid,
-            "name": tname,
-            "intro": f"{tname} content found on {len(pages)} crawled page(s).",
-            "page_count": len(pages),
-            "section_count": sum(len(p["sections"]) for p in pages),
-            "word_count": sum(p["words"] for p in pages),
-            "pages": pages,
-        })
+    clusters, _h_totals = _clusters_from_rows(rows)
     if not clusters:
         return None
 
@@ -371,6 +605,123 @@ def inhouse_content_clusters(request: Request):
         "brand": spec.get("brand", "Bajaj Life Insurance"),
         "note": spec.get("note", ""),
         "clusters": clusters_out,
+    })
+
+
+@api_view(["GET"])
+def competitor_content_clusters(request: Request, domain: str):
+    """GET /api/v1/seo/competitors/<domain>/content-clusters/ — content
+    segregation for one competitor, clustered by THEIR OWN page
+    structure (operator rule: rivals' IA differs from ours, so our
+    topic rules don't apply). Source order:
+
+      1. ``{data_dir}/content_clusters/<domain>.json`` — the per-domain
+         spec the Claude Code smart-clustering pass writes after a
+         crawl populates the DB (url_patterns + keywords per cluster).
+      2. Fallback: auto-segregation by their URL sections.
+
+    Pages with no title/headings are bucketed separately, never
+    dropped. Also returns page totals, h1/h2/h3 totals, internal/
+    external link totals and the two-level URL hierarchy. No CWV here —
+    competitor CWV is single-page-crawl only.
+    """
+    from django.db.models import Count, Q
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    bare = (domain or "").strip().lower().lstrip("www.")
+    if not bare:
+        return Response({"available": False, "error": "domain required"},
+                        status=400)
+
+    snap = (CrawlSnapshot.objects
+            .filter(kind="competitor")
+            .filter(Q(target_domain__iexact=bare) |
+                    Q(parent_domain__iexact=bare))
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-started_at").first())
+    if snap is None:
+        return Response({
+            "available": False, "domain": bare,
+            "error": "no crawled pages for this competitor yet — run a "
+                     "crawl from the Competitors page first",
+        })
+
+    qs = CrawlerPageResult.objects.filter(snapshot=snap)
+    pages_crawled = qs.count()
+    rows = list(
+        qs.filter(status_code="200")
+        .values("url", "title", "headings_json", "word_count")
+    )
+
+    # Segregation follows THEIR page structure, not our topic rules:
+    #   1. Claude-Code-generated per-domain spec (written by the smart
+    #      clustering pass after a crawl populates the DB), else
+    #   2. the competitor's own URL structure (first path segment).
+    spec = _load_competitor_cluster_spec(bare)
+    if spec:
+        clusters = _clusters_from_spec(rows, spec)
+        cluster_source = (
+            f"claude_spec ({spec.get('generated_at') or 'undated'})"
+        )
+    else:
+        clusters = _clusters_by_url_structure(rows)
+        cluster_source = "url_structure_auto"
+
+    # Heading totals for the summary chips (rules not applied here).
+    h_totals = {"h1": 0, "h2": 0, "h3": 0}
+    for r in rows:
+        for h in (r.get("headings_json") or []):
+            lvl = h.get("level")
+            if lvl in (1, 2, 3):
+                h_totals[f"h{lvl}"] += 1
+
+    # Link totals via Postgres jsonb_array_length — avoids decoding
+    # megabytes of link JSON in Python. Falls back to None (UI hides
+    # the chip) if any row holds a non-array value.
+    link_totals = {"internal": None, "external": None}
+    try:
+        from django.db.models import Func, IntegerField, Sum
+
+        class _JLen(Func):
+            function = "jsonb_array_length"
+            output_field = IntegerField()
+
+        agg = (qs.filter(status_code="200")
+               .annotate(_il=_JLen("internal_links_json"),
+                         _el=_JLen("external_links_json"))
+               .aggregate(i=Sum("_il"), e=Sum("_el")))
+        link_totals = {"internal": agg.get("i"), "external": agg.get("e")}
+    except Exception:  # noqa: BLE001 — sqlite dev DB / mixed shapes
+        pass
+
+    return Response({
+        "available": True,
+        "domain": bare,
+        "snapshot": {
+            "id": str(snap.id),
+            "started_at": snap.started_at.isoformat() if snap.started_at else "",
+            "status": snap.status,
+        },
+        "summary": {
+            "pages_crawled": pages_crawled,
+            "pages_200": len(rows),
+            "h1_total": h_totals["h1"],
+            "h2_total": h_totals["h2"],
+            "h3_total": h_totals["h3"],
+            "internal_links_total": link_totals["internal"],
+            "external_links_total": link_totals["external"],
+        },
+        "hierarchy": _url_hierarchy([r["url"] for r in rows]),
+        "cluster_source": cluster_source,
+        "note": ("Segregated by the competitor's OWN page structure"
+                 + (" (Claude smart-clustering spec)" if spec else
+                    " (URL sections — run the Claude clustering pass "
+                    "after the crawl for refined topic clusters)")
+                 + ". Pages with no title/headings are bucketed "
+                   "separately, never dropped. Live: rows appear here "
+                   "while a crawl is still running."),
+        "clusters": clusters,
     })
 
 

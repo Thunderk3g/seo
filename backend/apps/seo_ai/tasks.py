@@ -321,23 +321,35 @@ def walk_competitor_task(
     # Chain follow-ups: find the just-created snapshot for this domain
     # and kick off PSI enrichment. Best-effort — failures here log but
     # don't fail the crawl result.
+    #
+    # Operator rule (2026-06-10): bulk competitor crawls do NOT run CWV
+    # — competitor CWV is single-page-crawl only. The follow-up is
+    # therefore opt-in via COMPETITOR_PSI_ENRICH=true.
     follow_ups: dict[str, str] = {}
-    try:
-        from apps.crawler.models import CrawlSnapshot
-        snap = (
-            CrawlSnapshot.objects
-            .filter(kind="competitor", target_domain__iexact=domain)
-            .order_by("-started_at")
-            .first()
-        )
-        if snap is not None:
-            try:
-                psi_task = psi_enrich_snapshot_task.delay(str(snap.id))
-                follow_ups["psi_task"] = psi_task.id
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("psi follow-up enqueue failed: %s", exc)
-    except Exception as exc:  # noqa: BLE001
-        logger.info("walk_competitor follow-up lookup failed: %s", exc)
+    import os as _os
+    psi_follow_up = (
+        _os.environ.get("COMPETITOR_PSI_ENRICH", "false").lower()
+        in ("1", "true", "yes", "on")
+    )
+    if not psi_follow_up:
+        follow_ups["psi_task"] = "skipped (COMPETITOR_PSI_ENRICH=false)"
+    else:
+        try:
+            from apps.crawler.models import CrawlSnapshot
+            snap = (
+                CrawlSnapshot.objects
+                .filter(kind="competitor", target_domain__iexact=domain)
+                .order_by("-started_at")
+                .first()
+            )
+            if snap is not None:
+                try:
+                    psi_task = psi_enrich_snapshot_task.delay(str(snap.id))
+                    follow_ups["psi_task"] = psi_task.id
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("psi follow-up enqueue failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("walk_competitor follow-up lookup failed: %s", exc)
 
     return {
         "ok": True,

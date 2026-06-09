@@ -265,6 +265,29 @@ function filterQuery(filters?: ReportFilters): string {
   return s ? `?${s}` : '';
 }
 
+export interface CrawlHistoryRow {
+  id: string;
+  kind: 'bajaj' | 'content' | 'competitor' | 'adhoc';
+  engine: string;
+  target_domain: string;
+  status: 'running' | 'complete' | 'failed' | 'stopped';
+  started_at: string | null;
+  finished_at: string | null;
+  duration_sec: number | null;
+  pages_in_db: number;
+  pages_attempted: number;
+  pages_ok: number;
+  planned_urls: number | null;
+  completion_pct: number | null;
+  health_score: number | null;
+}
+
+export interface CrawlHistoryResponse {
+  count: number;
+  any_running: boolean;
+  crawls: CrawlHistoryRow[];
+}
+
 export interface AdhocCrawlResponse {
   snapshot_id: string;
   url_b64: string;
@@ -287,6 +310,10 @@ export const crawlerApi = {
       body: JSON.stringify({ url }),
     }),
   summary: () => request<CrawlerSummary>('/summary'),
+  // Full crawl history — bajaj/content/competitor/adhoc snapshots incl.
+  // running (live page counts) + stopped (completion %).
+  history: (limit = 60) =>
+    request<CrawlHistoryResponse>(`/history?limit=${limit}`),
   breakdown: () => request<SummaryBreakdown>('/summary/breakdown'),
   tables: () => request<TablesResponse>('/tables'),
   table: (key: string, filters?: ReportFilters) =>

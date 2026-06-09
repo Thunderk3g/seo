@@ -1066,6 +1066,63 @@ def snapshots_list_view(_request):
 
 
 @api_view(["GET"])
+def crawl_history_view(request):
+    """GET /api/v1/crawler/history — every crawl the system has run:
+    nightly engine (bajaj), own-site content crawls, competitor walks,
+    ad-hoc fetches. Newest first.
+
+    Rows include RUNNING crawls — ``pages_in_db`` is the live row count
+    (the dual-write pipeline persists pages as they arrive, so reports
+    and cluster views populate while a crawl is still going). For
+    stopped/failed runs ``completion_pct`` shows how far it got against
+    the planned URL list (sitemap seed count) when known.
+    """
+    from django.db.models import Count
+
+    from .models import CrawlSnapshot
+
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", 60)), 200))
+    except (TypeError, ValueError):
+        limit = 60
+    kind = (request.query_params.get("kind") or "").strip().lower()
+
+    qs = CrawlSnapshot.objects.annotate(n=Count("pages"))
+    if kind:
+        qs = qs.filter(kind=kind)
+    rows = qs.order_by("-started_at")[:limit]
+
+    out = []
+    for s in rows:
+        planned = int((s.config_snapshot or {}).get("url_count") or 0)
+        live = int(s.n or 0)
+        denom = planned or int(s.pages_attempted or 0) or live
+        pct = round(100.0 * live / denom, 1) if denom else None
+        duration = None
+        if s.started_at and s.finished_at:
+            duration = int((s.finished_at - s.started_at).total_seconds())
+        out.append({
+            "id": str(s.id),
+            "kind": s.kind,
+            "engine": s.engine,
+            "target_domain": s.target_domain or "",
+            "status": s.status,
+            "started_at": s.started_at.isoformat() if s.started_at else None,
+            "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+            "duration_sec": duration,
+            "pages_in_db": live,
+            "pages_attempted": s.pages_attempted or 0,
+            "pages_ok": s.pages_ok or 0,
+            "planned_urls": planned or None,
+            "completion_pct": min(pct, 100.0) if pct is not None else None,
+            "health_score": s.health_score,
+        })
+    any_running = any(r["status"] == "running" for r in out)
+    return Response({"count": len(out), "any_running": any_running,
+                     "crawls": out})
+
+
+@api_view(["GET"])
 def content_clusters_view(request):
     """GET /api/v1/crawler/content/clusters
     Params:

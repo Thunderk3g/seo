@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import CompetitorMetaAdsSection from '../components/competitors/CompetitorMetaAdsSection';
 import CompetitorContentMapSection from '../components/competitors/CompetitorContentMapSection';
 import CompetitorContentClusterSection from '../components/competitors/CompetitorContentClusterSection';
+import CompetitorStructureClustersSection from '../components/competitors/CompetitorStructureClustersSection';
 import CompetitorKeywordsSection from '../components/competitors/CompetitorKeywordsSection';
 import CompetitorPageStructureSection from '../components/competitors/CompetitorPageStructureSection';
 
@@ -140,6 +141,12 @@ export default function CompetitorDetailPage() {
           → URLs. Shares the same /content/clusters endpoint as ours,
           scoped via ?domain=. */}
       <CompetitorContentClusterSection domain={data.domain} />
+
+      {/* Content segregation by THEIR page structure (URL sections, or
+          the Claude smart-clustering spec once generated post-crawl).
+          Page totals, h1/h2/h3, link totals + URL hierarchy. No CWV by
+          design — competitor CWV is single-page-crawl only. */}
+      <CompetitorStructureClustersSection domain={data.domain} />
 
       {/* Meta Ad Library — competitor ad intel via Apify scraper. Caches
           on the backend for 24h so this doesn't burn Apify credit on

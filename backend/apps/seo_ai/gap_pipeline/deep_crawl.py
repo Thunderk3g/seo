@@ -70,6 +70,14 @@ logger = logging.getLogger("seo.ai.gap_pipeline.deep_crawl")
 
 
 _DEFAULT_PAGES_PER_DOMAIN = 0   # 0 = unlimited (full sitemap)
+# Competitor CWV switch — operator rule (2026-06-10): bulk competitor
+# crawls do NOT spend PSI quota; competitor CWV is single-page-crawl
+# only (crawl_page include_cwv / ad-hoc). Our own side still enriches.
+_COMPETITOR_CWV_ENRICH = (
+    os.environ.get("SEO_AI_COMPETITOR_CWV_ENRICH", "false").lower()
+    in ("1", "true", "yes", "on")
+)
+
 # PSI enrichment cap: 0 means enrich every fetched competitor page.
 # At full scale (10 competitors × ~800 pages × 2 strategies) = ~16k
 # PSI calls — well within the 25k/day free quota. Override via env
@@ -336,6 +344,7 @@ def _crawl_domain(
     crawler: CompetitorCrawler,
     pages_per_domain: int,
     timeout: int,
+    enrich_cwv: bool = True,
 ) -> _CrawlOutcome:
     """Discover → sample → fetch → profile one domain."""
     bare = re.sub(r"^https?://", "", domain).rstrip("/")
@@ -370,15 +379,16 @@ def _crawl_domain(
     # = 200 calls per gap run, well under the 25k/day budget. The
     # enrichment is silently skipped when PSI is disabled (missing SA
     # file, PSI_ENABLED=false) so the rest of the profile still builds.
-    try:
-        # _CWV_PAGES_PER_COMPETITOR == 0 → enrich every fetched page.
-        # The adapter accepts max_urls=None for "no cap".
-        crawler.enrich_with_cwv(
-            pages,
-            max_urls=_CWV_PAGES_PER_COMPETITOR or None,
-        )
-    except Exception as exc:  # noqa: BLE001 - never block profile build
-        logger.info("competitor cwv enrichment failed for %s: %s", bare, exc)
+    if enrich_cwv:
+        try:
+            # _CWV_PAGES_PER_COMPETITOR == 0 → enrich every fetched page.
+            # The adapter accepts max_urls=None for "no cap".
+            crawler.enrich_with_cwv(
+                pages,
+                max_urls=_CWV_PAGES_PER_COMPETITOR or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - never block profile build
+            logger.info("competitor cwv enrichment failed for %s: %s", bare, exc)
 
     commercial_signals = {
         "pricing": _head_probe(f"https://{bare}/pricing", timeout=timeout),
@@ -460,6 +470,8 @@ def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:
                 crawler=crawler,
                 pages_per_domain=pages_per_domain,
                 timeout=timeout,
+                # Operator rule: no bulk competitor CWV (PSI quota).
+                enrich_cwv=_COMPETITOR_CWV_ENRICH,
             )
             GapDeepCrawl.objects.create(
                 run=run,

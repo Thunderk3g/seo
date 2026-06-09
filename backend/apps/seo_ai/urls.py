@@ -38,6 +38,7 @@ from .views import (
     gap_pipeline_latest,
     gap_pipeline_start,
     gap_pipeline_status,
+    competitor_content_clusters,
     content_crawl_view,
     gsc_dashboard,
     gsc_index_reconciliation,
@@ -60,6 +61,10 @@ urlpatterns = [
     # Content-page crawl button: POST = queue own-site content crawl,
     # GET = latest kind='content' snapshot status for polling.
     path("content/crawl/", content_crawl_view, name="content-crawl"),
+    # Same deterministic topic segregation, run over one competitor's
+    # latest crawl (clusters + totals + URL hierarchy; no CWV).
+    path("competitors/<str:domain>/content-clusters/",
+         competitor_content_clusters, name="competitor-content-clusters"),
     path("index-reconciliation/", gsc_index_reconciliation, name="index-reconciliation"),
     path("grade/start/", start_grade, name="start-grade"),
     path("gsc/", gsc_dashboard, name="gsc-dashboard"),
