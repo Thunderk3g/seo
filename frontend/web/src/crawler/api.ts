@@ -940,6 +940,7 @@ export const crawlerApi = {
       sitemap: {
         counts: { in_sitemap: number; discovered_only: number; sitemap_errors: number };
         error_rows: Array<{ url: string; status_code: string }>;
+        discovered_only_rows: Array<{ url: string; title: string }>;
       };
       linking: {
         total_internal: number;
@@ -989,6 +990,34 @@ export const crawlerApi = {
       crawl_delay?: string | null;
       raw?: string;
     }>('/report/robots'),
+
+  reportCwv: () => {
+    type Strat = {
+      score: number | null; lcp_ms: number | null; cls: number | null; inp_ms: number | null;
+      lcp_bucket: string | null; cls_bucket: string | null; inp_bucket: string | null; field_data: boolean;
+    };
+    type Buckets = { good: number; needs_improvement: number; poor: number };
+    return request<{
+      pages_with_cwv: number;
+      field_data_pages: number;
+      summary: {
+        mobile: { lcp: Buckets; cls: Buckets; inp: Buckets };
+        desktop: { lcp: Buckets; cls: Buckets; inp: Buckets };
+      };
+      rows: Array<{ url: string; mobile: Strat; desktop: Strat }>;
+    }>('/report/cwv');
+  },
+
+  reportSoftFour: () =>
+    request<{
+      candidate_count: number;
+      rendered_count: number;
+      confirmed_count: number;
+      threshold: number;
+      confirmed: Array<{ url: string; static_words: number; rendered_words: number | null; title: string; verdict: string }>;
+      js_rendered_excluded: Array<{ url: string; static_words: number; rendered_words: number | null; title: string; verdict: string }>;
+      unverified: Array<{ url: string; static_words: number; rendered_words: number | null; title: string; verdict: string }>;
+    }>('/report/soft-404'),
 
   reportExternalLinks: () =>
     request<{

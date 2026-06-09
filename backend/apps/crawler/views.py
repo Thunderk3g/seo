@@ -127,6 +127,19 @@ def report_external_links_view(_request):
 
 
 @api_view(["GET"])
+def report_soft_404_view(_request):
+    """Soft-404s, JS-verified: thin candidates are headless-rendered and only
+    kept if still thin after JavaScript runs (excludes JS-rendered SPA pages)."""
+    return Response(report_sections.soft_404())
+
+
+@api_view(["GET"])
+def report_cwv_view(_request):
+    """Core Web Vitals per page — mobile AND desktop (LCP/CLS/INP + buckets)."""
+    return Response(report_sections.cwv())
+
+
+@api_view(["GET"])
 def tables_list_view(_request):
     """List every catalog entry; categorised entries include a per-category breakdown."""
     breakdown = repo.summary_breakdown()

@@ -30,6 +30,39 @@ import {
 
 type Row = Record<string, string>;
 
+// CrUX thresholds (good ≤ first, needs-improvement ≤ second, else poor)
+const CWV_TH = { lcp: [2500, 4000], cls: [0.1, 0.25], inp: [200, 500] } as const;
+const CWV_CHIP = {
+  good: { background: '#E6F4EA', color: '#137333' },
+  ni: { background: '#FEF7E0', color: '#B06000' },
+  poor: { background: '#FCE8E6', color: '#C5221F' },
+} as const;
+function cwvChip(raw: string | undefined, kind: 'lcp' | 'cls' | 'inp') {
+  const v = raw && raw.trim() !== '' ? Number(raw) : null;
+  if (v === null || Number.isNaN(v)) return <span className="text-brand-text-3">—</span>;
+  const [g, n] = CWV_TH[kind];
+  const bucket = v <= g ? 'good' : v <= n ? 'ni' : 'poor';
+  const text = kind === 'lcp' ? `${(v / 1000).toFixed(2)}s` : kind === 'cls' ? v.toFixed(2) : `${Math.round(v)}ms`;
+  return <span style={CWV_CHIP[bucket]} className="tabular-nums rounded px-1.5 py-0.5 text-xs font-semibold">{text}</span>;
+}
+const CWV_METRICS: Array<{ k: 'lcp' | 'cls' | 'inp'; label: string; field: string }> = [
+  { k: 'lcp', label: 'LCP', field: 'lcp_ms' },
+  { k: 'cls', label: 'CLS', field: 'cls' },
+  { k: 'inp', label: 'INP', field: 'inp_ms' },
+];
+function CwvGroup({ row, strat }: { row: Row; strat: 'mobile' | 'desktop' }) {
+  return (
+    <div className="flex gap-2">
+      {CWV_METRICS.map((m) => (
+        <div key={m.k} className="flex flex-col items-center gap-0.5">
+          <span className="text-[10px] font-semibold uppercase leading-none text-brand-text-3">{m.label}</span>
+          {cwvChip(row[`${strat}_${m.field}`], m.k)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const ALL = '__all__';
 
 export default function PageExplorerPage() {
@@ -152,26 +185,24 @@ export default function PageExplorerPage() {
         cell: ({ row }) => <IndexedBadge value={row.original.indexed_status || 'unknown'} />,
       },
       {
-        accessorKey: 'pagespeed_score',
-        header: 'PageSpeed',
-        cell: ({ row }) =>
-          row.original.pagespeed_score ? (
-            <span className="tabular-nums">{row.original.pagespeed_score}</span>
-          ) : (
-            <span className="text-brand-text-3">—</span>
-          ),
+        accessorKey: 'mobile_pagespeed_score',
+        header: 'PSI m/d',
+        cell: ({ row }) => (
+          <span className="tabular-nums">
+            {row.original.mobile_pagespeed_score || '—'}
+            <span className="text-brand-text-3"> / {row.original.desktop_pagespeed_score || '—'}</span>
+          </span>
+        ),
       },
       {
-        accessorKey: 'lcp_ms',
-        header: 'LCP',
-        cell: ({ row }) =>
-          row.original.lcp_ms ? (
-            <span className="tabular-nums">
-              {Number(row.original.lcp_ms).toLocaleString()} ms
-            </span>
-          ) : (
-            <span className="text-brand-text-3">—</span>
-          ),
+        id: 'cwv_mobile',
+        header: 'Mobile CWV',
+        cell: ({ row }) => <CwvGroup row={row.original} strat="mobile" />,
+      },
+      {
+        id: 'cwv_desktop',
+        header: 'Desktop CWV',
+        cell: ({ row }) => <CwvGroup row={row.original} strat="desktop" />,
       },
     ],
     [],

@@ -79,10 +79,16 @@ COLUMNS: tuple[str, ...] = (
     "category_key",
     "from_sitemap",
     "indexed_status",
-    "pagespeed_score",
-    "lcp_ms",
-    "cls",
-    "inp_ms",
+    # Core Web Vitals, split mobile vs desktop. The generic lcp_ms/cls/inp_ms
+    # mirror the mobile values, so expose explicit per-strategy columns instead.
+    "mobile_pagespeed_score",
+    "mobile_lcp_ms",
+    "mobile_cls",
+    "mobile_inp_ms",
+    "desktop_pagespeed_score",
+    "desktop_lcp_ms",
+    "desktop_cls",
+    "desktop_inp_ms",
     # On-page outbound link counts derived from *_links_json (in the lean
     # projection for the CSV path; inline for the ORM path). "internal" =
     # links to the same host; "external" = links off-site.
@@ -92,11 +98,12 @@ COLUMNS: tuple[str, ...] = (
 
 # Columns that should sort numerically rather than lexicographically.
 _NUMERIC_COLS: frozenset[str] = frozenset({
-    "word_count", "response_time_ms", "pagespeed_score",
-    "lcp_ms", "inp_ms", "status_code",
+    "word_count", "response_time_ms", "status_code",
+    "mobile_pagespeed_score", "mobile_lcp_ms", "mobile_inp_ms",
+    "desktop_pagespeed_score", "desktop_lcp_ms", "desktop_inp_ms",
     "internal_links_count", "external_links_count",
 })
-_FLOAT_COLS: frozenset[str] = frozenset({"cls"})
+_FLOAT_COLS: frozenset[str] = frozenset({"mobile_cls", "desktop_cls"})
 
 
 @dataclass(frozen=True)
