@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -47,6 +48,64 @@ _PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 # Empirically the only scope combo PSI accepts from a service account.
 # cloud-platform alone returns ACCESS_TOKEN_SCOPE_INSUFFICIENT.
 _SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"]
+
+# HTTP statuses worth retrying. 429 = quota burst (the failure mode that
+# kills runs partway); 500/503 = transient PSI/Lighthouse hiccups.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503})
+
+
+class _RateLimiter:
+    """Process-wide token bucket shared across all PSI worker threads.
+
+    PSI's per-minute quota is the real ceiling — concurrency alone isn't
+    the problem, request *rate* is. A single bucket throttles the inline
+    scheduler's N workers × M strategies down to a steady ``qps`` so a
+    burst never trips 429 in the first place. ``acquire`` blocks the
+    calling thread until a token is available.
+
+    Refills continuously at ``qps`` tokens/sec, capped at a 1-second
+    burst so a brief idle gap doesn't let the next moment stampede.
+    """
+
+    def __init__(self, qps: float) -> None:
+        self._qps = max(0.01, float(qps))
+        self._capacity = max(1.0, self._qps)  # ~1s burst
+        self._tokens = self._capacity
+        self._updated = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._capacity,
+                    self._tokens + (now - self._updated) * self._qps,
+                )
+                self._updated = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                # Time until the next whole token is available.
+                wait = (1.0 - self._tokens) / self._qps
+            time.sleep(min(wait, 1.0))
+
+
+# One limiter per (pid, qps). The inline scheduler builds several
+# PSIAdapter instances across threads; they MUST share one bucket or the
+# throttle is meaningless. Keyed by qps so a config change picks up a
+# fresh bucket without a restart.
+_LIMITERS: dict[float, _RateLimiter] = {}
+_LIMITERS_LOCK = threading.Lock()
+
+
+def _get_limiter(qps: float) -> _RateLimiter:
+    with _LIMITERS_LOCK:
+        lim = _LIMITERS.get(qps)
+        if lim is None:
+            lim = _RateLimiter(qps)
+            _LIMITERS[qps] = lim
+        return lim
 
 
 class AdapterDisabledError(Exception):
@@ -116,6 +175,14 @@ class PSIAdapter:
         self._cache_ttl = int(cfg.get("cache_ttl_seconds", 7 * 24 * 3600))
         self._ssl_verify = _resolve_psi_ssl_verify(cfg.get("ssl_verify", ""))
 
+        # Rate-limit + retry config. The shared bucket is what actually
+        # prevents the 429 cascade; retry is the safety net for the
+        # occasional 429/5xx that slips through (or a transient network).
+        self._max_retries = max(0, int(cfg.get("max_retries", 4)))
+        self._backoff_base = float(cfg.get("backoff_base_sec", 2.0))
+        self._backoff_cap = float(cfg.get("backoff_cap_sec", 60.0))
+        self._limiter = _get_limiter(float(cfg.get("qps", 1.7)))
+
         self._cache_dir = Path(settings.SEO_AI["data_dir"]) / "_psi_cache"
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
@@ -156,33 +223,73 @@ class PSIAdapter:
                 error=f"auth: {type(exc).__name__}: {exc}"[:300],
             )
 
-        try:
-            resp = requests.get(
-                _PSI_ENDPOINT,
-                params={
-                    "url": url,
-                    "category": "performance",
-                    "strategy": strategy,
-                },
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=self._timeout,
-                verify=self._ssl_verify,
-            )
-        except requests.RequestException as exc:
-            logger.warning("psi network %s/%s: %s", strategy, url, exc)
-            return CWVRecord(
-                url=url,
-                strategy=strategy,
-                error=f"network: {type(exc).__name__}: {exc}"[:300],
-                latency_ms=int((time.monotonic() - t0) * 1000),
-            )
+        # Rate-limited, retrying request loop. The shared token bucket
+        # keeps every worker thread under PSI_QPS so a burst doesn't trip
+        # 429 in the first place; the retry/backoff is the safety net for
+        # the occasional 429/5xx (or transient network) that slips through.
+        params = {"url": url, "category": "performance", "strategy": strategy}
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = None
+        last_error = ""
+        for attempt in range(self._max_retries + 1):
+            self._limiter.acquire()
+            try:
+                resp = requests.get(
+                    _PSI_ENDPOINT,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                    verify=self._ssl_verify,
+                )
+            except requests.RequestException as exc:
+                last_error = f"network: {type(exc).__name__}: {exc}"
+                if attempt < self._max_retries:
+                    delay = self._backoff_delay(attempt, None)
+                    logger.warning(
+                        "psi network %s/%s (attempt %d/%d) — retry in %.1fs: %s",
+                        strategy, url, attempt + 1, self._max_retries + 1, delay, exc,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning("psi network %s/%s gave up: %s", strategy, url, exc)
+                return CWVRecord(
+                    url=url,
+                    strategy=strategy,
+                    error=last_error[:300],
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                )
 
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        if resp.status_code != 200:
+            if resp.status_code == 200:
+                break
+
+            if resp.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
+                retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                delay = self._backoff_delay(attempt, retry_after)
+                logger.warning(
+                    "psi http %s for %s/%s (attempt %d/%d) — backing off %.1fs",
+                    resp.status_code, strategy, url,
+                    attempt + 1, self._max_retries + 1, delay,
+                )
+                last_error = f"http {resp.status_code}: {resp.text[:200]}"
+                time.sleep(delay)
+                continue
+
+            # Non-retryable status, or retries exhausted on a 429/5xx.
             return CWVRecord(
                 url=url,
                 strategy=strategy,
                 error=f"http {resp.status_code}: {resp.text[:300]}",
+                latency_ms=int((time.monotonic() - t0) * 1000),
+            )
+
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        if resp is None or resp.status_code != 200:
+            # Loop fell through without a usable 200 (all attempts were
+            # retryable failures). Surface the last error we saw.
+            return CWVRecord(
+                url=url,
+                strategy=strategy,
+                error=(last_error or "psi: retries exhausted")[:300],
                 latency_ms=latency_ms,
             )
 
@@ -201,6 +308,22 @@ class PSIAdapter:
         record.fetched_at = _now_iso()
         self._cache_write(url, strategy, record)
         return record
+
+    def _backoff_delay(self, attempt: int, retry_after: float | None) -> float:
+        """Seconds to sleep before the next attempt.
+
+        Honors the server's ``Retry-After`` when present (Google sends it
+        on 429), otherwise exponential backoff ``base * 2**attempt`` with
+        full jitter, capped. Jitter spreads concurrent workers' retries so
+        they don't all wake and stampede the quota at the same instant.
+        """
+        exp = min(self._backoff_cap, self._backoff_base * (2 ** attempt))
+        jittered = random.uniform(0.0, exp)
+        if retry_after is not None:
+            # Respect the server hint as a floor, but never sleep longer
+            # than the cap (a stray huge Retry-After shouldn't hang a run).
+            return min(self._backoff_cap, max(retry_after, jittered))
+        return jittered
 
     # ── auth ─────────────────────────────────────────────────────────
 
@@ -350,6 +473,35 @@ def _now_iso() -> str:
     from datetime import datetime, timezone as tz
 
     return datetime.now(tz.utc).isoformat()
+
+
+def _parse_retry_after(raw: str | None) -> float | None:
+    """Parse a ``Retry-After`` header into seconds.
+
+    PSI sends the delta-seconds form (e.g. ``Retry-After: 30``). The HTTP
+    spec also allows an HTTP-date; we support both but only really expect
+    the integer form here. Returns ``None`` when absent/unparseable so the
+    caller falls back to exponential backoff.
+    """
+    if not raw:
+        return None
+    raw = raw.strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone as tz
+
+        when = parsedate_to_datetime(raw)
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=tz.utc)
+        return max(0.0, (when - datetime.now(tz.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_psi_ssl_verify(raw: str) -> bool | str:

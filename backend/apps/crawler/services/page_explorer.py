@@ -32,11 +32,33 @@ column list so the frontend can render headers consistently).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Iterable
 
 from ..conf import settings
 from ..storage import repository as repo
+
+
+def _json_len(val) -> int:
+    """Length of a JSON-array field that may arrive as a Python list
+    (ORM JSONField) or a JSON-encoded string (CSV cell). Returns 0 for
+    anything empty/unparseable so a malformed cell never breaks the row.
+    """
+    if not val:
+        return 0
+    if isinstance(val, list):
+        return len(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s in ("[]", "null"):
+            return 0
+        try:
+            parsed = json.loads(s)
+        except (ValueError, TypeError):
+            return 0
+        return len(parsed) if isinstance(parsed, list) else 0
+    return 0
 
 
 # Canonical ordered column list for the Page Explorer UI. Must match
@@ -61,12 +83,18 @@ COLUMNS: tuple[str, ...] = (
     "lcp_ms",
     "cls",
     "inp_ms",
+    # On-page outbound link counts derived from *_links_json (in the lean
+    # projection for the CSV path; inline for the ORM path). "internal" =
+    # links to the same host; "external" = links off-site.
+    "internal_links_count",
+    "external_links_count",
 )
 
 # Columns that should sort numerically rather than lexicographically.
 _NUMERIC_COLS: frozenset[str] = frozenset({
     "word_count", "response_time_ms", "pagespeed_score",
     "lcp_ms", "inp_ms", "status_code",
+    "internal_links_count", "external_links_count",
 })
 _FLOAT_COLS: frozenset[str] = frozenset({"cls"})
 
@@ -185,15 +213,11 @@ def _load_rows() -> list[dict]:
     if cached and cached[0] == mtime:
         return cached[1]
 
-    payload = repo.read_csv("results")
-    headers = payload.get("headers") or []
-    rows: list[dict] = []
-    for r in payload.get("rows") or []:
-        if not r:
-            continue
-        if len(r) < len(headers):
-            r = list(r) + [""] * (len(headers) - len(r))
-        rows.append(dict(zip(headers, r)))
+    # Read the lean projection instead of the master crawl_results.csv: the
+    # master runs to hundreds of MB once the *_json columns are populated and
+    # is brutally slow to read over the Windows bind mount. The lean carries
+    # exactly our COLUMNS (link counts already derived), so no _stamp needed.
+    rows = list(repo.iter_results_lean())
     _CACHE["results"] = (mtime, rows)
     return rows
 
@@ -218,6 +242,7 @@ def _load_rows_from_orm() -> list[dict] | None:
             "error_message", "subdomain", "page_type", "category_key",
             "from_sitemap", "indexed_status",
             "pagespeed_score", "lcp_ms", "cls", "inp_ms",
+            "internal_links_json", "external_links_json",
         )
         out: list[dict] = []
         for p in qs.iterator(chunk_size=1000):
@@ -240,6 +265,8 @@ def _load_rows_from_orm() -> list[dict] | None:
                 "lcp_ms": "" if p.lcp_ms is None else str(p.lcp_ms),
                 "cls": "" if p.cls is None else str(p.cls),
                 "inp_ms": "" if p.inp_ms is None else str(p.inp_ms),
+                "internal_links_count": str(_json_len(p.internal_links_json)),
+                "external_links_count": str(_json_len(p.external_links_json)),
             })
         return out
     except Exception:  # noqa: BLE001

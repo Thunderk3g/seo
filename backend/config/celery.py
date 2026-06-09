@@ -4,8 +4,8 @@ Queue topology (Phase 5 load-balancing):
 
   * ``bajaj_crawl``  — apps.crawler.tasks.run_crawl_task. Playwright +
                         full-site crawl. RAM-hungry; concurrency=1.
-  * ``comp_crawl``   — seo_ai.walk_competitor*, refresh_content_map.
-                        Scrapy subprocesses + embedding. concurrency=2.
+  * ``comp_crawl``   — seo_ai.walk_competitor*, psi_enrich_snapshot.
+                        Scrapy subprocesses. concurrency=2.
   * ``default``      — everything else (LLM, grade, gap pipeline, ad-hoc
                         single-page fetch). concurrency=4.
 
@@ -32,7 +32,6 @@ app.conf.task_routes = {
     "apps.crawler.tasks.run_crawl_task": {"queue": "bajaj_crawl"},
     "seo_ai.walk_competitor": {"queue": "comp_crawl"},
     "seo_ai.walk_competitor_roster": {"queue": "comp_crawl"},
-    "seo_ai.refresh_content_map": {"queue": "comp_crawl"},
     "seo_ai.psi_enrich_snapshot": {"queue": "comp_crawl"},
 }
 app.conf.task_default_queue = "default"

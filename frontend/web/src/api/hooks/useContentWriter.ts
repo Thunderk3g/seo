@@ -297,7 +297,14 @@ export function useCWV2Run(id: string | null) {
     queryFn: () =>
       api.get<CWV2RunPayload>(`/seo/content-writer/v2/runs/${id}/`),
     enabled: Boolean(id),
-    staleTime: 60_000,
+    // The run executes in a background thread on the server. Poll while it is
+    // still working (running/pending) and stop the moment it reaches a
+    // terminal state, so the draft appears automatically when it finishes.
+    // react-query v5 passes the query object to the refetchInterval callback.
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === 'running' || s === 'pending' ? 3500 : false;
+    },
     refetchOnWindowFocus: false,
     retry: false,
   });

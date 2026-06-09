@@ -292,11 +292,114 @@ def _absolute(maybe_relative: str, base: str) -> str:
         return maybe_relative
 
 
+# ── A.6 — Indexability verdict (meta robots + X-Robots-Tag) ──────────
+#
+# Google decides "can this URL be indexed?" from three on-page signals
+# we can read for free off the response we already have:
+#   1. <meta name="robots"|"googlebot" content="...noindex...">
+#   2. the X-Robots-Tag HTTP header (same directives, header form)
+#   3. a canonical that points AWAY to a different URL (Google folds the
+#      page into the canonical target — it won't index this URL itself)
+# plus the HTTP status (non-200 is never indexable). robots.txt *crawl*
+# blocking is NOT visible here — the engine stamps that separately when
+# it skips a disallowed URL.
+#
+# We collapse these into one ``indexability_status`` whose values line
+# up 1:1 with the GSC "Why pages aren't indexed" buckets so the
+# crawler↔GSC reconciliation can join on them:
+#   indexable | noindex | canonicalized | non_200
+_META_ROBOTS_RE = re.compile(
+    r"""<meta\b[^>]*\bname\s*=\s*["']?(?:robots|googlebot)["']?[^>]*"""
+    r"""\bcontent\s*=\s*["']([^"']*)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_ROBOTS_RE_REVERSED = re.compile(
+    r"""<meta\b[^>]*\bcontent\s*=\s*["']([^"']*)["'][^>]*"""
+    r"""\bname\s*=\s*["']?(?:robots|googlebot)["']?""",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _norm_url(u: str) -> str:
+    """Loose URL equality for canonical-vs-self: drop fragment, trailing
+    slash, and scheme/host case. Good enough to tell 'self-canonical'
+    from 'points elsewhere' without false mismatches."""
+    if not u:
+        return ""
+    try:
+        p = urlparse(u.strip())
+        host = (p.netloc or "").lower()
+        path = (p.path or "/").rstrip("/") or "/"
+        return f"{host}{path}"
+    except (ValueError, TypeError):
+        return u.strip().lower()
+
+
+def indexability_signals_from(
+    html: str,
+    headers,
+    page_url: str,
+    status_code: int,
+    canonical_target: str = "",
+) -> dict:
+    """Return the on-page indexability verdict for one URL.
+
+    ``canonical_target`` is the already-resolved canonical (pass
+    canonical_http or canonical_html from ``canonical_signals_from`` —
+    HTTP header wins). Empty means no canonical declared.
+    """
+    directives: list[str] = []
+    if html:
+        for m in _META_ROBOTS_RE.findall(html):
+            directives.append(m.strip().lower())
+        for m in _META_ROBOTS_RE_REVERSED.findall(html):
+            directives.append(m.strip().lower())
+    # De-dupe preserving order for a readable meta_robots column.
+    seen: set[str] = set()
+    directives = [d for d in directives if d and not (d in seen or seen.add(d))]
+    meta_robots = ", ".join(directives)[:256]
+
+    x_robots = (_header_value(headers, "X-Robots-Tag") or "")[:256]
+
+    blob = " ".join(directives) + " " + x_robots.lower()
+    has_noindex = ("noindex" in blob) or ("none" in blob)
+
+    canonicalized = bool(
+        canonical_target
+        and _norm_url(canonical_target) != _norm_url(page_url)
+    )
+
+    status = int(status_code or 0)
+    if status and status != 200:
+        verdict, indexable, reason = "non_200", False, f"http_{status}"
+    elif has_noindex:
+        verdict, indexable, reason = "noindex", False, "meta_or_xrobots_noindex"
+    elif canonicalized:
+        verdict, indexable, reason = "canonicalized", False, "non_self_canonical"
+    else:
+        verdict, indexable, reason = "indexable", True, ""
+
+    return {
+        "meta_robots": meta_robots,
+        "x_robots_tag": x_robots,
+        "is_indexable": indexable,
+        "indexability_status": verdict,
+        "indexability_reason": reason,
+    }
+
+
 # ── A.5 — Image audit ────────────────────────────────────────────
 
 
 _IMG_RE = re.compile(
     r"<img\b([^>]*)>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Blocks whose inner text is NOT rendered DOM — `<img>` strings inside them are
+# template/fallback markup, not real images. Stripping them before the regex
+# makes image_count match the real DOM (e.g. homepage 501 -> 381, == BS4).
+_NON_DOM_RE = re.compile(
+    r"<!--.*?-->|<(script|style|template|noscript)\b[^>]*>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
 )
 _ATTR_RE = re.compile(
@@ -319,6 +422,9 @@ def image_audit_from(html: str, page_url: str) -> dict:
             "image_oversized_count": 0, "image_broken_count": 0,
             "image_audit_extra": {},
         }
+    # Drop comments / script / template blocks so commented-out or templated
+    # <img> markup isn't miscounted as real images.
+    html = _NON_DOM_RE.sub("", html)
     images: list[dict] = []
     missing_alt = 0
     empty_alt = 0

@@ -288,6 +288,17 @@ def _fetch_once(
                 result["image_oversized_count"] = img_audit["image_oversized_count"]
                 result["image_broken_count"] = img_audit["image_broken_count"]
                 result["image_audit_extra"] = img_audit["image_audit_extra"]
+                # A.6 — on-page indexability verdict. HTTP canonical wins
+                # over the HTML tag (Google's precedence); fall back to the
+                # HTML canonical when no Link header is present.
+                _canon = result.get("canonical_http") or result.get("canonical_html") or ""
+                result.update(_pa.indexability_signals_from(
+                    body_text,
+                    resp.headers,
+                    str(resp.url),
+                    result.get("status_code") or 0,
+                    canonical_target=_canon,
+                ))
             except Exception as exc:  # noqa: BLE001 — never break the crawl
                 log.info("phase-a helpers failed on %s: %s", url, exc)
 

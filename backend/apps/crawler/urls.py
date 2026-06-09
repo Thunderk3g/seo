@@ -16,31 +16,20 @@ urlpatterns = [
     # Data access
     path("summary", views.summary_view, name="summary"),
     path("summary/breakdown", views.summary_breakdown_view, name="summary-breakdown"),
+    # Live section-wise report (Reports page).
+    path("report/sections", views.report_sections_view, name="report-sections"),
+    path("report/broken-links", views.report_broken_links_view,
+         name="report-broken-links"),
+    path("report/robots", views.report_robots_view, name="report-robots"),
+    path("report/external-links", views.report_external_links_view,
+         name="report-external-links"),
+    # Restored 2026-06-05: dashboard health widget (view body was kept).
+    path("health-score", views.health_score_view, name="health-score"),
     path("tables", views.tables_list_view, name="tables"),
     path("tables/<str:key>", views.table_detail_view, name="table-detail"),
     path("download/<str:key>", views.download_csv_view, name="download"),
 
-    # Audit engine — Health Score KPI + Issues triage inbox
-    # Phase 1 of the tool-clone roadmap: typed issue catalogue + Ahrefs-
-    # style transparent Health Score formula. Drives the new dashboard
-    # widget, the /crawler/issues page, and the chat tools.
-    path("health-score", views.health_score_view, name="health-score"),
-    # Per-competitor Health Score — populated by the Scrapy competitor
-    # crawler. Reads the most-recent completed snapshot for the domain
-    # and scores its CrawlerPageResult rows against the same 52
-    # detectors that grade the Bajaj site.
-    path(
-        "competitors/<str:domain>/health-score",
-        views.competitor_health_score_view,
-        name="competitor-health-score",
-    ),
-    path("issues", views.issues_view, name="issues"),
-    path("issues/<str:slug>", views.issue_detail_view, name="issue-detail"),
-    # Content map + similarity (Phase 2/3 content classification).
-    path("content/map/3d", views.content_map_3d_view, name="content-map-3d"),
-    path("content/similar", views.content_similar_view, name="content-similar"),
-    path("content/clusters", views.content_clusters_view, name="content-clusters"),
-    # Snapshot picker — drives the cluster/map UIs so the operator
+    # Snapshot picker — drives the inspector UIs so the operator
     # can switch between the latest Bajaj snapshot and any competitor
     # snapshot the link-walker has populated.
     path("snapshots", views.snapshots_list_view, name="snapshots-list"),
@@ -48,9 +37,6 @@ urlpatterns = [
     # singleton "adhoc" snapshot, so the dashboard can route the user
     # to the unified PageDetailPage with full structured data.
     path("adhoc", views.adhoc_crawl_view, name="adhoc-crawl"),
-    # Compliance dashboard — WCAG / GDPR / OWASP aggregated view.
-    path("compliance", views.compliance_view, name="compliance"),
-    path("compliance.csv", views.compliance_csv_view, name="compliance-csv"),
     # Comprehensive XLSX report — 11 sheets covering Phase A-D data.
     path("report/comprehensive.xlsx", views.comprehensive_report_view,
          name="report-comprehensive"),
@@ -65,9 +51,7 @@ urlpatterns = [
     path("pagerank", views.pagerank_view, name="pagerank"),
     path("near-duplicates", views.near_duplicates_view, name="near-duplicates"),
 
-    # Phase 5 — Trends + Compare Crawls + Thematic Reports.
-    path("trends", views.trends_view, name="trends"),
-    path("compare", views.compare_view, name="compare"),
+    # Phase 5 — Thematic Reports.
     path("themes", views.themes_list_view, name="themes"),
     path("themes/<str:slug>", views.theme_detail_view, name="theme-detail"),
 
@@ -85,6 +69,11 @@ urlpatterns = [
     # indexed / not_indexed / excluded verdicts. Rate-limited (2000/day).
     path("gsc/coverage/inspect", views.gsc_inspect_unknowns_view,
          name="gsc-coverage-inspect"),
+    # GSC Crawl Stats — ingest of the export-only Settings > Crawl stats
+    # report (no Search Console API exists for it). GET reads the parsed
+    # bundle; POST flushes the cache after a fresh export is dropped into
+    # data/gsc_crawl_stats/.
+    path("gsc/crawl-stats", views.gsc_crawl_stats_view, name="gsc-crawl-stats"),
 
     # Browser-side console capture (Playwright headless Chromium)
     path("console/capture", views.console_capture_start_view,
@@ -108,11 +97,4 @@ urlpatterns = [
 
     # Live logs (polling replaces WebSocket)
     path("logs", views.logs_view, name="logs"),
-
-    # Phase 6 — GEO suite (AI-search readiness).
-    path("geo/llms-txt", views.llms_txt_audit_view, name="geo-llms-txt"),
-    path("geo/llms-txt/draft", views.llms_txt_draft_view, name="geo-llms-txt-draft"),
-    path("geo/indexnow/ping", views.indexnow_ping_view, name="geo-indexnow-ping"),
-    path("geo/ai-bots", views.ai_bot_hits_view, name="geo-ai-bots"),
-    path("geo/backlinks", views.backlinks_view, name="geo-backlinks"),
 ]

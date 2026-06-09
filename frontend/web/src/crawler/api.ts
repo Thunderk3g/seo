@@ -152,6 +152,38 @@ export interface GscRefreshResponse {
   loaded_urls: number;
 }
 
+export interface GscCrawlStatsRatioRow {
+  label: string;
+  ratio: number;
+  pct: number;
+}
+
+export interface GscCrawlStats {
+  present: boolean;
+  source_dir?: string;
+  files?: string[];
+  exported_at?: string;
+  totals?: {
+    total_requests: number;
+    total_download_bytes: number;
+    avg_response_time_ms: number;
+    date_start: string;
+    date_end: string;
+    days: number;
+  };
+  series?: Array<{
+    date: string;
+    requests: number;
+    download_bytes: number;
+    avg_response_ms: number;
+  }>;
+  by_response?: GscCrawlStatsRatioRow[];
+  by_file_type?: GscCrawlStatsRatioRow[];
+  by_googlebot_type?: GscCrawlStatsRatioRow[];
+  by_purpose?: GscCrawlStatsRatioRow[];
+  hosts?: Array<{ host: string; requests: number; status: string }>;
+}
+
 export interface GscCoverageBuildResponse {
   ok: boolean;
   error?: string;
@@ -274,6 +306,15 @@ export const crawlerApi = {
   xlsxUrl: () => `${BASE}/reports/xlsx`,
   refreshGscCoverage: () =>
     request<GscRefreshResponse>('/gsc/coverage/refresh', { method: 'POST' }),
+
+  // GSC Crawl Stats — Googlebot's own crawl behaviour on the site. This
+  // report is export-only in GSC (no Search Console API), so the backend
+  // serves the parsed CSV bundle dropped into data/gsc_crawl_stats/.
+  // `refresh:true` POSTs to flush the cache after a fresh export is added.
+  crawlStats: (opts: { refresh?: boolean } = {}) =>
+    request<GscCrawlStats>('/gsc/crawl-stats', {
+      method: opts.refresh ? 'POST' : 'GET',
+    }),
   buildGscCoverage: (opts: { backfill?: boolean } = {}) => {
     const qs = new URLSearchParams();
     if (opts.backfill) qs.set('backfill', '1');
@@ -884,4 +925,86 @@ export const crawlerApi = {
       }>;
     }>(`/geo/backlinks${qs}`);
   },
+
+  // ── Live section-wise report ──────────────────────────────────────────
+  reportSections: () =>
+    request<{
+      redirects: {
+        counts: { '301': number; other_3xx: number; loops: number };
+        rows: Array<{
+          url: string; status_code: string; hops: number;
+          final_url: string; chain: string; loop: boolean;
+        }>;
+      };
+      soft_404: { count: number; rows: Array<{ url: string; word_count: number; title: string }> };
+      sitemap: {
+        counts: { in_sitemap: number; discovered_only: number; sitemap_errors: number };
+        error_rows: Array<{ url: string; status_code: string }>;
+      };
+      linking: {
+        total_internal: number;
+        total_external: number;
+        pages_no_internal_links: Array<{ url: string; title: string }>;
+        top_external_pages: Array<{ url: string; external_links_count: number; internal_links_count: number }>;
+      };
+      pdf: {
+        counts: {
+          total: number; ok: number; error: number;
+          encrypted: number; no_text_layer: number; broken: number;
+        };
+        rows: Array<{
+          url: string; status_code: string; title: string;
+          pages: number; byte_size: number; has_error: boolean; reasons: string[];
+        }>;
+      };
+    }>('/report/sections'),
+
+  reportBrokenLinks: () =>
+    request<{
+      total_targets: number;
+      linked_targets?: number;
+      total_links?: number;
+      note?: string;
+      targets: Array<{
+        url: string;
+        status: string;
+        source_count: number;
+        sources: Array<{ page: string; anchor: string; section: string; zone: string; kind: string }>;
+      }>;
+      orphan_broken?: Array<{ url: string; status: string }>;
+    }>('/report/broken-links'),
+
+  reportRobots: () =>
+    request<{
+      present: boolean;
+      url: string;
+      status_code?: number;
+      error?: string;
+      sitemaps?: string[];
+      disallow?: string[];
+      allow?: string[];
+      disallow_count?: number;
+      allow_count?: number;
+      user_agents?: string[];
+      crawl_delay?: string | null;
+      raw?: string;
+    }>('/report/robots'),
+
+  reportExternalLinks: () =>
+    request<{
+      total_links: number;
+      total_unique_urls: number;
+      total_domains: number;
+      domains: Array<{
+        domain: string;
+        link_count: number;
+        url_count: number;
+        urls: Array<{
+          url: string;
+          count: number;
+          anchors: string[];
+          sources: Array<{ page: string; anchor: string; zone: string; rel: string }>;
+        }>;
+      }>;
+    }>('/report/external-links'),
 };

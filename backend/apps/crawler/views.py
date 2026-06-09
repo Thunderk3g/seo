@@ -27,7 +27,7 @@ from rest_framework.response import Response
 
 from . import log_bus
 from .conf import settings
-from .services import crawler_service, report_service
+from .services import crawler_service, report_service, report_sections
 from .state import STATE
 from .storage import gsc_loader, repository as repo
 from .storage import url_classifier
@@ -101,6 +101,32 @@ def summary_breakdown_view(_request):
 
 
 @api_view(["GET"])
+def report_sections_view(_request):
+    """Live section-wise report (redirects / soft-404 / sitemap / linking /
+    PDF health) — computed from the lean projection, memoised."""
+    return Response(report_sections.sections())
+
+
+@api_view(["GET"])
+def report_broken_links_view(_request):
+    """Every internal 404/HTTP-error target WITH proof of where it's linked:
+    source page + anchor text + section (nearest heading) + zone."""
+    return Response(report_sections.broken_links())
+
+
+@api_view(["GET"])
+def report_robots_view(_request):
+    """Live robots.txt fetch + parse (declared sitemaps, disallow/allow)."""
+    return Response(report_sections.robots_summary())
+
+
+@api_view(["GET"])
+def report_external_links_view(_request):
+    """Outbound external links grouped by domain → URL → source pages."""
+    return Response(report_sections.external_links())
+
+
+@api_view(["GET"])
 def tables_list_view(_request):
     """List every catalog entry; categorised entries include a per-category breakdown."""
     breakdown = repo.summary_breakdown()
@@ -108,7 +134,7 @@ def tables_list_view(_request):
     categories_meta = {c["key"]: c for c in breakdown.get("categories", [])}
     items = []
     for key, meta in repo.CATALOG.items():
-        total = repo.read_csv(key)["count"]
+        total = repo.count_rows(key)
         entry = {
             "key": key,
             "label": meta["label"],
@@ -212,6 +238,26 @@ def gsc_coverage_refresh_view(_request):
     gsc_loader.invalidate_cache()
     cov = gsc_loader.load_coverage_map()
     return Response({"ok": True, "loaded_urls": len(cov)})
+
+
+@api_view(["GET", "POST"])
+def gsc_crawl_stats_view(request):
+    """Serve the ingested GSC *Crawl stats* export (Googlebot's own crawl
+    behaviour on the site — request volume, response-code mix, file-type /
+    Googlebot-type mix, host status, 90-day trend).
+
+    This report is export-only in GSC (no Search Console API), so the data
+    comes from the CSV bundle the operator drops into
+    ``backend/data/gsc_crawl_stats/``. A POST flushes the cache so a freshly
+    dropped export is picked up without a restart.
+
+    Returns ``{"present": false, ...}`` when no export is on disk yet — the
+    UI renders a "drop your Crawl stats export here" empty state.
+    """
+    from .storage import gsc_crawl_stats
+    if request.method == "POST":
+        gsc_crawl_stats.refresh()
+    return Response(gsc_crawl_stats.load())
 
 
 # ── GSC freeze switch ─────────────────────────────────────────────
@@ -457,20 +503,17 @@ def report_xlsx_view(_request):
 
 
 def _build_tree(max_depth: int, max_nodes: int) -> dict:
-    results = repo.read_csv("results")
+    # Read the lean projection (url/status_code/title), not the 300-400 MB
+    # master — same data, but instant instead of a multi-minute slurp.
     status_map: dict[str, dict] = {}
-    if results["headers"]:
-        h = results["headers"]
-        idx_url = h.index("url") if "url" in h else 0
-        idx_code = h.index("status_code") if "status_code" in h else 1
-        idx_title = h.index("title") if "title" in h else 3
-        for row in results["rows"]:
-            if len(row) <= idx_url:
-                continue
-            status_map[row[idx_url]] = {
-                "status_code": row[idx_code] if len(row) > idx_code else "",
-                "title": row[idx_title] if len(row) > idx_title else "",
-            }
+    for row in repo.iter_results_lean():
+        url = (row.get("url") or "").strip()
+        if not url:
+            continue
+        status_map[url] = {
+            "status_code": row.get("status_code") or "",
+            "title": row.get("title") or "",
+        }
 
     discovered = repo.read_csv("discovered")
     first_parent: dict[str, str] = {}
@@ -937,96 +980,7 @@ def issue_detail_view(_request, slug: str):
     })
 
 
-# ── Content map / similarity (Phase 2 + 3) ─────────────────────────────────
-
-
-@api_view(["GET"])
-def content_map_3d_view(request):
-    """GET /api/v1/crawler/content/map/3d
-
-    Returns 3D scatter points from a snapshot's PageEmbedding rows. The
-    snapshot is selected by (in priority order):
-      1. ?snapshot=<uuid>  — exact match
-      2. ?domain=<host>    — latest non-empty COMPLETE competitor
-                             snapshot for that target_domain
-      3. (default)         — latest non-empty BAJAJ snapshot. Never
-                             latest-overall: that lets a competitor crawl
-                             bleed onto the ours-side page when it ran
-                             more recently than the last Bajaj crawl.
-    """
-    from django.db.models import Count
-
-    from .models import CrawlSnapshot
-    from .content.projection import get_3d_points
-
-    snap_id = (request.GET.get("snapshot") or "").strip()
-    domain = (request.GET.get("domain") or "").strip().lower()
-    snap = None
-    if snap_id:
-        snap = CrawlSnapshot.objects.filter(id=snap_id).first()
-    elif domain:
-        snap = (
-            CrawlSnapshot.objects.annotate(n=Count("pages"))
-            .filter(
-                kind="competitor",
-                status="complete",
-                target_domain__iexact=domain,
-                n__gte=1,
-            )
-            .order_by("-started_at")
-            .first()
-        )
-    else:
-        snap = (
-            CrawlSnapshot.objects.annotate(n=Count("pages"))
-            .filter(kind="bajaj", n__gte=1)
-            .order_by("-started_at")
-            .first()
-        )
-    if snap is None:
-        return Response(
-            {"error": "no snapshot", "domain": domain or None},
-            status=404,
-        )
-    points = get_3d_points(snap)
-    return Response({
-        "snapshot_id": str(snap.id),
-        "snapshot_kind": snap.kind,
-        "snapshot_domain": snap.target_domain or "",
-        "snapshot_date": snap.started_at.isoformat() if snap.started_at else "",
-        "total": len(points),
-        "points": points,
-    })
-
-
-@api_view(["GET"])
-def content_similar_view(request):
-    """GET /api/v1/crawler/content/similar
-    Params: url=<page_url> OR query=<free_text>,
-            product=<label>, page_type=<label>, top_k=<int>.
-
-    Returns top-k pages most semantically similar.
-    """
-    from .content.similarity import similar_to_url, similar_to_query
-
-    top_k = max(1, min(50, int(request.GET.get("top_k", "10"))))
-    product = request.GET.get("product") or None
-    page_type = request.GET.get("page_type") or None
-    url = request.GET.get("url") or ""
-    query = request.GET.get("query") or ""
-    if not (url or query):
-        return Response(
-            {"error": "must provide ?url= or ?query="}, status=400,
-        )
-    if url:
-        results = similar_to_url(
-            url, top_k=top_k, product=product, page_type=page_type,
-        )
-    else:
-        results = similar_to_query(
-            query, top_k=top_k, product=product, page_type=page_type,
-        )
-    return Response({"results": results})
+# ── Snapshot picker ────────────────────────────────────────────────────────
 
 
 @api_view(["GET"])

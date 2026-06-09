@@ -27,8 +27,6 @@ don't have X" without calling `list_data_sources` first.
   bots, llms.txt, Reddit/Quora/YouTube/Wikidata). `get_geo_score`.
 - **Competitor crawls** — list every walked domain; per-competitor
   detail. `list_competitors_crawled`, `get_competitor_detail`.
-- **Content clusters** — page-type + product mix from embeddings.
-  `get_content_clusters` (empty domain = ours).
 - **In-house crawler** — `get_crawler_status`, `get_crawler_summary`,
   `get_health_score`, `get_latest_grade`.
 - **AEM sitemap** — `get_sitemap_pages`.

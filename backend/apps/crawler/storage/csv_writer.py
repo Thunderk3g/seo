@@ -73,6 +73,10 @@ PHASE_A_FIELDS = [
     # Image audit aggregates (per-image detail goes in extra JSONB).
     "image_count", "image_missing_alt", "image_empty_alt",
     "image_oversized_count", "image_broken_count", "image_audit_extra",
+    # Indexability verdict (A.6) — on-page robots + canonical collapsed
+    # into a GSC-style status so crawler↔GSC reconciliation can join.
+    "meta_robots", "x_robots_tag", "is_indexable",
+    "indexability_status", "indexability_reason",
 ]
 
 # ── Phase B — Hreflang + schema.org JSON-LD ──────────────────────
@@ -584,6 +588,12 @@ def _dual_write_pageresult(row: dict) -> None:
                 "image_oversized_count": _i(row.get("image_oversized_count")),
                 "image_broken_count": _i(row.get("image_broken_count")),
                 "image_audit_extra": _row_json(row.get("image_audit_extra"), default={}),
+                # ── Phase A.6 — indexability verdict ──
+                "meta_robots": _s(row.get("meta_robots"), 256),
+                "x_robots_tag": _s(row.get("x_robots_tag"), 256),
+                "is_indexable": _row_bool(row.get("is_indexable")),
+                "indexability_status": _s(row.get("indexability_status"), 32),
+                "indexability_reason": _s(row.get("indexability_reason"), 64),
                 # ── Phase B — hreflang ──
                 "hreflang_count": _i(row.get("hreflang_count")),
                 "hreflang_entries": _row_json(row.get("hreflang_entries"), default=[]),
@@ -672,7 +682,14 @@ def _dual_write_pageresult(row: dict) -> None:
                 "meta_description": _s(row.get("meta_description"), 1024),
                 "canonical": _s(row.get("canonical"), 2048),
                 "meta_robots": _s(row.get("meta_robots"), 256),
-                "body_text": (row.get("body_text") or ""),
+                # Content capture is gated: for the technical-SEO round we
+                # do NOT persist body_text (parse_page doesn't emit it
+                # either). Flip CRAWLER_STORE_CONTENT=true to re-enable.
+                "body_text": (
+                    (row.get("body_text") or "")
+                    if getattr(settings, "store_content", False)
+                    else ""
+                ),
             },
         )
     except Exception as exc:  # noqa: BLE001 — never block the CSV path

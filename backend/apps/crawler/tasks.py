@@ -57,15 +57,4 @@ def run_crawl_task() -> dict:
             stats = STATE.stats.as_dict()
             running = STATE.is_running
 
-    # Chain the content-map refresh so the 3D map populates as soon as
-    # the Bajaj crawl finishes, instead of waiting for the daily 02:45
-    # IST cron. Mirrors the per-competitor chaining in
-    # apps.seo_ai.tasks.walk_competitor_task. Best-effort: a broker
-    # outage here must not turn a successful crawl into a failed task.
-    try:
-        from apps.seo_ai.tasks import refresh_content_map_task
-        refresh_content_map_task.delay(include_competitors=False)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("content-map follow-up enqueue failed: %s", exc)
-
     return {"ok": True, "is_running": running, "stats": stats}

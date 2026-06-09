@@ -41,10 +41,9 @@ logger = logging.getLogger("seo.ai.content_writer.serp_discovery")
 # canonical hosts come first; the rest are noise that ranks for
 # insurance queries but isn't a "page we'd revamp against".
 _BLOCKED_DOMAIN_SUBSTRINGS: tuple[str, ...] = (
-    # ours
+    # ours (Bajaj Life Insurance)
     "bajajlifeinsurance.com",
-    "bajajallianzlife.com",      # legacy brand still resolves
-    "bajajallianz.com",
+    # related Bajaj entities — NOT us (parent group), excluded only as noise
     "bajajfinserv.in",
     "bajajfinserv.com",          # parent group
     # encyclopedic / news
@@ -71,12 +70,18 @@ _BLOCKED_DOMAIN_SUBSTRINGS: tuple[str, ...] = (
     ".gov.in",
     "irdai.gov.in",
     "rbi.org.in",
-    # generic aggregators
+    # generic aggregators / comparison & advisory sites
     "policybazaar.com",
     "coverfox.com",
     "bankbazaar.com",
     "paisabazaar.com",
     "myinsuranceclub.com",
+    "joinditto.in",
+    "ditto.com",
+    "acko.com",
+    "policyx.com",
+    "insurancedekho.com",
+    "compareplans.com",
 )
 
 
@@ -89,8 +94,6 @@ def _is_blocked(domain: str) -> bool:
 # (a distinct signal from "blocked", which lumps us in with aggregators).
 _BAJAJ_HOSTS: tuple[str, ...] = (
     "bajajlifeinsurance.com",
-    "bajajallianzlife.com",
-    "bajajallianz.com",
     "bajajfinserv.in",
     "bajajfinserv.com",
 )
