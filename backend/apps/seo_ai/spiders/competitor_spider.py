@@ -155,6 +155,7 @@ class CompetitorSpider(Spider):
         max_depth: int = 2,
         max_pages: int = 0,
         snapshot_kind: str = "competitor",
+        allowed_host: str = "",
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -162,6 +163,13 @@ class CompetitorSpider(Spider):
         # CrawlSnapshot.kind the dual-write pipeline stamps. 'competitor'
         # (default) or 'content' (own-site content crawl).
         self.snapshot_kind = (snapshot_kind or "competitor").lower()
+        # Exact-host scope (e.g. "www.bajajlifeinsurance.com"). When set,
+        # responses landing on any OTHER host are dropped — catches
+        # redirect targets like branch.*/investmentcorner.* that the
+        # seed-list filter can't see (the sitemap lists www URLs that
+        # 301 to the de-indexed subdomains). Empty = apex-wide (the
+        # normal competitor behaviour).
+        self.allowed_host = (allowed_host or "").strip().lower()
         self._urls: list[str] = list(urls or [])
         self.body_text_max_chars = int(body_text_max_chars or 0)
         # Link-walking parameters.
@@ -226,6 +234,15 @@ class CompetitorSpider(Spider):
     # ── parse ──────────────────────────────────────────────────────
     def parse(self, response: Response, **kwargs):
         url = response.url
+        # Exact-host scope: a www seed that 301'd onto another subdomain
+        # (branch.*, investmentcorner.*) lands here with the off-scope
+        # host as response.url — skip it entirely, no item, no follow.
+        if self.allowed_host:
+            from urllib.parse import urlparse as _urlparse
+            host = (_urlparse(url).netloc or "").lower()
+            if host != self.allowed_host:
+                self.logger.debug("allowed_host scope: dropped %s", url)
+                return
         # Scrapy fills download_latency on every response.
         download_latency = response.meta.get("download_latency") or 0.0
         response_time_ms = int(download_latency * 1000) if download_latency else 0

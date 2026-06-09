@@ -72,6 +72,12 @@ class Command(BaseCommand):
             help="CrawlSnapshot.kind the dual-write pipeline stamps. "
                  "'content' = own-site content crawl (Content page).",
         )
+        parser.add_argument(
+            "--allowed-host", default="",
+            help="Exact host scope (e.g. www.example.com). Responses on "
+                 "any other host (redirect targets included) are dropped. "
+                 "Empty = apex-wide.",
+        )
 
     def handle(self, *args, **options) -> None:
         target_domain: str = options["target_domain"]
@@ -84,6 +90,7 @@ class Command(BaseCommand):
         max_depth: int = int(options.get("max_depth") or 2)
         max_pages: int = int(options.get("max_pages") or 0)
         snapshot_kind: str = options.get("snapshot_kind") or "competitor"
+        allowed_host: str = (options.get("allowed_host") or "").strip().lower()
 
         if not urls_path.exists():
             raise SystemExit(f"urls-file not found: {urls_path}")
@@ -165,6 +172,7 @@ class Command(BaseCommand):
                 max_depth=max_depth,
                 max_pages=max_pages,
                 snapshot_kind=snapshot_kind,
+                allowed_host=allowed_host,
             )
             process.start(stop_after_crawl=True)
         finally:

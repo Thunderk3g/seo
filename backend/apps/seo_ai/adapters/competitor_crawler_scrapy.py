@@ -162,6 +162,7 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
         max_depth: int = 2,
         max_pages: int = 0,
         snapshot_kind: str = "competitor",
+        allowed_host: str = "",
     ) -> list[CompetitorPage]:
         """Spider one competitor domain from a set of seeds + link-walk.
 
@@ -185,6 +186,7 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
             max_depth=max_depth,
             max_pages=max_pages,
             snapshot_kind=snapshot_kind,
+            allowed_host=allowed_host,
         )
         return list(pages.values())
 
@@ -199,6 +201,7 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
         max_depth: int = 2,
         max_pages: int = 0,
         snapshot_kind: str = "competitor",
+        allowed_host: str = "",
     ) -> dict[str, CompetitorPage]:
         """Spawn one ``crawl_competitor`` subprocess for this domain.
         Returns a dict keyed by URL → CompetitorPage.
@@ -228,6 +231,7 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
                 "--max-depth", str(max_depth),
                 "--max-pages", str(max_pages),
                 "--snapshot-kind", snapshot_kind or "competitor",
+                "--allowed-host", allowed_host or "",
             ]
             if self.playwright_enabled:
                 cmd.append("--playwright")

@@ -541,6 +541,10 @@ def crawl_own_content_task(
         max_depth=max_depth,
         max_pages=max_pages,
         snapshot_kind="content",
+        # Hard host scope — sitemap locs are www but some 301 onto the
+        # de-indexed branch./investmentcorner. subdomains; the spider
+        # drops any response landing off this exact host.
+        allowed_host=www_host,
     )
     ok = sum(1 for p in pages if (p.status_code or 0) == 200)
     logger.info(
