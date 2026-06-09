@@ -38,6 +38,7 @@ from .views import (
     gap_pipeline_latest,
     gap_pipeline_start,
     gap_pipeline_status,
+    content_crawl_view,
     gsc_dashboard,
     gsc_index_reconciliation,
     inhouse_content_clusters,
@@ -56,6 +57,9 @@ _router.register(r"grade", SEORunViewSet, basename="grade")
 urlpatterns = [
     path("overview/", overview, name="overview"),
     path("content/clusters/", inhouse_content_clusters, name="content-clusters"),
+    # Content-page crawl button: POST = queue own-site content crawl,
+    # GET = latest kind='content' snapshot status for polling.
+    path("content/crawl/", content_crawl_view, name="content-crawl"),
     path("index-reconciliation/", gsc_index_reconciliation, name="index-reconciliation"),
     path("grade/start/", start_grade, name="start-grade"),
     path("gsc/", gsc_dashboard, name="gsc-dashboard"),

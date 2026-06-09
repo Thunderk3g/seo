@@ -426,6 +426,89 @@ def walk_competitor_roster_task(
 
 
 @shared_task(
+    name="seo_ai.crawl_own_content",
+    bind=True,
+    max_retries=0,
+    time_limit=4 * 3600,
+    soft_time_limit=4 * 3600 - 60,
+    # Like walk_competitor: a multi-hour crawl must never be redelivered
+    # on worker recycle — it is idempotent and re-runs on demand.
+    acks_late=False,
+)
+def crawl_own_content_task(
+    self,
+    domain: str = "bajajlifeinsurance.com",
+    *,
+    sitemap_url_cap: int = 5000,
+) -> dict:
+    """In-house CONTENT crawl — the competitor walk machinery pointed at
+    our own domain.
+
+    Unlike the nightly technical crawl (kind='bajaj', no body text),
+    this persists for EVERY page: full visible body_text, zoned heading
+    outline (h1–h6 with header/nav/content/footer zone + nearest
+    section), every internal/external link with anchor + zone + kind,
+    every image with alt-presence, videos, JSON-LD blocks — the
+    Screaming-Frog-style structural mirror the Content page clusters
+    and the chat agents read.
+
+    Snapshot lands as ``kind='content'`` so competitor lists and
+    crawl-diff views never see it. Triggered from the Content page
+    button (POST /api/v1/seo/content/crawl/) or Celery directly.
+    """
+    from .adapters.competitor_crawler import CompetitorCrawler
+    from .adapters.competitor_crawler_scrapy import CompetitorCrawlerScrapy
+    from .adapters.sitemap_xml import SitemapXMLAdapter
+
+    domain = (domain or "bajajlifeinsurance.com").strip().lower().lstrip("www.")
+
+    try:
+        urls = SitemapXMLAdapter().discover_urls(
+            domain, limit=int(sitemap_url_cap),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("own-content sitemap discover failed for %s (%s)", domain, exc)
+        urls = []
+
+    if urls:
+        seeds, max_depth, max_pages = urls, 0, 0
+        mode = "sitemap"
+    else:
+        # No sitemap → homepage walk, same fallback shape as the
+        # competitor task. Depth 3 covers the product → variant → blog
+        # tree on our own site.
+        seeds = [f"https://www.{domain}/", f"https://{domain}/"]
+        max_depth, max_pages = 3, 0
+        mode = "walk"
+        logger.info("own-content crawl: no sitemap for %s — homepage walk", domain)
+
+    crawler = CompetitorCrawler()
+    if not isinstance(crawler, CompetitorCrawlerScrapy):
+        return {"ok": False, "error": "content crawl requires COMPETITOR_ENGINE=scrapy"}
+
+    pages = crawler.walk_domain(
+        domain=domain,
+        seeds=seeds,
+        max_depth=max_depth,
+        max_pages=max_pages,
+        snapshot_kind="content",
+    )
+    ok = sum(1 for p in pages if (p.status_code or 0) == 200)
+    logger.info(
+        "own-content crawl done: domain=%s mode=%s seeds=%d pages=%d ok=%d",
+        domain, mode, len(seeds), len(pages), ok,
+    )
+    return {
+        "ok": True,
+        "domain": domain,
+        "mode": mode,
+        "sitemap_seed_count": len(seeds) if mode == "sitemap" else 0,
+        "pages": len(pages),
+        "ok_pages": ok,
+    }
+
+
+@shared_task(
     name="seo_ai.psi_enrich_snapshot",
     bind=True,
     max_retries=0,

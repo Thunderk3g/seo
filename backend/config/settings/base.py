@@ -581,10 +581,12 @@ SERP_API = {
     in ("1", "true", "yes", "on"),
     "provider": os.environ.get("SERP_API_PROVIDER", "serpapi"),
     "api_key": os.environ.get("SERPAPI_API_KEY", ""),
+    # DuckDuckGo dropped from the default 2026-06-10 (operator call:
+    # probe only Google + Bing). Re-enable per-env via SERP_API_ENGINES.
     "engines": tuple(
         e.strip()
         for e in os.environ.get(
-            "SERP_API_ENGINES", "google,bing,duckduckgo"
+            "SERP_API_ENGINES", "google,bing"
         ).split(",")
         if e.strip()
     ),

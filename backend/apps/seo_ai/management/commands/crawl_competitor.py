@@ -66,6 +66,12 @@ class Command(BaseCommand):
             "--max-pages", type=int, default=0,
             help="Walk mode: hard cap on followed pages (0 = unlimited).",
         )
+        parser.add_argument(
+            "--snapshot-kind", choices=("competitor", "content"),
+            default="competitor",
+            help="CrawlSnapshot.kind the dual-write pipeline stamps. "
+                 "'content' = own-site content crawl (Content page).",
+        )
 
     def handle(self, *args, **options) -> None:
         target_domain: str = options["target_domain"]
@@ -77,6 +83,7 @@ class Command(BaseCommand):
         mode: str = options.get("mode") or "urls"
         max_depth: int = int(options.get("max_depth") or 2)
         max_pages: int = int(options.get("max_pages") or 0)
+        snapshot_kind: str = options.get("snapshot_kind") or "competitor"
 
         if not urls_path.exists():
             raise SystemExit(f"urls-file not found: {urls_path}")
@@ -157,6 +164,7 @@ class Command(BaseCommand):
                 mode=mode,
                 max_depth=max_depth,
                 max_pages=max_pages,
+                snapshot_kind=snapshot_kind,
             )
             process.start(stop_after_crawl=True)
         finally:
