@@ -438,6 +438,37 @@ def psi_status_view(_request):
     return Response(psi_capture.read_status())
 
 
+@api_view(["GET", "POST"])
+def psi_sweep_view(request):
+    """Post-crawl PSI sweep — score HTML-200 pages still missing CWV.
+
+    GET  → how many pages are missing CWV right now (preview, no scoring).
+    POST → kick off the sweep on a background thread (it waits for slow lab
+           runs); progress shows via /psi/progress + /psi/status.
+    """
+    import threading
+    from .engine import psi_capture
+
+    missing = psi_capture.select_missing_cwv_urls()
+    if request.method == "GET":
+        return Response({"missing_cwv": len(missing),
+                         "sample": missing[:20]})
+
+    if not missing:
+        return Response({"started": False, "missing_cwv": 0,
+                         "message": "No HTML-200 pages are missing CWV."})
+
+    # Don't block the request — the sweep can run for many minutes (lab runs).
+    if psi_capture.CAPTURE_STATE.is_running:
+        return Response({"started": False, "message": "A PSI run is already in progress."},
+                        status=409)
+    threading.Thread(target=psi_capture.sweep_missing_cwv, kwargs={},
+                     daemon=True, name="psi-sweep").start()
+    return Response({"started": True, "missing_cwv": len(missing),
+                     "message": f"Sweeping {len(missing)} page(s) — "
+                                "watch /psi/progress."}, status=202)
+
+
 @api_view(["POST"])
 def gsc_inspect_unknowns_view(request):
     """Upgrade `unknown` rows to definitive verdicts via URL Inspection API.

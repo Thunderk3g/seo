@@ -39,6 +39,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -47,6 +48,11 @@ from typing import Iterable
 
 from ..conf import settings as crawler_settings
 from ..logger import get_logger
+
+# crawl_results.csv carries very wide *_json cells; raise the field-size cap
+# so our select_* readers work even when repository.py (which also raises it)
+# hasn't been imported yet — e.g. the standalone `manage.py psi_sweep` command.
+csv.field_size_limit(sys.maxsize)
 from ..storage import csv_writer
 
 log = get_logger(__name__)
@@ -166,6 +172,68 @@ def select_target_urls(
     except OSError as exc:
         log.warning("psi_capture: cannot read %s: %s", path, exc)
     return out
+
+
+def select_missing_cwv_urls(
+    *,
+    limit: int = 0,
+    subdomain: str = "www",
+) -> list[str]:
+    """HTTP-200 HTML pages that have NO CWV yet (empty ``mobile_lcp_ms``).
+
+    These are the gap the inline pass didn't finish — almost always pages
+    with no CrUX field data, which need a slow Lighthouse *lab* run that the
+    crawl-paced inline scheduler raced past. The post-crawl sweep scores
+    exactly these, sequentially, waiting for each lab run to complete.
+    """
+    path = crawler_settings.data_path / "crawl_results.csv"
+    if not path.exists():
+        return []
+    out: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if subdomain and row.get("subdomain") != subdomain:
+                    continue
+                if (row.get("status_code") or "") != "200":
+                    continue
+                ctype = (row.get("content_type") or "").lower()
+                if ctype and "html" not in ctype and "xml" not in ctype:
+                    continue
+                if (row.get("mobile_lcp_ms") or "").strip():
+                    continue  # already has CWV — skip
+                url = (row.get("url") or "").strip()
+                if not url:
+                    continue
+                out.append(url)
+                if limit and len(out) >= limit:
+                    break
+    except OSError as exc:
+        log.warning("psi_capture: cannot read %s: %s", path, exc)
+    return out
+
+
+def sweep_missing_cwv(
+    *,
+    limit: int = 0,
+    strategies: tuple[str, ...] | None = None,
+) -> dict:
+    """Post-crawl sweep: score every HTML-200 page still missing CWV.
+
+    Runs ``capture()`` (sequential — waits for slow lab runs to finish) over
+    only the gap pages, then merges the results into ``crawl_results.csv``.
+    Returns the capture summary, plus ``swept`` = how many URLs were targeted.
+    """
+    urls = select_missing_cwv_urls(limit=limit)
+    if not urls:
+        return {"ok": True, "swept": 0, "rows_written": 0,
+                "note": "no HTML-200 pages are missing CWV"}
+    log.info("psi_sweep: %d page(s) missing CWV — scoring (waits for lab runs)",
+             len(urls))
+    result = capture(urls, strategies=strategies)
+    result["swept"] = len(urls)
+    return result
 
 
 # ── Capture loop ───────────────────────────────────────────────────────────
