@@ -25,18 +25,9 @@ ARG INSTALL_DEV=1
 
 COPY requirements/ /app/requirements/
 
-# Pre-install CPU-only torch BEFORE base.txt. sentence-transformers pulls torch
-# transitively, and the default PyPI torch wheel hard-depends on the CUDA 13
-# runtime on Linux (~2.5 GB of nvidia-* wheels we never use — we do not
-# GPU-accelerate). Installing CPU torch first means the sentence-transformers
-# resolve finds torch already satisfied and skips the CUDA chain entirely.
-#
-# --retries/--timeout: the dep chain is heavy (torch alone is ~200 MB even on
-# CPU); a transient PyPI hiccup mid-resolve should not kill a 10-minute build.
+# --retries/--timeout: a transient PyPI hiccup mid-resolve should not
+# kill a 10-minute build.
 RUN pip install --no-cache-dir --retries 10 --timeout 120 \
-        --index-url https://download.pytorch.org/whl/cpu \
-        torch \
-    && pip install --no-cache-dir --retries 10 --timeout 120 \
         -r requirements/base.txt \
     && if [ "$INSTALL_DEV" = "1" ]; then \
         pip install --no-cache-dir --retries 10 --timeout 120 \
