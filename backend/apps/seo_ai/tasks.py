@@ -468,11 +468,32 @@ def crawl_own_content_task(
     crawl-diff views never see it. Triggered from the Content page
     button (POST /api/v1/seo/content/crawl/) or Celery directly.
     """
+    from urllib.parse import urlparse
+
     from .adapters.competitor_crawler import CompetitorCrawler
     from .adapters.competitor_crawler_scrapy import CompetitorCrawlerScrapy
     from .adapters.sitemap_xml import SitemapXMLAdapter
 
     domain = (domain or "bajajlifeinsurance.com").strip().lower().lstrip("www.")
+
+    # Duplicate guard — the view checks too, but queued tasks can slip
+    # past it (button clicked while the backend was restarting). One
+    # content crawl at a time is plenty.
+    try:
+        from apps.crawler.models import CrawlSnapshot
+        from django.utils import timezone as _tz
+        from datetime import timedelta
+        dupe = (CrawlSnapshot.objects
+                .filter(kind="content",
+                        status=CrawlSnapshot.Status.RUNNING,
+                        started_at__gte=_tz.now() - timedelta(hours=4))
+                .exists())
+        if dupe:
+            logger.info("own-content crawl skipped: one is already running")
+            return {"ok": False, "skipped": True,
+                    "reason": "a content crawl is already running"}
+    except Exception:  # noqa: BLE001 — guard must never block the crawl
+        pass
 
     try:
         urls = SitemapXMLAdapter().discover_urls(
@@ -482,14 +503,30 @@ def crawl_own_content_task(
         logger.warning("own-content sitemap discover failed for %s (%s)", domain, exc)
         urls = []
 
+    # WWW-ONLY scope — mirror the main crawler's ALLOWED_DOMAINS rule
+    # (conf.py): the apex sitemap also lists branch.* and
+    # investmentcorner.* URLs (old, de-indexed subdomains). Keeping the
+    # exact www host drops every subdomain and that noise with it.
+    www_host = f"www.{domain}"
+    before = len(urls)
+    urls = [u for u in urls
+            if (urlparse(u).netloc or "").lower() == www_host]
+    if before and len(urls) != before:
+        logger.info(
+            "own-content crawl: scoped sitemap to %s — kept %d/%d URLs "
+            "(dropped branch/IC/other subdomains)",
+            www_host, len(urls), before,
+        )
+
     if urls:
         seeds, max_depth, max_pages = urls, 0, 0
         mode = "sitemap"
     else:
-        # No sitemap → homepage walk, same fallback shape as the
-        # competitor task. Depth 3 covers the product → variant → blog
-        # tree on our own site.
-        seeds = [f"https://www.{domain}/", f"https://{domain}/"]
+        # No sitemap → homepage walk. www seed only — the link-walk can
+        # still discover sibling subdomains, but starting on www keeps
+        # it overwhelmingly in scope; the sitemap path above is the
+        # normal route and is strictly www-only.
+        seeds = [f"https://www.{domain}/"]
         max_depth, max_pages = 3, 0
         mode = "walk"
         logger.info("own-content crawl: no sitemap for %s — homepage walk", domain)
