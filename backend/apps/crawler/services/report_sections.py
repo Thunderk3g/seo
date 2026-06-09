@@ -61,6 +61,7 @@ def _compute_sections() -> dict:
     soft_404: list[dict] = []
     sitemap = {"in_sitemap": 0, "discovered_only": 0, "sitemap_errors": 0}
     sitemap_error_rows: list[dict] = []
+    discovered_only_rows: list[dict] = []
     pdf_rows: list[dict] = []
     pdf_counts = {"total": 0, "ok": 0, "error": 0,
                   "encrypted": 0, "no_text_layer": 0, "broken": 0}
@@ -109,6 +110,12 @@ def _compute_sections() -> dict:
                     sitemap_error_rows.append({"url": url, "status_code": code})
         else:
             sitemap["discovered_only"] += 1
+            # HTML pages found by crawling but absent from the sitemap — the
+            # actionable list (candidates to ADD to the sitemap).
+            if code == "200" and ("html" in (row.get("content_type") or "").lower()
+                                  or (row.get("content_type") or "") == "") \
+                    and not _is_pdf(row) and len(discovered_only_rows) < _SAMPLE_CAP:
+                discovered_only_rows.append({"url": url, "title": row.get("title") or ""})
 
         # — linking —
         ic = _to_int(row.get("internal_links_count"))
@@ -152,7 +159,8 @@ def _compute_sections() -> dict:
     return {
         "redirects": {"counts": redirect_counts, "rows": redirects},
         "soft_404": {"count": len(soft_404), "rows": soft_404},
-        "sitemap": {"counts": sitemap, "error_rows": sitemap_error_rows},
+        "sitemap": {"counts": sitemap, "error_rows": sitemap_error_rows,
+                    "discovered_only_rows": discovered_only_rows},
         "linking": {
             "total_internal": link_total_internal,
             "total_external": link_total_external,
@@ -253,6 +261,85 @@ def _compute_broken_links() -> dict:
     }
 
 
+# ── Core Web Vitals (mobile + desktop, per page) ────────────────────────────
+# CrUX field-data thresholds (good ≤ first, needs-improvement ≤ second, else poor)
+_CWV_THRESHOLDS = {"lcp": (2500, 4000), "cls": (0.10, 0.25), "inp": (200, 500)}
+
+
+def _to_float_or_none(v):
+    try:
+        s = str(v).strip()
+        return float(s) if s != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _cwv_bucket(metric: str, val) -> str | None:
+    if val is None:
+        return None
+    good, ni = _CWV_THRESHOLDS[metric]
+    if val <= good:
+        return "good"
+    if val <= ni:
+        return "needs_improvement"
+    return "poor"
+
+
+def cwv() -> dict:
+    return repo._memoize_on_results("report_cwv", _compute_cwv)
+
+
+def _strategy_metrics(row: dict, prefix: str) -> dict:
+    lcp = _to_float_or_none(row.get(f"{prefix}_lcp_ms"))
+    cls = _to_float_or_none(row.get(f"{prefix}_cls"))
+    inp = _to_float_or_none(row.get(f"{prefix}_inp_ms"))
+    return {
+        "score": _to_float_or_none(row.get(f"{prefix}_pagespeed_score")),
+        "lcp_ms": lcp, "cls": cls, "inp_ms": inp,
+        "lcp_bucket": _cwv_bucket("lcp", lcp),
+        "cls_bucket": _cwv_bucket("cls", cls),
+        "inp_bucket": _cwv_bucket("inp", inp),
+        "field_data": _truthy(row.get(f"{prefix}_has_field_data")),
+    }
+
+
+def _compute_cwv() -> dict:
+    def _blank():
+        return {m: {"good": 0, "needs_improvement": 0, "poor": 0}
+                for m in ("lcp", "cls", "inp")}
+    summary = {"mobile": _blank(), "desktop": _blank()}
+    rows: list[dict] = []
+    pages_with_cwv = 0
+    field_pages = 0
+    for row in repo.iter_results_lean():
+        m = _strategy_metrics(row, "mobile")
+        d = _strategy_metrics(row, "desktop")
+        has = any(v is not None for v in
+                  (m["lcp_ms"], m["cls"], m["inp_ms"], d["lcp_ms"], d["cls"], d["inp_ms"]))
+        if not has:
+            continue
+        pages_with_cwv += 1
+        if m["field_data"] or d["field_data"]:
+            field_pages += 1
+        for strat, met in (("mobile", m), ("desktop", d)):
+            for k in ("lcp", "cls", "inp"):
+                b = met[f"{k}_bucket"]
+                if b:
+                    summary[strat][k][b] += 1
+        if len(rows) < _SAMPLE_CAP:
+            rows.append({"url": row.get("url") or "", "mobile": m, "desktop": d})
+    # Worst-first: pages with any poor/needs-improvement on mobile rise to the top.
+    rank = {"poor": 0, "needs_improvement": 1, "good": 2, None: 3}
+    rows.sort(key=lambda r: min(rank[r["mobile"][f"{k}_bucket"]] for k in ("lcp", "cls", "inp")))
+    return {
+        "pages_with_cwv": pages_with_cwv,
+        "field_data_pages": field_pages,
+        "thresholds": _CWV_THRESHOLDS,
+        "summary": summary,
+        "rows": rows,
+    }
+
+
 # ── soft-404 with JS rendering (re-classify thin candidates) ────────────────
 # The static word count flags any HTTP-200 page with a near-empty *server* HTML
 # body — but JS-rendered pages (buy-journey SPAs, calculators) are thin in the
@@ -260,8 +347,9 @@ def _compute_broken_links() -> dict:
 # headless browser and only keep it as a real soft-404 if it's STILL thin after
 # rendering. Rendering is capped + done only for the small candidate set.
 _SOFT404_RENDER_CAP = 120          # max candidates to JS-render per run
-_SOFT404_NAV_TIMEOUT_MS = 20000
-_SOFT404_SETTLE_MS = 2500          # let client-side JS paint after load
+_SOFT404_NAV_TIMEOUT_MS = 25000    # initial DOMContentLoaded
+_SOFT404_NETWORKIDLE_MS = 15000    # wait for SPA XHR content to settle
+_SOFT404_SETTLE_MS = 3500          # final paint backstop after network idle
 
 
 def soft_404() -> dict:
@@ -303,6 +391,14 @@ def _render_word_counts(urls: list[str]) -> dict[str, int | None]:
                 try:
                     page.goto(u, wait_until="domcontentloaded",
                               timeout=_SOFT404_NAV_TIMEOUT_MS)
+                    # Wait for the SPA's XHR-loaded content to settle. networkidle
+                    # may never fire on pages with persistent connections
+                    # (analytics polling), so cap it and count regardless.
+                    try:
+                        page.wait_for_load_state("networkidle",
+                                                 timeout=_SOFT404_NETWORKIDLE_MS)
+                    except Exception:  # noqa: BLE001
+                        pass
                     page.wait_for_timeout(_SOFT404_SETTLE_MS)
                     txt = page.inner_text("body")
                     out[u] = len((txt or "").split())

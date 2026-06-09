@@ -118,6 +118,12 @@ _LEAN_DIRECT_COLS = [
     "redirect_hops", "redirect_chain", "redirect_final_url", "redirect_loop",
     "pdf_title", "pdf_page_count", "pdf_has_text_layer", "pdf_is_encrypted",
     "pdf_byte_size",
+    # Per-strategy Core Web Vitals (mobile + desktop), so the CWV report
+    # section can show both without touching the master.
+    "mobile_pagespeed_score", "mobile_lcp_ms", "mobile_cls", "mobile_inp_ms",
+    "mobile_has_field_data",
+    "desktop_pagespeed_score", "desktop_lcp_ms", "desktop_cls", "desktop_inp_ms",
+    "desktop_has_field_data",
 ]
 _LEAN_OUTPUT_COLS = _LEAN_DIRECT_COLS + [
     "internal_links_count", "external_links_count",

@@ -134,6 +134,12 @@ def report_soft_404_view(_request):
 
 
 @api_view(["GET"])
+def report_cwv_view(_request):
+    """Core Web Vitals per page — mobile AND desktop (LCP/CLS/INP + buckets)."""
+    return Response(report_sections.cwv())
+
+
+@api_view(["GET"])
 def tables_list_view(_request):
     """List every catalog entry; categorised entries include a per-category breakdown."""
     breakdown = repo.summary_breakdown()
