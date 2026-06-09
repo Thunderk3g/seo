@@ -395,6 +395,13 @@ _IMG_RE = re.compile(
     r"<img\b([^>]*)>",
     re.IGNORECASE | re.DOTALL,
 )
+# Blocks whose inner text is NOT rendered DOM — `<img>` strings inside them are
+# template/fallback markup, not real images. Stripping them before the regex
+# makes image_count match the real DOM (e.g. homepage 501 -> 381, == BS4).
+_NON_DOM_RE = re.compile(
+    r"<!--.*?-->|<(script|style|template|noscript)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
 _ATTR_RE = re.compile(
     r"""\b([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
 )
@@ -415,6 +422,9 @@ def image_audit_from(html: str, page_url: str) -> dict:
             "image_oversized_count": 0, "image_broken_count": 0,
             "image_audit_extra": {},
         }
+    # Drop comments / script / template blocks so commented-out or templated
+    # <img> markup isn't miscounted as real images.
+    html = _NON_DOM_RE.sub("", html)
     images: list[dict] = []
     missing_alt = 0
     empty_alt = 0

@@ -688,7 +688,10 @@ PSI = {
     ),
     # Cap per refresh — PSI quota is 25k/day; this prevents a runaway
     # crawl from burning the whole budget. Set to 0 for unlimited.
-    "max_urls_per_run": int(os.environ.get("PSI_MAX_URLS_PER_RUN", "100")),
+    # Default 0 = cover the COMPLETE crawl (≈2k www pages × mobile+desktop
+    # ≈4k calls, well under the 25k/day quota; the 7-day PSI cache means
+    # re-crawls inside a week reuse results rather than re-spending budget).
+    "max_urls_per_run": int(os.environ.get("PSI_MAX_URLS_PER_RUN", "0")),
     # Concurrent PSI worker count used by both the in-house crawler's
     # inline scheduler (apps.crawler.engine.psi_scheduler) and the
     # competitor crawler's enrich_with_cwv pass. 4 is conservative —

@@ -1,16 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useSearch } from 'wouter';
-import GscCoverageUploader from '../components/GscCoverageUploader';
+import { useEffect, useState } from 'react';
 import Icon from '../components/Icon';
 import PsiStatusBanner from '../components/PsiStatusBanner';
-import StatusSections from '../components/StatusSections';
-// ConsoleCaptureBanner removed — Playwright capture now runs automatically
-// at the end of every regular crawl (see engine.run_crawl). File kept at
-// components/ConsoleCaptureBanner.tsx if a manual trigger is ever wanted.
-// SubdomainTabs removed per request (Main site / Branch / InvCorner counts row).
-import { crawlerApi, type SummaryBreakdown, type TablesResponse } from '../api';
-
-type SubKey = 'all' | 'www' | 'branch' | 'investmentcorner';
+import ReportSectionsPanel from '../components/ReportSectionsPanel';
+// Index/not-indexed (StatusSections + GscCoverageUploader) deferred — the
+// live section-wise report below (ReportSectionsPanel) is the new main view.
+import { crawlerApi, type TablesResponse } from '../api';
 
 /**
  * Reports landing page — sectioned by what actually matters operationally:
@@ -27,23 +21,12 @@ type SubKey = 'all' | 'www' | 'branch' | 'investmentcorner';
  */
 export default function CrawlerReports() {
   const [tables, setTables] = useState<TablesResponse | null>(null);
-  const [breakdown, setBreakdown] = useState<SummaryBreakdown | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // wouter v3: useLocation returns pathname only; query string lives in useSearch.
-  const search = useSearch();
-
-  // Subdomain scope is still respected via deep-link URLs (?subdomain=www),
-  // it just no longer has visible tab UI.
-  const subdomain = useMemo<SubKey>(() => parseSubdomain(search), [search]);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([crawlerApi.tables(), crawlerApi.breakdown()])
-      .then(([t, b]) => {
-        if (!alive) return;
-        setTables(t);
-        setBreakdown(b);
-      })
+    crawlerApi.tables()
+      .then((t) => alive && setTables(t))
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
@@ -67,8 +50,8 @@ export default function CrawlerReports() {
             <span className="material-icons-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4 }}>
               segment
             </span>
-            Indexing status, sitemap coverage, and error breakdown — pulled from your latest crawl
-            and the most recent Google Search Console Coverage export.
+            Redirects, soft-404s, sitemap coverage, robots.txt, internal/external linking,
+            PDF health, and broken links (with proof of the source page) — from your latest crawl.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
@@ -86,13 +69,7 @@ export default function CrawlerReports() {
 
       <PsiStatusBanner />
 
-      <GscCoverageUploader />
-
-      {breakdown ? (
-        <StatusSections breakdown={breakdown} subdomain={subdomain} />
-      ) : (
-        !error && <div className="cc-empty"><Icon name="hourglass_empty" /> Loading breakdown…</div>
-      )}
+      <ReportSectionsPanel />
 
       {tables && tables.tables.length > 0 && (
         <details className="cc-raw-tables">
@@ -117,13 +94,4 @@ export default function CrawlerReports() {
       )}
     </div>
   );
-}
-
-function parseSubdomain(search: string): SubKey {
-  if (!search) return 'all';
-  const q = search.startsWith('?') ? search.slice(1) : search;
-  if (!q) return 'all';
-  const sp = new URLSearchParams(q);
-  const v = (sp.get('subdomain') ?? sp.get('sub') ?? 'all') as SubKey;
-  return (['all', 'www', 'branch', 'investmentcorner'] as const).includes(v as any) ? v : 'all';
 }

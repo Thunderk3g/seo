@@ -73,7 +73,14 @@ class CrawlerSettings:
     allowed_domains: List[str] = field(
         default_factory=lambda: _env_csv(
             "ALLOWED_DOMAINS",
-            ["bajajlifeinsurance.com", "www.bajajlifeinsurance.com"],
+            # www ONLY. The bare apex "bajajlifeinsurance.com" used to be here,
+            # but is_allowed_domain() treats it as a wildcard (host.endswith
+            # ".bajajlifeinsurance.com"), which pulled in branch.* and
+            # investmentcorner.* — old, de-indexed subdomains that were 57% of
+            # the crawl, had 0 indexed pages, and generated all the ?lat=/
+            # ?search= + wp-json/oembed query-string 404 noise. Restricting to
+            # the exact www host drops every subdomain and that noise with it.
+            ["www.bajajlifeinsurance.com"],
         )
     )
     user_agent: str = field(
@@ -173,8 +180,11 @@ class CrawlerSettings:
     capture_psi_after_crawl: bool = field(
         default_factory=lambda: _env_bool("CAPTURE_PSI_AFTER_CRAWL", True)
     )
+    # 0 = no cap → CWV/PSI covers the COMPLETE crawl, not just the top N.
+    # (The default inline scheduler already scores every URL; this is the
+    # batch-fallback cap used when CRAWLER_PSI_INLINE=false.)
     psi_capture_limit: int = field(
-        default_factory=lambda: _env_int("PSI_CAPTURE_LIMIT", 100)
+        default_factory=lambda: _env_int("PSI_CAPTURE_LIMIT", 0)
     )
 
     # ── Inline PSI scheduler (concurrent, per-URL during crawl) ──────

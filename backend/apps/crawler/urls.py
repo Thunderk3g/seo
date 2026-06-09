@@ -16,6 +16,13 @@ urlpatterns = [
     # Data access
     path("summary", views.summary_view, name="summary"),
     path("summary/breakdown", views.summary_breakdown_view, name="summary-breakdown"),
+    # Live section-wise report (Reports page).
+    path("report/sections", views.report_sections_view, name="report-sections"),
+    path("report/broken-links", views.report_broken_links_view,
+         name="report-broken-links"),
+    path("report/robots", views.report_robots_view, name="report-robots"),
+    path("report/external-links", views.report_external_links_view,
+         name="report-external-links"),
     # Restored 2026-06-05: dashboard health widget (view body was kept).
     path("health-score", views.health_score_view, name="health-score"),
     path("tables", views.tables_list_view, name="tables"),

@@ -6,7 +6,6 @@ import RecentPagesTable from '../components/RecentPagesTable';
 import StatCard from '../components/StatCard';
 import CrawlStatsPanel from '../components/CrawlStatsPanel';
 import InternalLinkingPanel from '../components/InternalLinkingPanel';
-import IndexCoveragePanel from '../components/IndexCoveragePanel';
 import { crawlerApi, type CrawlerLogMessage, type CrawlerSummary } from '../api';
 import { useCrawlerStatus } from '../useCrawlerStatus';
 import { useCrawlerLogs } from '../useCrawlerLogs';
@@ -167,9 +166,10 @@ export default function CrawlerDashboard() {
         <StatCard tone="muted" icon="group_work" label="Workers" value={display.workers} />
       </div>
 
-      {/* Index coverage — what Google actually indexed vs crawled-but-not-
-          indexed (reads /summary/breakdown; URL Inspection action inside). */}
-      <IndexCoveragePanel />
+      {/* Index coverage panel intentionally hidden — indexed / not-indexed
+          reporting is deferred (the current source is only a GSC traffic
+          proxy; real verdicts need the URL-Inspection pass). Re-enable once
+          "crawled but not indexed" is wired. Component kept in the tree. */}
 
       {/* Internal linking — top pages by inbound internal links + orphans. */}
       <InternalLinkingPanel />

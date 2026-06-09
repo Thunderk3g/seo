@@ -27,7 +27,7 @@ from rest_framework.response import Response
 
 from . import log_bus
 from .conf import settings
-from .services import crawler_service, report_service
+from .services import crawler_service, report_service, report_sections
 from .state import STATE
 from .storage import gsc_loader, repository as repo
 from .storage import url_classifier
@@ -101,6 +101,32 @@ def summary_breakdown_view(_request):
 
 
 @api_view(["GET"])
+def report_sections_view(_request):
+    """Live section-wise report (redirects / soft-404 / sitemap / linking /
+    PDF health) — computed from the lean projection, memoised."""
+    return Response(report_sections.sections())
+
+
+@api_view(["GET"])
+def report_broken_links_view(_request):
+    """Every internal 404/HTTP-error target WITH proof of where it's linked:
+    source page + anchor text + section (nearest heading) + zone."""
+    return Response(report_sections.broken_links())
+
+
+@api_view(["GET"])
+def report_robots_view(_request):
+    """Live robots.txt fetch + parse (declared sitemaps, disallow/allow)."""
+    return Response(report_sections.robots_summary())
+
+
+@api_view(["GET"])
+def report_external_links_view(_request):
+    """Outbound external links grouped by domain → URL → source pages."""
+    return Response(report_sections.external_links())
+
+
+@api_view(["GET"])
 def tables_list_view(_request):
     """List every catalog entry; categorised entries include a per-category breakdown."""
     breakdown = repo.summary_breakdown()
@@ -108,7 +134,7 @@ def tables_list_view(_request):
     categories_meta = {c["key"]: c for c in breakdown.get("categories", [])}
     items = []
     for key, meta in repo.CATALOG.items():
-        total = repo.read_csv(key)["count"]
+        total = repo.count_rows(key)
         entry = {
             "key": key,
             "label": meta["label"],
@@ -477,20 +503,17 @@ def report_xlsx_view(_request):
 
 
 def _build_tree(max_depth: int, max_nodes: int) -> dict:
-    results = repo.read_csv("results")
+    # Read the lean projection (url/status_code/title), not the 300-400 MB
+    # master — same data, but instant instead of a multi-minute slurp.
     status_map: dict[str, dict] = {}
-    if results["headers"]:
-        h = results["headers"]
-        idx_url = h.index("url") if "url" in h else 0
-        idx_code = h.index("status_code") if "status_code" in h else 1
-        idx_title = h.index("title") if "title" in h else 3
-        for row in results["rows"]:
-            if len(row) <= idx_url:
-                continue
-            status_map[row[idx_url]] = {
-                "status_code": row[idx_code] if len(row) > idx_code else "",
-                "title": row[idx_title] if len(row) > idx_title else "",
-            }
+    for row in repo.iter_results_lean():
+        url = (row.get("url") or "").strip()
+        if not url:
+            continue
+        status_map[url] = {
+            "status_code": row.get("status_code") or "",
+            "title": row.get("title") or "",
+        }
 
     discovered = repo.read_csv("discovered")
     first_parent: dict[str, str] = {}

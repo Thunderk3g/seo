@@ -144,10 +144,12 @@ def parse_page(html: str, base_url: str) -> dict:
         "word_count": word_count,
         "links": links,
         "console_errors": console_errors,
-        "headings": structured["headings"][:200],
-        "internal_links": structured["internal_links"][:500],
-        "external_links": structured["external_links"][:200],
-        "images": structured["images"][:200],
+        # Caps raised so link-heavy pages (homepage ~557 internal links) are no
+        # longer truncated — these bound a pathological page, not normal ones.
+        "headings": structured["headings"][:500],
+        "internal_links": structured["internal_links"][:5000],
+        "external_links": structured["external_links"][:2000],
+        "images": structured["images"][:2000],
     }
 
 

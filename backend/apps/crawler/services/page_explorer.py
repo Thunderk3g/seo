@@ -61,14 +61,6 @@ def _json_len(val) -> int:
     return 0
 
 
-def _stamp_link_counts(row: dict) -> None:
-    """Derive internal/external on-page link counts from the *_links_json
-    columns and stamp them onto the row (in place) as string values so
-    they sort + render like the other Page Explorer columns."""
-    row["internal_links_count"] = str(_json_len(row.get("internal_links_json")))
-    row["external_links_count"] = str(_json_len(row.get("external_links_json")))
-
-
 # Canonical ordered column list for the Page Explorer UI. Must match
 # RESULTS_FIELDS from storage/csv_writer.py exactly so the UI table
 # renders all available columns.
@@ -91,9 +83,9 @@ COLUMNS: tuple[str, ...] = (
     "lcp_ms",
     "cls",
     "inp_ms",
-    # On-page outbound link counts derived from *_links_json (see
-    # _stamp_link_counts). "internal" = links to the same host;
-    # "external" = links off-site.
+    # On-page outbound link counts derived from *_links_json (in the lean
+    # projection for the CSV path; inline for the ORM path). "internal" =
+    # links to the same host; "external" = links off-site.
     "internal_links_count",
     "external_links_count",
 )
@@ -221,17 +213,11 @@ def _load_rows() -> list[dict]:
     if cached and cached[0] == mtime:
         return cached[1]
 
-    payload = repo.read_csv("results")
-    headers = payload.get("headers") or []
-    rows: list[dict] = []
-    for r in payload.get("rows") or []:
-        if not r:
-            continue
-        if len(r) < len(headers):
-            r = list(r) + [""] * (len(headers) - len(r))
-        row = dict(zip(headers, r))
-        _stamp_link_counts(row)
-        rows.append(row)
+    # Read the lean projection instead of the master crawl_results.csv: the
+    # master runs to hundreds of MB once the *_json columns are populated and
+    # is brutally slow to read over the Windows bind mount. The lean carries
+    # exactly our COLUMNS (link counts already derived), so no _stamp needed.
+    rows = list(repo.iter_results_lean())
     _CACHE["results"] = (mtime, rows)
     return rows
 
