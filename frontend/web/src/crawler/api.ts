@@ -990,6 +990,17 @@ export const crawlerApi = {
       raw?: string;
     }>('/report/robots'),
 
+  reportSoftFour: () =>
+    request<{
+      candidate_count: number;
+      rendered_count: number;
+      confirmed_count: number;
+      threshold: number;
+      confirmed: Array<{ url: string; static_words: number; rendered_words: number | null; title: string; verdict: string }>;
+      js_rendered_excluded: Array<{ url: string; static_words: number; rendered_words: number | null; title: string; verdict: string }>;
+      unverified: Array<{ url: string; static_words: number; rendered_words: number | null; title: string; verdict: string }>;
+    }>('/report/soft-404'),
+
   reportExternalLinks: () =>
     request<{
       total_links: number;

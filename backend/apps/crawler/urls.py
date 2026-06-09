@@ -23,6 +23,7 @@ urlpatterns = [
     path("report/robots", views.report_robots_view, name="report-robots"),
     path("report/external-links", views.report_external_links_view,
          name="report-external-links"),
+    path("report/soft-404", views.report_soft_404_view, name="report-soft-404"),
     # Restored 2026-06-05: dashboard health widget (view body was kept).
     path("health-score", views.health_score_view, name="health-score"),
     path("tables", views.tables_list_view, name="tables"),

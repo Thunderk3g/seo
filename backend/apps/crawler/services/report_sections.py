@@ -253,6 +253,101 @@ def _compute_broken_links() -> dict:
     }
 
 
+# ── soft-404 with JS rendering (re-classify thin candidates) ────────────────
+# The static word count flags any HTTP-200 page with a near-empty *server* HTML
+# body — but JS-rendered pages (buy-journey SPAs, calculators) are thin in the
+# raw HTML yet full once JavaScript runs. We render each thin candidate in a
+# headless browser and only keep it as a real soft-404 if it's STILL thin after
+# rendering. Rendering is capped + done only for the small candidate set.
+_SOFT404_RENDER_CAP = 120          # max candidates to JS-render per run
+_SOFT404_NAV_TIMEOUT_MS = 20000
+_SOFT404_SETTLE_MS = 2500          # let client-side JS paint after load
+
+
+def soft_404() -> dict:
+    return repo._memoize_on_results("report_soft_404", _compute_soft_404)
+
+
+def _soft_404_candidates() -> list[dict]:
+    out: list[dict] = []
+    for row in repo.iter_results_lean():
+        code = (row.get("status_code") or "").strip()
+        ct = (row.get("content_type") or "").lower()
+        wc = _to_int(row.get("word_count"))
+        if code == "200" and ("html" in ct or ct == "") and wc < SOFT_404_WORDS \
+                and not _is_pdf(row):
+            out.append({"url": row.get("url") or "", "static_words": wc,
+                        "title": row.get("title") or ""})
+    return out
+
+
+def _render_word_counts(urls: list[str]) -> dict[str, int | None]:
+    """Headless-render each URL and return its rendered <body> word count
+    (None if rendering failed). One browser, one page reused across URLs."""
+    out: dict[str, int | None] = {}
+    if not urls:
+        return out
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {u: None for u in urls}  # signal "unverified"
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            ctx = browser.new_context(
+                user_agent=getattr(settings, "user_agent", None) or
+                "Mozilla/5.0 (compatible; BajajCrawler/2.0)"
+            )
+            for u in urls:
+                page = ctx.new_page()
+                try:
+                    page.goto(u, wait_until="domcontentloaded",
+                              timeout=_SOFT404_NAV_TIMEOUT_MS)
+                    page.wait_for_timeout(_SOFT404_SETTLE_MS)
+                    txt = page.inner_text("body")
+                    out[u] = len((txt or "").split())
+                except Exception:  # noqa: BLE001 — a flaky page must not abort the rest
+                    out[u] = None
+                finally:
+                    page.close()
+            browser.close()
+    except Exception:  # noqa: BLE001 — browser launch failure → all unverified
+        for u in urls:
+            out.setdefault(u, None)
+    return out
+
+
+def _compute_soft_404() -> dict:
+    cands = _soft_404_candidates()
+    rendered = _render_word_counts([c["url"] for c in cands[:_SOFT404_RENDER_CAP]])
+    confirmed: list[dict] = []
+    js_pages: list[dict] = []
+    unverified: list[dict] = []
+    for c in cands:
+        rw = rendered.get(c["url"])
+        c["rendered_words"] = rw
+        if rw is None:
+            c["verdict"] = "unverified"
+            unverified.append(c)
+        elif rw < SOFT_404_WORDS:
+            c["verdict"] = "soft_404"          # still thin after JS → real
+            confirmed.append(c)
+        else:
+            c["verdict"] = "js_rendered"        # content appears via JS → not soft-404
+            js_pages.append(c)
+    confirmed.sort(key=lambda x: (x.get("rendered_words") or 0))
+    js_pages.sort(key=lambda x: -(x.get("rendered_words") or 0))
+    return {
+        "candidate_count": len(cands),
+        "rendered_count": min(len(cands), _SOFT404_RENDER_CAP),
+        "confirmed_count": len(confirmed),
+        "threshold": SOFT_404_WORDS,
+        "confirmed": confirmed[:_SAMPLE_CAP],
+        "js_rendered_excluded": js_pages[:_SAMPLE_CAP],
+        "unverified": unverified[:_SAMPLE_CAP],
+    }
+
+
 # ── external links (grouped by domain → URL → source pages) ─────────────────
 _EXT_MAX_DOMAINS = 200
 _EXT_MAX_URLS_PER_DOMAIN = 100

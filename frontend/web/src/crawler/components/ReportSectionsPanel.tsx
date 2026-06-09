@@ -138,14 +138,50 @@ function RedirectsDetail() {
 }
 
 function SoftFourDetail() {
-  const { data: sec } = useAsync(() => crawlerApi.reportSections());
+  const { data } = useAsync(() => crawlerApi.reportSoftFour());
   return (
     <section style={card}>
-      <h2 style={h2}><Icon name="report_problem" /> Soft 404s <small style={{ fontWeight: 400, color: 'var(--muted)' }}>(HTTP 200 but &lt;100 words)</small></h2>
-      {!sec ? <Loading /> : sec.soft_404.count === 0 ? <Empty label="No soft-404 pages." /> : (
-        <SampleTable rows={sec.soft_404.rows} cols={[
-          ['URL', (r) => <a href={r.url} target="_blank" rel="noreferrer">{pathOf(r.url)}</a>],
-          ['Words', (r) => String(r.word_count)], ['Title', (r) => r.title || '—']]} />
+      <h2 style={h2}><Icon name="report_problem" /> Soft 404s <small style={{ fontWeight: 400, color: 'var(--muted)' }}>(JS-verified)</small></h2>
+      <p style={{ fontSize: 12, color: 'var(--muted,#6b7280)', margin: '0 0 12px' }}>
+        A soft 404 returns HTTP&nbsp;200 but has no real content. Thin pages are <strong>headless-rendered</strong>
+        first — only pages that are <em>still</em> empty after JavaScript runs are flagged. JS-rendered pages
+        (calculators, buy-journey flows) are excluded as false positives.
+      </p>
+      {!data ? (
+        <Loading label="Rendering thin candidates in a headless browser… (first run can take a minute)" />
+      ) : (
+        <>
+          <div style={statRow}>
+            {stat(data.confirmed_count, 'Real soft-404s', 'var(--red,#c0392b)')}
+            {stat(data.js_rendered_excluded.length, 'Excluded (JS-rendered)', 'var(--green,#1f9d55)')}
+            {stat(data.candidate_count, 'Thin candidates checked')}
+          </div>
+          <h3 style={{ fontSize: 13, margin: '8px 0 4px', color: 'var(--red,#c0392b)' }}>Confirmed soft-404s (still empty after JS render)</h3>
+          {data.confirmed.length === 0 ? <Empty label="None — every thin page rendered real content via JavaScript. 🎉" /> : (
+            <SampleTable rows={data.confirmed} cols={[
+              ['URL', (r) => <a href={r.url} target="_blank" rel="noreferrer">{pathOf(r.url)}</a>],
+              ['Server words', (r) => String(r.static_words)],
+              ['Rendered words', (r) => r.rendered_words === null ? '—' : String(r.rendered_words)],
+              ['Title', (r) => r.title || '—']]} />
+          )}
+          {data.js_rendered_excluded.length > 0 && (
+            <details style={{ marginTop: 10 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--muted)' }}>
+                {data.js_rendered_excluded.length} excluded — thin server HTML but full once JS renders (not soft-404)
+              </summary>
+              <SampleTable rows={data.js_rendered_excluded} cols={[
+                ['URL', (r) => <a href={r.url} target="_blank" rel="noreferrer">{pathOf(r.url)}</a>],
+                ['Server words', (r) => String(r.static_words)],
+                ['Rendered words', (r) => r.rendered_words === null ? '—' : String(r.rendered_words)]]} />
+            </details>
+          )}
+          {data.unverified.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--amber,#d98e00)' }}>{data.unverified.length} could not be rendered (timeout/error) — review manually</summary>
+              <SampleTable rows={data.unverified} cols={[['URL', (r) => <a href={r.url} target="_blank" rel="noreferrer">{pathOf(r.url)}</a>], ['Server words', (r) => String(r.static_words)]]} />
+            </details>
+          )}
+        </>
       )}
     </section>
   );
@@ -362,7 +398,7 @@ export interface SectionDef {
 export const SECTION_REGISTRY: Record<string, SectionDef> = {
   'broken-links': { key: 'broken-links', title: 'Broken Links', icon: 'link_off', tone: 'var(--red,#c0392b)', blurb: 'Every 404 with proof of the page + anchor that links it.', heavy: true, Detail: BrokenLinksDetail },
   redirects: { key: 'redirects', title: 'Redirects', icon: 'alt_route', tone: 'var(--amber,#d98e00)', blurb: '301 / 3xx / redirect loops.', Detail: RedirectsDetail },
-  'soft-404': { key: 'soft-404', title: 'Soft 404s', icon: 'report_problem', tone: 'var(--amber,#d98e00)', blurb: 'HTTP 200 pages with near-empty bodies.', Detail: SoftFourDetail },
+  'soft-404': { key: 'soft-404', title: 'Soft 404s', icon: 'report_problem', tone: 'var(--amber,#d98e00)', blurb: 'JS-verified: thin even after rendering.', heavy: true, Detail: SoftFourDetail },
   sitemap: { key: 'sitemap', title: 'Sitemap coverage', icon: 'account_tree', tone: 'var(--primary,#0b4ea2)', blurb: 'In-sitemap vs discovered, sitemap errors.', Detail: SitemapDetail },
   robots: { key: 'robots', title: 'robots.txt', icon: 'smart_toy', tone: 'var(--primary,#0b4ea2)', blurb: 'Declared sitemaps + disallow/allow rules.', Detail: RobotsDetail },
   'top-linked': { key: 'top-linked', title: 'Top internal linking', icon: 'hub', tone: 'var(--primary,#0b4ea2)', blurb: 'Most-linked pages + orphans.', Detail: TopLinkedDetail },
@@ -384,7 +420,6 @@ export default function ReportSectionsPanel() {
   function summary(key: string): { count: string; sub: string } | null {
     switch (key) {
       case 'redirects': return sec ? { count: String(sec.redirects.counts['301'] + sec.redirects.counts.other_3xx + sec.redirects.counts.loops), sub: 'redirecting URLs' } : null;
-      case 'soft-404': return sec ? { count: String(sec.soft_404.count), sub: 'soft-404 pages' } : null;
       case 'sitemap': return sec ? { count: sec.sitemap.counts.in_sitemap.toLocaleString(), sub: 'URLs in sitemap' } : null;
       case 'robots': return robots ? { count: String(robots.sitemaps?.length ?? 0), sub: 'sitemaps declared' } : null;
       case 'top-linked': return prank ? { count: prank.summary.orphan_count.toLocaleString(), sub: 'orphan pages' } : null;
