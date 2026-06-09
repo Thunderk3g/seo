@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Icon from '../components/Icon';
+import CrawlHistoryPanel from '../components/CrawlHistoryPanel';
 import PsiStatusBanner from '../components/PsiStatusBanner';
 import ReportSectionsPanel from '../components/ReportSectionsPanel';
 // Index/not-indexed (StatusSections + GscCoverageUploader) deferred — the
@@ -70,6 +71,8 @@ export default function CrawlerReports() {
       <PsiStatusBanner />
 
       <ReportSectionsPanel />
+
+      <CrawlHistoryPanel />
 
       {tables && tables.tables.length > 0 && (
         <details className="cc-raw-tables">

@@ -579,31 +579,39 @@ def _live_page_digest(row) -> dict[str, Any]:
 
 
 def _cwv_for_url(url: str) -> dict[str, Any]:
-    """Single-URL Core Web Vitals via PSI (mobile). Disk-cached 7 days
-    at the adapter, so repeat questions cost zero quota."""
+    """Single-URL Core Web Vitals via PSI — BOTH mobile and desktop
+    (operator rule: single-page crawls report mobile + PC; bulk
+    competitor crawls never run CWV). Disk-cached 7 days at the
+    adapter, so repeat questions cost zero quota."""
     from ..adapters.cwv_psi import AdapterDisabledError, PSIAdapter
     try:
-        rec = PSIAdapter().fetch(url, strategy="mobile")
+        psi = PSIAdapter()
     except AdapterDisabledError as exc:
         return {"available": False, "reason": str(exc)}
-    except Exception as exc:  # noqa: BLE001
-        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}
-    if rec is None or rec.error:
-        return {"available": False,
-                "reason": (rec.error if rec else "no record")[:200]}
-    return {
-        "available": True,
-        "strategy": "mobile",
-        "performance_score": rec.performance_score,
-        "lab": {"lcp_ms": rec.lab_lcp_ms, "cls": rec.lab_cls,
-                "fcp_ms": rec.lab_fcp_ms, "ttfb_ms": rec.lab_ttfb_ms},
-        "field": ({
-            "lcp_ms": rec.field_lcp_ms, "lcp_category": rec.field_lcp_category,
-            "inp_ms": rec.field_inp_ms, "inp_category": rec.field_inp_category,
-            "cls": rec.field_cls, "cls_category": rec.field_cls_category,
-        } if rec.has_field_data else None),
-        "cached": rec.cached,
-    }
+
+    out: dict[str, Any] = {"available": False}
+    for strategy in ("mobile", "desktop"):
+        try:
+            rec = psi.fetch(url, strategy=strategy)
+        except Exception as exc:  # noqa: BLE001
+            out[strategy] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            continue
+        if rec is None or rec.error:
+            out[strategy] = {"error": (rec.error if rec else "no record")[:200]}
+            continue
+        out["available"] = True
+        out[strategy] = {
+            "performance_score": rec.performance_score,
+            "lab": {"lcp_ms": rec.lab_lcp_ms, "cls": rec.lab_cls,
+                    "fcp_ms": rec.lab_fcp_ms, "ttfb_ms": rec.lab_ttfb_ms},
+            "field": ({
+                "lcp_ms": rec.field_lcp_ms, "lcp_category": rec.field_lcp_category,
+                "inp_ms": rec.field_inp_ms, "inp_category": rec.field_inp_category,
+                "cls": rec.field_cls, "cls_category": rec.field_cls_category,
+            } if rec.has_field_data else None),
+            "cached": rec.cached,
+        }
+    return out
 
 
 @_safe

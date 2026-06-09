@@ -35,6 +35,10 @@ urlpatterns = [
     # can switch between the latest Bajaj snapshot and any competitor
     # snapshot the link-walker has populated.
     path("snapshots", views.snapshots_list_view, name="snapshots-list"),
+    # Full crawl history — every snapshot (bajaj/content/competitor/
+    # adhoc) incl. running + stopped, with live page counts and
+    # completion %. Feeds the Reports page history panel.
+    path("history", views.crawl_history_view, name="crawl-history"),
     # Ad-hoc URL crawler — quick fetch + parse of any URL into a
     # singleton "adhoc" snapshot, so the dashboard can route the user
     # to the unified PageDetailPage with full structured data.
