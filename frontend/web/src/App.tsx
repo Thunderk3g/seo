@@ -16,6 +16,7 @@ import SiteTreePage from './crawler/pages/SiteTreePage';
 import CrawlerLogs from './crawler/pages/CrawlerLogs';
 import CrawlerReports from './crawler/pages/CrawlerReports';
 import CrawlerReportDetail from './crawler/pages/CrawlerReportDetail';
+import CrawlerSectionDetail from './crawler/pages/CrawlerSectionDetail';
 import ReportsPage from './pages/ReportsPage';
 import PageExplorerPage from './crawler/pages/PageExplorerPage';
 import CompetitorDetailPage from './pages/CompetitorDetailPage';
@@ -78,6 +79,8 @@ export default function App() {
             <Route path="/crawler/tree" component={SiteTreePage} />
             <Route path="/crawler/logs" component={CrawlerLogs} />
             <Route path="/crawler/reports" component={CrawlerReports} />
+            {/* Section detail — must precede the generic :key table route. */}
+            <Route path="/crawler/reports/section/:key" component={CrawlerSectionDetail} />
             <Route path="/crawler/reports/:key" component={CrawlerReportDetail} />
             {/* Manager-facing XLSX report builder. */}
             <Route path="/reports" component={ReportsPage} />
