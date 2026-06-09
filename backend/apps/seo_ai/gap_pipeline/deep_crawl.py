@@ -406,8 +406,78 @@ def _crawl_domain(
     )
 
 
+def _ours_outcome_from_db(domain: str) -> _CrawlOutcome | None:
+    """Build OUR side of the comparison from the DB instead of live-
+    crawling our own site through the competitor machinery.
+
+    Operator rule (2026-06-10): the competitor pipeline must NOT crawl
+    bajajlifeinsurance.com — the dedicated content crawl (kind='content')
+    and the nightly engine (kind='bajaj') already store everything.
+    This maps the latest own-site snapshot's rows onto CompetitorPage
+    objects so ``_build_profile`` produces the identical profile shape.
+    Returns None when no own-site snapshot exists yet (caller falls
+    back to the old live crawl as a last resort).
+    """
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-started_at").first())
+    if snap is None:
+        return None
+
+    rows = (CrawlerPageResult.objects
+            .filter(snapshot=snap, status_code="200")
+            .values("url", "title", "meta_description", "word_count",
+                    "response_time_ms", "jsonld_types", "headings_json",
+                    "canonical", "meta_robots")[:10_000])
+    pages: list[CompetitorPage] = []
+    for r in rows:
+        headings = r.get("headings_json") or []
+        h1s = [h.get("text") or "" for h in headings if h.get("level") == 1]
+        schema = [str(t) for t in (r.get("jsonld_types") or []) if t]
+        pages.append(CompetitorPage(
+            url=r["url"],
+            status_code=200,
+            title=r.get("title") or "",
+            title_length=len(r.get("title") or ""),
+            meta_description=r.get("meta_description") or "",
+            meta_description_length=len(r.get("meta_description") or ""),
+            h1_texts=[h for h in h1s if h],
+            canonical=r.get("canonical") or "",
+            word_count=int(r.get("word_count") or 0),
+            response_time_ms=int(r.get("response_time_ms") or 0),
+            h2_count=sum(1 for h in headings if h.get("level") == 2),
+            h3_count=sum(1 for h in headings if h.get("level") == 3),
+            schema_types=schema,
+            has_schema_org=bool(schema),
+            meta_robots=r.get("meta_robots") or "",
+        ))
+    if not pages:
+        return None
+
+    bare = re.sub(r"^www\d?\.", "", (domain or "").lower()).split("/")[0]
+    timeout = int(settings.COMPETITOR.get("timeout_sec", 15))
+    commercial_signals = {
+        "pricing": _head_probe(f"https://{bare}/pricing", timeout=timeout),
+        "llms_txt": _head_probe(f"https://{bare}/llms.txt", timeout=timeout),
+        "pricing_md": _head_probe(f"https://{bare}/pricing.md", timeout=timeout),
+    }
+    profile = _build_profile(pages=pages, commercial_signals=commercial_signals)
+    profile["source"] = f"db_snapshot:{snap.kind}:{snap.id}"
+    return _CrawlOutcome(
+        sitemap_url_count=len(pages),
+        pages_attempted=len(pages),
+        pages_ok=len(pages),
+        profile=profile,
+    )
+
+
 def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:
-    """Run stage 5. Crawls top-10 competitors + our own domain."""
+    """Run stage 5. Crawls top-10 competitors; OUR side comes from the
+    DB (latest content/bajaj snapshot) — never a live self-crawl."""
     competitors = list(
         GapCompetitor.objects.filter(run=run).order_by("rank")
     )
@@ -430,16 +500,25 @@ def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:
     GapDeepCrawl.objects.filter(run=run).delete()
     total_pages = 0
 
-    # Crawl us first so the UI can render our profile in the same
+    # OUR side first so the UI can render our profile in the same
     # panel even if the competitor loop times out partway through.
+    # Built from the DB (content/bajaj snapshot) — the competitor
+    # machinery must never crawl our own domain. Live self-crawl only
+    # as a last resort when no own-site snapshot exists at all.
     try:
-        ours = _crawl_domain(
-            domain=domain,
-            sitemap_adapter=sitemap_adapter,
-            crawler=crawler,
-            pages_per_domain=pages_per_domain,
-            timeout=timeout,
-        )
+        ours = _ours_outcome_from_db(domain)
+        if ours is None:
+            logger.warning(
+                "deep_crawl: no own-site snapshot in DB — falling back "
+                "to a live self-crawl (run the Content crawl to avoid this)",
+            )
+            ours = _crawl_domain(
+                domain=domain,
+                sitemap_adapter=sitemap_adapter,
+                crawler=crawler,
+                pages_per_domain=pages_per_domain,
+                timeout=timeout,
+            )
         GapDeepCrawl.objects.create(
             run=run,
             competitor=None,

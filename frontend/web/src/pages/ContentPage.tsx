@@ -135,7 +135,33 @@ function ContentCrawlButton() {
   );
 }
 
-function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: string }) {
+/** URL-safe base64 of a page URL — matches Django's urlsafe_b64 route
+ *  param on /crawler/pages/<snapshotId>/<b64>. */
+function b64url(s: string): string {
+  return btoa(unescape(encodeURIComponent(s)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function StatChip({ label, value }: { label: string; value: number | null | undefined }) {
+  if (value === null || value === undefined) return null;
+  return (
+    <span style={{ fontSize: 11, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+      {label} <b style={{ color: BAJAJ_NAVY }}>{value.toLocaleString()}</b>
+    </span>
+  );
+}
+
+function PageBlock({
+  page,
+  clusterId,
+  snapshotId,
+}: {
+  page: ContentPageBlock;
+  clusterId: string;
+  snapshotId?: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div
@@ -182,6 +208,26 @@ function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: str
       </button>
       {open && (
         <div style={{ borderTop: '1px solid #eef2ff', padding: '6px 14px 12px' }}>
+          {/* Per-page structure report — counts from the stored crawl
+              row, plus the deep link to the full unified page report
+              (all links, images, schema, body). */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0 4px' }}>
+            <StatChip label="H1" value={page.h1} />
+            <StatChip label="H2" value={page.h2} />
+            <StatChip label="H3" value={page.h3} />
+            <StatChip label="Internal links" value={page.links_internal} />
+            <StatChip label="External links" value={page.links_external} />
+            <StatChip label="Images" value={page.images} />
+            <StatChip label="Words" value={page.words} />
+            {snapshotId && (
+              <a
+                href={`/crawler/pages/${snapshotId}/${b64url(page.url)}`}
+                style={{ fontSize: 11.5, fontWeight: 700, color: '#1e40af', textDecoration: 'none', padding: '1px 4px' }}
+              >
+                Full page report →
+              </a>
+            )}
+          </div>
           {page.sections.map((s, i) => (
             <div
               key={`${clusterId}-${page.key}-${i}`}
@@ -233,7 +279,7 @@ function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: str
   );
 }
 
-function ClusterSection({ cluster }: { cluster: ContentCluster }) {
+function ClusterSection({ cluster, snapshotId }: { cluster: ContentCluster; snapshotId?: string }) {
   return (
     <section style={{ marginTop: 28 }}>
       <h2
@@ -267,7 +313,7 @@ function ClusterSection({ cluster }: { cluster: ContentCluster }) {
         <div style={{ fontSize: 13, color: '#475569', margin: '6px 0 10px' }}>{cluster.intro}</div>
       )}
       {cluster.pages.map((p) => (
-        <PageBlock key={`${cluster.id}-${p.key}`} page={p} clusterId={cluster.id} />
+        <PageBlock key={`${cluster.id}-${p.key}`} page={p} clusterId={cluster.id} snapshotId={snapshotId} />
       ))}
     </section>
   );
@@ -378,7 +424,7 @@ export default function ContentPage() {
             ))}
           </div>
           {visibleClusters.map((c) => (
-            <ClusterSection key={c.id} cluster={c} />
+            <ClusterSection key={c.id} cluster={c} snapshotId={data?.snapshot_id} />
           ))}
           {q && visibleClusters.length === 0 && (
             <div className="seo-empty">No crawled page matches “{query}”.</div>

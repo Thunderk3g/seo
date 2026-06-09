@@ -14,6 +14,13 @@ export interface ContentPageBlock {
   name: string;
   url: string;
   words: number;
+  // Per-page structure stats (mini report) — present on live-crawl data.
+  h1?: number;
+  h2?: number;
+  h3?: number;
+  links_internal?: number | null;
+  links_external?: number | null;
+  images?: number | null;
   sections: ContentSection[];
 }
 
@@ -31,6 +38,9 @@ export interface ContentClustersResponse {
   available: boolean;
   brand?: string;
   note?: string;
+  // Snapshot serving the clusters — drives /crawler/pages/<id>/<b64> links.
+  snapshot_id?: string;
+  snapshot_kind?: string;
   clusters?: ContentCluster[];
   error?: string;
 }

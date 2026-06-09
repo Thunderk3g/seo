@@ -243,13 +243,9 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
                 continue
             secs = matched if matched else headings[:6]
             clustered_urls.add(r["url"])
-            pages.append({
-                "key": r["url"],
-                "name": _content_page_label(r),
-                "url": r["url"],
-                "words": r.get("word_count") or 0,
-                "sections": _sections(secs),
-            })
+            entry = _cluster_page_entry(r)
+            entry["sections"] = _sections(secs)
+            pages.append(entry)
         if not pages:
             continue
         pages.sort(key=lambda p: -p["words"])
@@ -267,13 +263,7 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
     # with no title/headings (operator rule: segregate, never remove).
     leftovers = [r for r in rows if r["url"] not in clustered_urls]
     if leftovers:
-        pages = [{
-            "key": r["url"],
-            "name": _content_page_label(r),
-            "url": r["url"],
-            "words": r.get("word_count") or 0,
-            "sections": _sections((r.get("headings_json") or [])[:6]),
-        } for r in leftovers]
+        pages = [_cluster_page_entry(r) for r in leftovers]
         pages.sort(key=lambda p: -p["words"])
         clusters.append({
             "id": "uncategorised",
@@ -290,12 +280,23 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
 
 
 def _cluster_page_entry(r: dict) -> dict:
-    headings = (r.get("headings_json") or [])[:6]
+    """One cluster page row — the mini per-page report: heading counts,
+    internal/external link counts and image count ride along (sourced
+    from jsonb_array_length annotations on the queryset when present)
+    so the UI shows page structure without opening the detail view."""
+    all_headings = r.get("headings_json") or []
+    headings = all_headings[:6]
     return {
         "key": r["url"],
         "name": _content_page_label(r),
         "url": r["url"],
         "words": r.get("word_count") or 0,
+        "h1": sum(1 for h in all_headings if h.get("level") == 1),
+        "h2": sum(1 for h in all_headings if h.get("level") == 2),
+        "h3": sum(1 for h in all_headings if h.get("level") == 3),
+        "links_internal": r.get("_il"),
+        "links_external": r.get("_el"),
+        "images": r.get("_img"),
         "sections": [{
             "level": h.get("level", 2),
             "tag": "INTRO" if h.get("level") == 0 else f"H{h.get('level', 2)}",
@@ -304,6 +305,28 @@ def _cluster_page_entry(r: dict) -> dict:
             "text": "",
         } for h in headings],
     }
+
+
+def _annotated_cluster_rows(qs) -> list[dict]:
+    """Fetch cluster rows with per-page link/image counts computed in
+    Postgres (jsonb_array_length) — no megabyte JSON decode in Python.
+    Falls back to plain rows if any column holds a non-array value."""
+    base_fields = ("url", "title", "headings_json", "word_count")
+    try:
+        from django.db.models import Func, IntegerField
+
+        class _JLen(Func):
+            function = "jsonb_array_length"
+            output_field = IntegerField()
+
+        return list(
+            qs.annotate(_il=_JLen("internal_links_json"),
+                        _el=_JLen("external_links_json"),
+                        _img=_JLen("images_json"))
+            .values(*base_fields, "_il", "_el", "_img")
+        )
+    except Exception:  # noqa: BLE001 — sqlite dev DB / mixed shapes
+        return list(qs.values(*base_fields))
 
 
 def _load_competitor_cluster_spec(domain: str) -> dict | None:
@@ -493,10 +516,8 @@ def _inhouse_clusters_from_crawl():
             .order_by("-started_at").first())
     if snap is None:
         return None
-    rows = list(
-        CrawlerPageResult.objects
-        .filter(snapshot=snap, status_code="200")
-        .values("url", "title", "headings_json", "word_count")
+    rows = _annotated_cluster_rows(
+        CrawlerPageResult.objects.filter(snapshot=snap, status_code="200")
     )
     if not rows:
         return None
@@ -510,6 +531,9 @@ def _inhouse_clusters_from_crawl():
         "available": True,
         "brand": "Bajaj Life Insurance",
         "source": "crawl",
+        # For "Full page report" links: /crawler/pages/<snapshot_id>/<b64>.
+        "snapshot_id": str(snap.id),
+        "snapshot_kind": snap.kind,
         "note": (f"Live content clustering over the latest crawl "
                  f"({len(rows)} pages · {started}). Topic assignment is deterministic "
                  f"keyword rules — no embeddings, no env LLM."),
@@ -649,10 +673,7 @@ def competitor_content_clusters(request: Request, domain: str):
 
     qs = CrawlerPageResult.objects.filter(snapshot=snap)
     pages_crawled = qs.count()
-    rows = list(
-        qs.filter(status_code="200")
-        .values("url", "title", "headings_json", "word_count")
-    )
+    rows = _annotated_cluster_rows(qs.filter(status_code="200"))
 
     # Segregation follows THEIR page structure, not our topic rules:
     #   1. Claude-Code-generated per-domain spec (written by the smart
