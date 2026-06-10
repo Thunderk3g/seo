@@ -137,6 +137,52 @@ def build_single_url_xlsx(audit: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+def build_site_audit_xlsx(audit: dict[str, Any]) -> bytes:
+    """Whole-site aggregate audit (output of ``audit_site``): a Findings
+    sheet (issue · count · drawback · recommendation) plus one sheet per
+    issue listing affected sample URLs."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Site audit"
+    ws["A1"] = "Technical SEO Audit — full website"
+    ws["A1"].font = _TITLE
+    snap = audit.get("snapshot", {})
+    ws["A2"] = (f"{snap.get('kind')} snapshot · {snap.get('pages')} pages · "
+                f"score {audit.get('site_score')}/100 · "
+                f"{audit['counts']['critical']} critical / "
+                f"{audit['counts']['warning']} warning / "
+                f"{audit['counts']['notice']} notice")
+    ws["A2"].font = _LABEL
+
+    _header_row(ws, 4, ["Severity", "Issue", "Count", "Drawback", "Recommendation"])
+    for i, f in enumerate(audit.get("findings", []), 5):
+        ws.cell(row=i, column=1, value=f.get("severity"))
+        ws.cell(row=i, column=2, value=f.get("check"))
+        ws.cell(row=i, column=3, value=f.get("count"))
+        ws.cell(row=i, column=4, value=f.get("detail")).alignment = _WRAP
+        ws.cell(row=i, column=5, value=f.get("recommendation")).alignment = _WRAP
+        fill = _SEV_FILL.get(f.get("severity"))
+        if fill:
+            ws.cell(row=i, column=1).fill = fill
+    _autofit(ws, [12, 20, 8, 55, 55])
+
+    # One sheet per issue with sample affected URLs.
+    for f in audit.get("findings", []):
+        samples = f.get("samples") or []
+        if not samples:
+            continue
+        name = (f.get("check") or "issue")[:28]
+        ws2 = wb.create_sheet(name)
+        _header_row(ws2, 1, ["Affected (sample)"])
+        for j, u in enumerate(samples, 2):
+            ws2.cell(row=j, column=1, value=u)
+        _autofit(ws2, [100])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def build_site_xlsx(rows: list[dict], *, snapshot_label: str = "") -> bytes:
     """Whole-site technical rollup: one row per audited page with its
     score + issue counts. ``rows`` = list of audit_url() outputs."""

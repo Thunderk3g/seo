@@ -65,6 +65,12 @@ def _row_from_db(url: str):
             .first())
 
 
+_NON_DESCRIPTIVE_ANCHORS = {
+    "click here", "here", "read more", "more", "link", "this", "click",
+    "learn more", "details", "view", "see more", "continue",
+}
+
+
 def _structure_from_row(row) -> dict[str, Any]:
     headings = list(row.headings_json or [])
     internal = list(row.internal_links_json or [])
@@ -75,10 +81,13 @@ def _structure_from_row(row) -> dict[str, Any]:
         by_level.setdefault(int(h.get("level") or 0), []).append(
             (h.get("text") or "")[:200])
     missing_alt = [i for i in images if not (i.get("alt") or "").strip()]
+    # Non-descriptive internal anchors (Lighthouse "link text" check).
+    vague = [l for l in internal
+             if (l.get("anchor") or "").strip().lower() in _NON_DESCRIPTIVE_ANCHORS]
     return {
         "url": row.url,
         "final_url": row.final_url or row.url,
-        "status_code": row.status_code,
+        "status_code": str(row.status_code or ""),
         "response_time_ms": row.response_time_ms,
         "title": row.title or "",
         "meta_description": row.meta_description or "",
@@ -91,9 +100,22 @@ def _structure_from_row(row) -> dict[str, Any]:
         "h2_outline": by_level.get(2, [])[:25],
         "internal_links": internal,
         "external_links": external,
+        "vague_anchors": vague,
         "images": images,
         "images_missing_alt": missing_alt,
+        "image_broken_count": int(getattr(row, "image_broken_count", 0) or 0),
+        "image_oversized_count": int(getattr(row, "image_oversized_count", 0) or 0),
         "schema_types": list(row.jsonld_types or []),
+        "jsonld_count": int(getattr(row, "jsonld_count", 0) or 0),
+        # Redirect / indexability / hreflang — already captured by the crawler.
+        "redirect_hops": int(getattr(row, "redirect_hops", 0) or 0),
+        "redirect_loop": bool(getattr(row, "redirect_loop", False)),
+        "redirect_chain": list(getattr(row, "redirect_chain", []) or []),
+        "indexed_status": getattr(row, "indexed_status", "") or "",
+        "indexability_reason": getattr(row, "indexability_reason", "") or "",
+        "hreflang_count": int(getattr(row, "hreflang_count", 0) or 0),
+        "hreflang_invalid_codes": list(getattr(row, "hreflang_invalid_codes", []) or []),
+        "hreflang_has_x_default": bool(getattr(row, "hreflang_has_x_default", False)),
     }
 
 
@@ -197,6 +219,36 @@ def _cwv_findings(cwv: dict) -> list[dict]:
 def _structure_findings(s: dict) -> list[dict]:
     out: list[dict] = []
 
+    # HTTP status (Lighthouse: successful HTTP status code)
+    sc = (s.get("status_code") or "").strip()
+    if sc and not sc.startswith("2"):
+        sev = "critical" if sc.startswith(("4", "5")) else "warning"
+        out.append(_finding("http_status", "fail", sev,
+            f"Page returns HTTP {sc}, not 200.",
+            "A rankable page must return 200. Fix the error or remove the URL "
+            "from internal links/sitemap."))
+
+    # Redirect chain / loop
+    if s.get("redirect_loop"):
+        out.append(_finding("redirect_loop", "fail", "critical",
+            "Redirect loop detected — the URL never resolves.",
+            "Break the loop; point the URL at a single final 200 destination."))
+    elif s.get("redirect_hops", 0) > 1:
+        out.append(_finding("redirect_chain", "warn", "warning",
+            f"Redirect chain of {s['redirect_hops']} hops before the final URL.",
+            "Collapse to a single 301 hop — chains waste crawl budget and leak "
+            "link equity."))
+
+    # Indexability (Lighthouse: page is indexable)
+    idx = (s.get("indexed_status") or "").lower()
+    reason = s.get("indexability_reason") or ""
+    if idx in ("not_indexed", "noindex", "excluded", "canonicalized"):
+        sev = "critical" if idx in ("noindex", "not_indexed") else "notice"
+        out.append(_finding("indexability", "fail" if sev == "critical" else "warn",
+            sev, f"Page is {idx}" + (f" ({reason})" if reason else "") + ".",
+            "If this page should rank, remove the noindex/blocking signal or fix "
+            "the canonical so it points to itself."))
+
     # Title
     title = s["title"].strip()
     if not title:
@@ -248,6 +300,42 @@ def _structure_findings(s: dict) -> list[dict]:
             f"{missing} of {total_img} images ({pct}%) have no alt text.",
             "Add descriptive alt text to every meaningful image (decorative "
             "images may use empty alt). Helps accessibility + image SEO."))
+
+    # Broken images
+    if s.get("image_broken_count", 0) > 0:
+        out.append(_finding("image_broken", "fail", "warning",
+            f"{s['image_broken_count']} broken image(s) (failed to load).",
+            "Fix or remove the broken <img> sources — broken images hurt UX and "
+            "signal neglect to crawlers."))
+
+    # Oversized images
+    if s.get("image_oversized_count", 0) > 0:
+        out.append(_finding("image_oversized", "warn", "notice",
+            f"{s['image_oversized_count']} oversized image(s) (> 100 KB).",
+            "Compress and serve modern formats (WebP/AVIF) — large images slow "
+            "LCP and waste bandwidth on mobile."))
+
+    # Hreflang validity (Lighthouse: hreflang is valid)
+    if s.get("hreflang_invalid_codes"):
+        codes = ", ".join(str(c) for c in s["hreflang_invalid_codes"][:6])
+        out.append(_finding("hreflang", "fail", "warning",
+            f"Invalid hreflang code(s): {codes}.",
+            "Use valid ISO language(-region) codes; invalid hreflang is ignored "
+            "and can mis-serve international users."))
+    elif s.get("hreflang_count", 0) > 0 and not s.get("hreflang_has_x_default"):
+        out.append(_finding("hreflang", "warn", "notice",
+            "Hreflang set has no x-default entry.",
+            "Add an x-default hreflang for users whose language/region you don't "
+            "explicitly target."))
+
+    # Non-descriptive link text (Lighthouse: links have descriptive text)
+    vague = s.get("vague_anchors") or []
+    if len(vague) >= 3:
+        out.append(_finding("link_text", "warn", "notice",
+            f"{len(vague)} internal link(s) use non-descriptive anchor text "
+            "(e.g. 'click here', 'read more').",
+            "Use descriptive, keyword-relevant anchor text so users and crawlers "
+            "understand the destination."))
 
     # Canonical
     if not s["canonical"].strip():
@@ -305,8 +393,14 @@ def _score(findings: list[dict]) -> int:
 
 
 def audit_url(url: str, *, check_broken_links: bool = False,
-              include_cwv: bool = True) -> dict[str, Any]:
-    """Full technical audit of one URL. DB-first, live-crawl on miss."""
+              include_cwv: bool = True, fresh: bool = False) -> dict[str, Any]:
+    """Full technical audit of one URL.
+
+    DB-first by default; ``fresh=True`` forces a live re-crawl so the
+    answer is never stale. If the URL isn't in the DB it is always
+    live-crawled. Live crawl falls back to the DB row when it fails, so
+    the audit degrades instead of erroring.
+    """
     raw = (url or "").strip()
     if not raw:
         return {"ok": False, "error": "url required"}
@@ -314,16 +408,21 @@ def audit_url(url: str, *, check_broken_links: bool = False,
         raw = "https://" + raw
 
     source = "db"
-    row = _row_from_db(raw)
+    row = None if fresh else _row_from_db(raw)
     if row is None:
-        # Not in the DB → live-crawl it now.
+        # Not in the DB (or fresh requested) → live-crawl it now.
         from apps.crawler.views import CrawlLiveError, crawl_live
         try:
             _snap, row = crawl_live(raw)
             source = "live_crawl"
         except CrawlLiveError as exc:
-            return {"ok": False, "error": f"crawl failed: {exc}"[:300],
-                    "status_code": exc.status_code}
+            # Live crawl failed — fall back to a stored row if we have one
+            # so the user still gets an answer (flagged as possibly stale).
+            row = _row_from_db(raw)
+            if row is None:
+                return {"ok": False, "error": f"crawl failed: {exc}"[:300],
+                        "status_code": exc.status_code}
+            source = "db_stale_fallback"
 
     s = _structure_from_row(row)
     findings = _structure_findings(s)
@@ -377,6 +476,182 @@ def audit_url(url: str, *, check_broken_links: bool = False,
             "warning": sum(1 for f in findings if f["severity"] == "warning"),
             "notice": sum(1 for f in findings if f["severity"] == "notice"),
         },
+    }
+
+
+def audit_site(*, snapshot=None, limit: int = 5000) -> dict[str, Any]:
+    """Whole-SITE technical audit over a crawl snapshot's stored pages.
+
+    Aggregate checks that only make sense across the whole site —
+    duplicate titles/meta/H1, indexability breakdown, site-wide totals
+    of broken/oversized images, redirect chains, thin content, missing
+    metadata, pages without schema, hreflang errors. Reads only scalar
+    DB columns (no per-page JSON decode, no CWV) so it scales to the
+    full site fast. Returns site-level findings + per-issue sample URLs.
+    """
+    from collections import Counter
+
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+
+    snap = snapshot
+    if snap is None:
+        snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
+                .annotate(n=Count("pages")).filter(n__gt=0)
+                .order_by("-n", "-started_at").first())
+    if snap is None:
+        return {"ok": False, "error": "no own-site crawl with pages yet"}
+
+    rows = list(CrawlerPageResult.objects.filter(snapshot=snap)
+                .values("url", "title", "meta_description", "status_code",
+                        "indexed_status", "indexability_reason", "word_count",
+                        "redirect_hops", "redirect_loop", "image_broken_count",
+                        "image_oversized_count", "image_missing_alt",
+                        "image_count", "hreflang_invalid_codes", "jsonld_count")[:limit])
+    total = len(rows)
+    if not total:
+        return {"ok": False, "error": "snapshot has no pages"}
+
+    ok200 = [r for r in rows if str(r.get("status_code") or "").startswith("2")]
+    findings: list[dict] = []
+
+    def _samples(pred, n=15):
+        return [r["url"] for r in rows if pred(r)][:n]
+
+    # Status-code errors
+    errs = [r for r in rows if str(r.get("status_code") or "")[:1] in ("4", "5")]
+    if errs:
+        findings.append({**_finding("http_errors", "fail", "critical",
+            f"{len(errs)} page(s) return 4xx/5xx errors.",
+            "Fix or de-link the error URLs; remove them from the sitemap."),
+            "count": len(errs), "samples": [r["url"] for r in errs[:15]]})
+
+    # Redirect chains / loops
+    loops = [r for r in rows if r.get("redirect_loop")]
+    chains = [r for r in rows if (r.get("redirect_hops") or 0) > 1]
+    if loops:
+        findings.append({**_finding("redirect_loops", "fail", "critical",
+            f"{len(loops)} redirect loop(s).",
+            "Point each looping URL at a single final 200 destination."),
+            "count": len(loops), "samples": [r["url"] for r in loops[:15]]})
+    if chains:
+        findings.append({**_finding("redirect_chains", "warn", "warning",
+            f"{len(chains)} page(s) sit behind multi-hop redirect chains.",
+            "Collapse each chain to one 301 hop."),
+            "count": len(chains), "samples": [r["url"] for r in chains[:15]]})
+
+    # Indexability breakdown
+    idx_counts = Counter((r.get("indexed_status") or "unknown") for r in rows)
+    noindex = idx_counts.get("noindex", 0) + idx_counts.get("not_indexed", 0)
+    canonicalized = idx_counts.get("canonicalized", 0)
+    if noindex:
+        findings.append({**_finding("noindex_pages", "warn", "warning",
+            f"{noindex} page(s) are noindex / not indexable.",
+            "Confirm each is intentionally excluded; remove noindex from any "
+            "page that should rank."),
+            "count": noindex,
+            "samples": _samples(lambda r: (r.get("indexed_status") or "") in ("noindex", "not_indexed"))})
+
+    # Duplicate titles
+    title_counts = Counter((r.get("title") or "").strip()
+                           for r in ok200 if (r.get("title") or "").strip())
+    dup_titles = {t: c for t, c in title_counts.items() if c > 1}
+    if dup_titles:
+        dup_pages = sum(dup_titles.values())
+        findings.append({**_finding("duplicate_titles", "warn", "warning",
+            f"{len(dup_titles)} title(s) are shared by {dup_pages} pages.",
+            "Make every page's <title> unique — duplicates dilute relevance and "
+            "confuse SERP selection."),
+            "count": len(dup_titles),
+            "samples": [f"{c}× — {t[:70]}" for t, c in
+                        sorted(dup_titles.items(), key=lambda kv: -kv[1])[:15]]})
+
+    # Duplicate meta descriptions
+    md_counts = Counter((r.get("meta_description") or "").strip()
+                        for r in ok200 if (r.get("meta_description") or "").strip())
+    dup_md = {m: c for m, c in md_counts.items() if c > 1}
+    if dup_md:
+        findings.append({**_finding("duplicate_meta", "warn", "notice",
+            f"{len(dup_md)} meta description(s) are reused across pages.",
+            "Write a unique meta description per page."),
+            "count": len(dup_md),
+            "samples": [f"{c}× — {m[:70]}" for m, c in
+                        sorted(dup_md.items(), key=lambda kv: -kv[1])[:10]]})
+
+    # Missing title / meta
+    no_title = [r for r in ok200 if not (r.get("title") or "").strip()]
+    no_md = [r for r in ok200 if not (r.get("meta_description") or "").strip()]
+    if no_title:
+        findings.append({**_finding("missing_title", "fail", "critical",
+            f"{len(no_title)} page(s) have no title.",
+            "Add a unique title to every indexable page."),
+            "count": len(no_title), "samples": [r["url"] for r in no_title[:15]]})
+    if no_md:
+        findings.append({**_finding("missing_meta", "warn", "warning",
+            f"{len(no_md)} page(s) have no meta description.",
+            "Add a meta description so Google doesn't autogenerate the snippet."),
+            "count": len(no_md), "samples": [r["url"] for r in no_md[:15]]})
+
+    # Thin content
+    thin = [r for r in ok200 if (r.get("word_count") or 0) < THIN_WORDS]
+    if thin:
+        findings.append({**_finding("thin_content", "warn", "warning",
+            f"{len(thin)} page(s) are thin (< {THIN_WORDS} words).",
+            "Expand or consolidate thin pages; consider noindex for utility pages."),
+            "count": len(thin), "samples": [r["url"] for r in thin[:15]]})
+
+    # Pages without schema
+    no_schema = [r for r in ok200 if (r.get("jsonld_count") or 0) == 0]
+    if no_schema:
+        findings.append({**_finding("missing_schema", "warn", "notice",
+            f"{len(no_schema)} page(s) have no JSON-LD structured data.",
+            "Add relevant schema.org markup for rich results + AI extraction."),
+            "count": len(no_schema), "samples": [r["url"] for r in no_schema[:15]]})
+
+    # Image issues site-wide
+    broken_img = sum(r.get("image_broken_count") or 0 for r in rows)
+    oversized_img = sum(r.get("image_oversized_count") or 0 for r in rows)
+    missing_alt = sum(r.get("image_missing_alt") or 0 for r in rows)
+    if broken_img:
+        findings.append({**_finding("broken_images", "warn", "warning",
+            f"{broken_img} broken image(s) across the site.",
+            "Fix or remove broken <img> sources."),
+            "count": broken_img,
+            "samples": _samples(lambda r: (r.get("image_broken_count") or 0) > 0)})
+    if missing_alt:
+        findings.append({**_finding("images_missing_alt", "warn", "notice",
+            f"{missing_alt} image(s) site-wide have no alt text.",
+            "Add descriptive alt text to meaningful images."),
+            "count": missing_alt,
+            "samples": _samples(lambda r: (r.get("image_missing_alt") or 0) > 0)})
+
+    # Hreflang errors
+    hl_err = [r for r in rows if r.get("hreflang_invalid_codes")]
+    if hl_err:
+        findings.append({**_finding("hreflang_invalid", "warn", "warning",
+            f"{len(hl_err)} page(s) carry invalid hreflang codes.",
+            "Use valid ISO language(-region) codes."),
+            "count": len(hl_err), "samples": [r["url"] for r in hl_err[:15]]})
+
+    crit = sum(1 for f in findings if f["severity"] == "critical")
+    warn = sum(1 for f in findings if f["severity"] == "warning")
+    notice = sum(1 for f in findings if f["severity"] == "notice")
+    site_score = max(0, 100 - crit * 12 - warn * 6 - notice * 2)
+
+    return {
+        "ok": True,
+        "snapshot": {"id": str(snap.id), "kind": snap.kind,
+                     "started_at": snap.started_at.isoformat() if snap.started_at else "",
+                     "pages": total, "pages_200": len(ok200)},
+        "site_score": site_score,
+        "indexability": dict(idx_counts),
+        "totals": {"broken_images": broken_img, "oversized_images": oversized_img,
+                   "images_missing_alt": missing_alt,
+                   "duplicate_titles": len(dup_titles),
+                   "redirect_chains": len(chains), "errors": len(errs)},
+        "counts": {"critical": crit, "warning": warn, "notice": notice},
+        "findings": findings,
     }
 
 

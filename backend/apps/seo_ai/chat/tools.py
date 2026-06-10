@@ -757,7 +757,73 @@ def compare_page_structures(
 
 
 @_safe
-def technical_audit_url(url: str, check_broken_links: bool = False) -> dict[str, Any]:
+def get_page_links(url: str, kind: str = "internal", fresh: bool = True) -> dict[str, Any]:
+    """List the actual links on a page (live-crawls by default so the
+    list is current). kind='internal' (default), 'external', or 'all'.
+    Returns each link's anchor text, URL and zone (header/nav/content/
+    footer). Use when the user asks 'give me the internal links of this
+    page', 'what does this page link to', 'external links on X'."""
+    from ..services.technical_audit import audit_url
+    a = audit_url(url, include_cwv=False, fresh=bool(fresh))
+    if not a.get("ok"):
+        # audit_url already DB-falls-back; surface its error.
+        from apps.crawler.views import CrawlLiveError, crawl_live
+        try:
+            _s, row = crawl_live(url)
+        except CrawlLiveError as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        internal = list(row.internal_links_json or [])
+        external = list(row.external_links_json or [])
+    else:
+        # Re-derive from the same source the audit used.
+        from ..services.technical_audit import _row_from_db
+        row = _row_from_db(a["url"])
+        internal = list(row.internal_links_json or []) if row else []
+        external = list(row.external_links_json or []) if row else []
+
+    def _fmt(links: list[dict], cap: int = 60) -> list[dict]:
+        return [{"anchor": (l.get("anchor") or "")[:80],
+                 "href": (l.get("href") or "")[:200],
+                 "zone": l.get("zone") or "content"} for l in links[:cap]]
+
+    out: dict[str, Any] = {"ok": True, "url": a.get("url", url),
+                           "source": a.get("source", "live_crawl"),
+                           "internal_count": len(internal),
+                           "external_count": len(external)}
+    k = (kind or "internal").lower()
+    if k in ("internal", "all"):
+        out["internal_links"] = _fmt(internal)
+    if k in ("external", "all"):
+        out["external_links"] = _fmt(external)
+    if len(internal) > 60 or len(external) > 60:
+        out["note"] = ("Showing up to 60 per type. For the full list, run a "
+                       "technical audit export (XLSX) of this URL.")
+    return out
+
+
+@_safe
+def technical_audit_site() -> dict[str, Any]:
+    """Whole-WEBSITE technical audit over the latest own-site crawl —
+    aggregate issues across all pages: duplicate titles/meta, indexability
+    breakdown, redirect chains, broken/oversized images, thin content,
+    missing titles/descriptions, pages without schema, hreflang errors —
+    each with a count, the drawback, a recommendation, and sample
+    affected URLs. Use when the user asks 'audit the whole site', 'site-
+    wide technical issues', 'duplicate titles across the site', 'how many
+    pages are noindex'."""
+    from ..services.technical_audit import audit_site
+    a = audit_site()
+    if not a.get("ok"):
+        return a
+    # Trim sample lists so the whole rollup survives the 4k tool cap.
+    for f in a.get("findings", []):
+        f["samples"] = (f.get("samples") or [])[:5]
+    return a
+
+
+@_safe
+def technical_audit_url(url: str, check_broken_links: bool = False,
+                        fresh: bool = False) -> dict[str, Any]:
     """FULL technical SEO audit of ONE URL (ours, a competitor's, or any
     URL). DB-first: if the URL was already crawled it audits the stored
     data; if not, it LIVE-CRAWLS the page right now. Runs a live Core Web
@@ -771,9 +837,11 @@ def technical_audit_url(url: str, check_broken_links: bool = False) -> dict[str,
     the page's links for 4xx/5xx (slower). Use when the user pastes a URL
     and asks 'technical audit', 'check this page', 'is this page SEO-
     healthy', 'LCP of this page', 'which images miss alt', or 'broken
-    links on this page'."""
+    links on this page'. Set fresh=true to force a live re-crawl (ignore
+    stored data) so the audit reflects the page as it is right now."""
     from ..services.technical_audit import audit_url
-    return audit_url(url, check_broken_links=bool(check_broken_links))
+    return audit_url(url, check_broken_links=bool(check_broken_links),
+                     fresh=bool(fresh))
 
 
 @_safe
@@ -2230,6 +2298,8 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "compare_page_structures": compare_page_structures,
     "technical_audit_url": technical_audit_url,
     "compare_technical_audit": compare_technical_audit,
+    "technical_audit_site": technical_audit_site,
+    "get_page_links": get_page_links,
 }
 
 
@@ -2306,8 +2376,13 @@ CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
        {"our_url": _STR, "competitor_urls": {"type": "array", "items": _STR}},
        required=["our_url", "competitor_urls"]),
     _f("technical_audit_url",
-       "FULL technical SEO audit of ONE URL (DB-first, live-crawls if missing): live CWV (mobile+desktop), title/meta/H1/alt/canonical/schema/HTTPS checks vs SEO guidelines, 0-100 score + findings with recommendations. check_broken_links=true also probes links for 4xx/5xx.",
-       {"url": _STR, "check_broken_links": _BOOL}, required=["url"]),
+       "FULL technical SEO audit of ONE URL (DB-first, live-crawls if missing): live CWV (mobile+desktop), title/meta/H1/alt/canonical/schema/HTTPS/redirects/hreflang/indexability checks, 0-100 score + findings with recommendations. check_broken_links=true probes links for 4xx/5xx; fresh=true forces a live re-crawl.",
+       {"url": _STR, "check_broken_links": _BOOL, "fresh": _BOOL}, required=["url"]),
+    _f("technical_audit_site",
+       "Whole-WEBSITE technical audit over the latest own crawl: duplicate titles/meta, indexability, redirect chains, broken/oversized images, thin content, missing metadata, no-schema, hreflang — counts + recommendations + sample URLs."),
+    _f("get_page_links",
+       "List the actual links on a page (live-crawls by default so it's current). kind=internal|external|all. Returns anchor + URL + zone.",
+       {"url": _STR, "kind": _STR, "fresh": _BOOL}, required=["url"]),
     _f("compare_technical_audit",
        "Compare OUR page's technical audit vs up to 5 competitor pages side-by-side (score, tags, links, alt, LCP). DB-first, live-crawls misses.",
        {"our_url": _STR, "competitor_urls": {"type": "array", "items": _STR}},
