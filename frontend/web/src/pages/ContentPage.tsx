@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import {
@@ -135,7 +135,33 @@ function ContentCrawlButton() {
   );
 }
 
-function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: string }) {
+/** URL-safe base64 of a page URL — matches Django's urlsafe_b64 route
+ *  param on /crawler/pages/<snapshotId>/<b64>. */
+function b64url(s: string): string {
+  return btoa(unescape(encodeURIComponent(s)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function StatChip({ label, value }: { label: string; value: number | null | undefined }) {
+  if (value === null || value === undefined) return null;
+  return (
+    <span style={{ fontSize: 11, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+      {label} <b style={{ color: BAJAJ_NAVY }}>{value.toLocaleString()}</b>
+    </span>
+  );
+}
+
+function PageBlock({
+  page,
+  clusterId,
+  snapshotId,
+}: {
+  page: ContentPageBlock;
+  clusterId: string;
+  snapshotId?: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div
@@ -182,6 +208,26 @@ function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: str
       </button>
       {open && (
         <div style={{ borderTop: '1px solid #eef2ff', padding: '6px 14px 12px' }}>
+          {/* Per-page structure report — counts from the stored crawl
+              row, plus the deep link to the full unified page report
+              (all links, images, schema, body). */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0 4px' }}>
+            <StatChip label="H1" value={page.h1} />
+            <StatChip label="H2" value={page.h2} />
+            <StatChip label="H3" value={page.h3} />
+            <StatChip label="Internal links" value={page.links_internal} />
+            <StatChip label="External links" value={page.links_external} />
+            <StatChip label="Images" value={page.images} />
+            <StatChip label="Words" value={page.words} />
+            {snapshotId && (
+              <a
+                href={`/crawler/pages/${snapshotId}/${b64url(page.url)}`}
+                style={{ fontSize: 11.5, fontWeight: 700, color: '#1e40af', textDecoration: 'none', padding: '1px 4px' }}
+              >
+                Full page report →
+              </a>
+            )}
+          </div>
           {page.sections.map((s, i) => (
             <div
               key={`${clusterId}-${page.key}-${i}`}
@@ -233,7 +279,7 @@ function PageBlock({ page, clusterId }: { page: ContentPageBlock; clusterId: str
   );
 }
 
-function ClusterSection({ cluster }: { cluster: ContentCluster }) {
+function ClusterSection({ cluster, snapshotId }: { cluster: ContentCluster; snapshotId?: string }) {
   return (
     <section style={{ marginTop: 28 }}>
       <h2
@@ -267,7 +313,7 @@ function ClusterSection({ cluster }: { cluster: ContentCluster }) {
         <div style={{ fontSize: 13, color: '#475569', margin: '6px 0 10px' }}>{cluster.intro}</div>
       )}
       {cluster.pages.map((p) => (
-        <PageBlock key={`${cluster.id}-${p.key}`} page={p} clusterId={cluster.id} />
+        <PageBlock key={`${cluster.id}-${p.key}`} page={p} clusterId={cluster.id} snapshotId={snapshotId} />
       ))}
     </section>
   );
@@ -276,6 +322,34 @@ function ClusterSection({ cluster }: { cluster: ContentCluster }) {
 export default function ContentPage() {
   const { data, isLoading, isError } = useContentClusters();
   const clusters = data?.clusters ?? [];
+
+  // Page search — pure client-side filter over the already-fetched
+  // cluster payload (no extra API calls, zero impact on the crawler).
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const visibleClusters = useMemo(() => {
+    if (!q) return clusters;
+    return clusters
+      .map((c) => {
+        const pages = c.pages.filter(
+          (p) =>
+            p.name.toLowerCase().includes(q) ||
+            p.url.toLowerCase().includes(q) ||
+            p.sections.some((s) => (s.heading || '').toLowerCase().includes(q))
+        );
+        return {
+          ...c,
+          pages,
+          page_count: pages.length,
+          section_count: pages.reduce((n, p) => n + p.sections.length, 0),
+          word_count: pages.reduce((n, p) => n + p.words, 0),
+        };
+      })
+      .filter((c) => c.pages.length > 0);
+  }, [clusters, q]);
+  const matchCount = q
+    ? visibleClusters.reduce((n, c) => n + c.pages.length, 0)
+    : 0;
 
   return (
     <div className="seo-page">
@@ -307,6 +381,27 @@ export default function ContentPage() {
 
       {clusters.length > 0 && (
         <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0 0' }}>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search pages — title, URL or heading (e.g. term calculator)…"
+              style={{
+                flex: '1 1 320px',
+                maxWidth: 480,
+                padding: '8px 12px',
+                border: '1px solid #cbd5e1',
+                borderRadius: 8,
+                fontSize: 13,
+              }}
+            />
+            {q && (
+              <span style={{ fontSize: 12.5, color: '#475569' }}>
+                {matchCount.toLocaleString()} page(s) match in {visibleClusters.length} topic(s)
+              </span>
+            )}
+          </div>
           <div
             style={{
               background: '#f8fafc',
@@ -318,19 +413,22 @@ export default function ContentPage() {
             }}
           >
             <b style={{ color: BAJAJ_NAVY }}>Topics:</b>{' '}
-            {clusters.map((c) => (
+            {visibleClusters.map((c) => (
               <a
                 key={c.id}
                 href={`#${c.id}`}
                 style={{ color: '#1e40af', marginRight: 14, textDecoration: 'none' }}
               >
-                {c.name}
+                {c.name}{q ? ` (${c.pages.length})` : ''}
               </a>
             ))}
           </div>
-          {clusters.map((c) => (
-            <ClusterSection key={c.id} cluster={c} />
+          {visibleClusters.map((c) => (
+            <ClusterSection key={c.id} cluster={c} snapshotId={data?.snapshot_id} />
           ))}
+          {q && visibleClusters.length === 0 && (
+            <div className="seo-empty">No crawled page matches “{query}”.</div>
+          )}
         </>
       )}
     </div>

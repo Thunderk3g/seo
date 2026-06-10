@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
@@ -16,6 +16,12 @@ interface ClusterPage {
   name: string;
   url: string;
   words: number;
+  h1?: number;
+  h2?: number;
+  h3?: number;
+  links_internal?: number | null;
+  links_external?: number | null;
+  images?: number | null;
   sections: ClusterSection[];
 }
 
@@ -64,7 +70,23 @@ function Chip({ n, label }: { n: number | string; label: string }) {
   );
 }
 
-function ClusterBlock({ cluster }: { cluster: Cluster }) {
+function b64url(s: string): string {
+  return btoa(unescape(encodeURIComponent(s)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function MiniStat({ label, value }: { label: string; value: number | null | undefined }) {
+  if (value === null || value === undefined) return null;
+  return (
+    <span style={{ fontSize: 11, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '0 6px', marginRight: 6, whiteSpace: 'nowrap' }}>
+      {label} <b style={{ color: BAJAJ_NAVY }}>{value.toLocaleString()}</b>
+    </span>
+  );
+}
+
+function ClusterBlock({ cluster, snapshotId }: { cluster: Cluster; snapshotId?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div style={{ border: '1px solid #e2e8f0', borderLeft: `4px solid ${BAJAJ_BLUE}`, borderRadius: 8, margin: '8px 0', background: '#fbfdff' }}>
@@ -84,11 +106,27 @@ function ClusterBlock({ cluster }: { cluster: Cluster }) {
         <div style={{ padding: '0 12px 10px 32px' }}>
           {cluster.intro && <div style={{ fontSize: 12.5, color: '#475569', marginBottom: 6 }}>{cluster.intro}</div>}
           {cluster.pages.map((p) => (
-            <div key={p.key} style={{ margin: '6px 0', fontSize: 12.5 }}>
+            <div key={p.key} style={{ margin: '8px 0', fontSize: 12.5 }}>
               <a href={p.url} target="_blank" rel="noreferrer" style={{ color: '#1e40af', fontWeight: 600, textDecoration: 'none' }}>
                 {p.name}
               </a>
-              <span style={{ color: '#64748b' }}> · {p.words.toLocaleString()} words</span>
+              <div style={{ margin: '3px 0' }}>
+                <MiniStat label="Words" value={p.words} />
+                <MiniStat label="H1" value={p.h1} />
+                <MiniStat label="H2" value={p.h2} />
+                <MiniStat label="H3" value={p.h3} />
+                <MiniStat label="Int. links" value={p.links_internal} />
+                <MiniStat label="Ext. links" value={p.links_external} />
+                <MiniStat label="Images" value={p.images} />
+                {snapshotId && (
+                  <a
+                    href={`/crawler/pages/${snapshotId}/${b64url(p.url)}`}
+                    style={{ fontSize: 11.5, fontWeight: 700, color: '#1e40af', textDecoration: 'none' }}
+                  >
+                    Full page report →
+                  </a>
+                )}
+              </div>
               {p.sections.length > 0 && (
                 <div style={{ color: '#475569', marginTop: 2 }}>
                   {p.sections.slice(0, 6).map((s, i) => (
@@ -119,6 +157,27 @@ export default function CompetitorStructureClustersSection({ domain }: { domain:
       api.get<StructureClustersResponse>(`/seo/competitors/${encodeURIComponent(domain)}/content-clusters/`),
     staleTime: 60_000,
   });
+
+  // Page search — client-side filter over the fetched payload only
+  // (no extra API calls; the crawler is untouched).
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const visibleClusters = useMemo(() => {
+    const clusters = data?.clusters ?? [];
+    if (!q) return clusters;
+    return clusters
+      .map((c) => {
+        const pages = c.pages.filter(
+          (p) =>
+            p.name.toLowerCase().includes(q) ||
+            p.url.toLowerCase().includes(q) ||
+            p.sections.some((s) => (s.heading || '').toLowerCase().includes(q))
+        );
+        return { ...c, pages, page_count: pages.length, word_count: pages.reduce((n, p) => n + p.words, 0) };
+      })
+      .filter((c) => c.pages.length > 0);
+  }, [data, q]);
+  const matchCount = q ? visibleClusters.reduce((n, c) => n + c.pages.length, 0) : 0;
 
   if (isLoading) return <div className="seo-empty">Loading content segregation…</div>;
   if (!data?.available) {
@@ -166,9 +225,33 @@ export default function CompetitorStructureClustersSection({ domain }: { domain:
           ))}
         </div>
       )}
-      {(data.clusters ?? []).map((c) => (
-        <ClusterBlock key={c.id} cluster={c} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 10px' }}>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search their pages — title, URL or heading…"
+          style={{
+            flex: '1 1 300px',
+            maxWidth: 460,
+            padding: '8px 12px',
+            border: '1px solid #cbd5e1',
+            borderRadius: 8,
+            fontSize: 13,
+          }}
+        />
+        {q && (
+          <span style={{ fontSize: 12.5, color: '#475569' }}>
+            {matchCount.toLocaleString()} page(s) match
+          </span>
+        )}
+      </div>
+      {visibleClusters.map((c) => (
+        <ClusterBlock key={c.id} cluster={c} snapshotId={data.snapshot?.id} />
       ))}
+      {q && visibleClusters.length === 0 && (
+        <div className="seo-empty">No crawled page matches “{query}”.</div>
+      )}
     </section>
   );
 }

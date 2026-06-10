@@ -27,10 +27,16 @@ from __future__ import annotations
 
 import csv
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any
 
 from ..conf import settings
+
+# crawl_results.csv carries very wide *_json cells; raise the field-size
+# cap so the reader below doesn't blow up with "field larger than field
+# limit (131072)" when the title/URL columns sit beside wide JSON ones.
+csv.field_size_limit(sys.maxsize)
 
 
 _TOKEN = re.compile(r"[a-z0-9]+")

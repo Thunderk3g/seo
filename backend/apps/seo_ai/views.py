@@ -243,13 +243,9 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
                 continue
             secs = matched if matched else headings[:6]
             clustered_urls.add(r["url"])
-            pages.append({
-                "key": r["url"],
-                "name": _content_page_label(r),
-                "url": r["url"],
-                "words": r.get("word_count") or 0,
-                "sections": _sections(secs),
-            })
+            entry = _cluster_page_entry(r)
+            entry["sections"] = _sections(secs)
+            pages.append(entry)
         if not pages:
             continue
         pages.sort(key=lambda p: -p["words"])
@@ -267,13 +263,7 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
     # with no title/headings (operator rule: segregate, never remove).
     leftovers = [r for r in rows if r["url"] not in clustered_urls]
     if leftovers:
-        pages = [{
-            "key": r["url"],
-            "name": _content_page_label(r),
-            "url": r["url"],
-            "words": r.get("word_count") or 0,
-            "sections": _sections((r.get("headings_json") or [])[:6]),
-        } for r in leftovers]
+        pages = [_cluster_page_entry(r) for r in leftovers]
         pages.sort(key=lambda p: -p["words"])
         clusters.append({
             "id": "uncategorised",
@@ -290,12 +280,23 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
 
 
 def _cluster_page_entry(r: dict) -> dict:
-    headings = (r.get("headings_json") or [])[:6]
+    """One cluster page row — the mini per-page report: heading counts,
+    internal/external link counts and image count ride along (sourced
+    from jsonb_array_length annotations on the queryset when present)
+    so the UI shows page structure without opening the detail view."""
+    all_headings = r.get("headings_json") or []
+    headings = all_headings[:6]
     return {
         "key": r["url"],
         "name": _content_page_label(r),
         "url": r["url"],
         "words": r.get("word_count") or 0,
+        "h1": sum(1 for h in all_headings if h.get("level") == 1),
+        "h2": sum(1 for h in all_headings if h.get("level") == 2),
+        "h3": sum(1 for h in all_headings if h.get("level") == 3),
+        "links_internal": r.get("_il"),
+        "links_external": r.get("_el"),
+        "images": r.get("_img"),
         "sections": [{
             "level": h.get("level", 2),
             "tag": "INTRO" if h.get("level") == 0 else f"H{h.get('level', 2)}",
@@ -304,6 +305,28 @@ def _cluster_page_entry(r: dict) -> dict:
             "text": "",
         } for h in headings],
     }
+
+
+def _annotated_cluster_rows(qs) -> list[dict]:
+    """Fetch cluster rows with per-page link/image counts computed in
+    Postgres (jsonb_array_length) — no megabyte JSON decode in Python.
+    Falls back to plain rows if any column holds a non-array value."""
+    base_fields = ("url", "title", "headings_json", "word_count")
+    try:
+        from django.db.models import Func, IntegerField
+
+        class _JLen(Func):
+            function = "jsonb_array_length"
+            output_field = IntegerField()
+
+        return list(
+            qs.annotate(_il=_JLen("internal_links_json"),
+                        _el=_JLen("external_links_json"),
+                        _img=_JLen("images_json"))
+            .values(*base_fields, "_il", "_el", "_img")
+        )
+    except Exception:  # noqa: BLE001 — sqlite dev DB / mixed shapes
+        return list(qs.values(*base_fields))
 
 
 def _load_competitor_cluster_spec(domain: str) -> dict | None:
@@ -484,19 +507,23 @@ def _inhouse_clusters_from_crawl():
     except Exception:  # noqa: BLE001 — crawler app missing/migrating
         return None
 
-    # Latest own-site snapshot that actually has pages — skips empty/
-    # duplicate snapshots left behind by rejected re-starts. Prefers the
-    # dedicated CONTENT crawl (body_text + zoned structure from the
-    # Content-page button) over the nightly technical crawl when newer.
-    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
+    # Own-site snapshot for clustering. Prefer the dedicated CONTENT
+    # crawl (body_text + zoned headings) — that's what the clusters
+    # need; the nightly 'bajaj' technical crawl stores no headings. Pick
+    # the RICHEST content snapshot (most pages), falling back to the
+    # richest bajaj only when no content crawl exists yet. Richest, not
+    # newest, so a stray 1-page re-run never masks a full crawl.
+    snap = (CrawlSnapshot.objects.filter(kind="content")
             .annotate(n=Count("pages")).filter(n__gt=0)
-            .order_by("-started_at").first())
+            .order_by("-n", "-started_at").first())
+    if snap is None:
+        snap = (CrawlSnapshot.objects.filter(kind="bajaj")
+                .annotate(n=Count("pages")).filter(n__gt=0)
+                .order_by("-n", "-started_at").first())
     if snap is None:
         return None
-    rows = list(
-        CrawlerPageResult.objects
-        .filter(snapshot=snap, status_code="200")
-        .values("url", "title", "headings_json", "word_count")
+    rows = _annotated_cluster_rows(
+        CrawlerPageResult.objects.filter(snapshot=snap, status_code="200")
     )
     if not rows:
         return None
@@ -510,6 +537,9 @@ def _inhouse_clusters_from_crawl():
         "available": True,
         "brand": "Bajaj Life Insurance",
         "source": "crawl",
+        # For "Full page report" links: /crawler/pages/<snapshot_id>/<b64>.
+        "snapshot_id": str(snap.id),
+        "snapshot_kind": snap.kind,
         "note": (f"Live content clustering over the latest crawl "
                  f"({len(rows)} pages · {started}). Topic assignment is deterministic "
                  f"keyword rules — no embeddings, no env LLM."),
@@ -609,6 +639,81 @@ def inhouse_content_clusters(request: Request):
 
 
 @api_view(["GET"])
+def technical_audit_url_view(request: Request):
+    """GET /api/v1/seo/technical-audit/?url=<u>[&broken=1][&format=xlsx]
+
+    JSON technical audit of one URL (DB-first, live-crawl on miss), or an
+    XLSX download with format=xlsx. The chat tool calls the same engine.
+    """
+    from django.http import HttpResponse
+
+    from .services.technical_audit import audit_url
+
+    url = (request.query_params.get("url") or "").strip()
+    if not url:
+        return Response({"ok": False, "error": "url query param required"},
+                        status=400)
+    check_broken = request.query_params.get("broken") in ("1", "true", "yes")
+    audit = audit_url(url, check_broken_links=check_broken)
+
+    # NB: query param is ``export`` not ``format`` — ``format`` is a
+    # reserved DRF content-negotiation param (would 404 before us).
+    if request.query_params.get("export") == "xlsx":
+        if not audit.get("ok"):
+            return Response(audit, status=502)
+        from .services.technical_audit_xlsx import build_single_url_xlsx
+        data = build_single_url_xlsx(audit)
+        from urllib.parse import urlparse as _up
+        host = (_up(audit.get("url") or "").netloc or "page").replace(".", "_")
+        resp = HttpResponse(
+            data,
+            content_type="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet")
+        resp["Content-Disposition"] = (
+            f'attachment; filename="technical_audit_{host}.xlsx"')
+        return resp
+
+    return Response(audit, status=200 if audit.get("ok") else 502)
+
+
+@api_view(["GET"])
+def technical_audit_site_view(request: Request):
+    """GET /api/v1/seo/technical-audit/site/?limit=N[&export=xlsx]
+
+    Whole-WEBSITE technical audit over the latest own snapshot — aggregate
+    checks (duplicate titles/meta, indexability, redirect chains, broken/
+    oversized images, thin content, missing metadata, no-schema, hreflang)
+    with per-issue sample URLs. Reads scalar DB columns only (fast, no
+    live crawl, no CWV). JSON rollup or ?export=xlsx.
+    """
+    from django.http import HttpResponse
+
+    from .services.technical_audit import audit_site
+
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", 5000)), 20000))
+    except (TypeError, ValueError):
+        limit = 5000
+
+    audit = audit_site(limit=limit)
+    if not audit.get("ok"):
+        return Response(audit, status=200)
+
+    if request.query_params.get("export") == "xlsx":
+        from .services.technical_audit_xlsx import build_site_audit_xlsx
+        data = build_site_audit_xlsx(audit)
+        resp = HttpResponse(
+            data,
+            content_type="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet")
+        resp["Content-Disposition"] = (
+            'attachment; filename="technical_audit_site.xlsx"')
+        return resp
+
+    return Response(audit)
+
+
+@api_view(["GET"])
 def competitor_content_clusters(request: Request, domain: str):
     """GET /api/v1/seo/competitors/<domain>/content-clusters/ — content
     segregation for one competitor, clustered by THEIR OWN page
@@ -634,12 +739,16 @@ def competitor_content_clusters(request: Request, domain: str):
         return Response({"available": False, "error": "domain required"},
                         status=400)
 
+    # Pick the RICHEST snapshot (most pages), not merely the newest with
+    # pages — the gap pipeline's page-pairing sampler leaves many fresh
+    # 1-page snapshots that would otherwise mask a full multi-thousand-
+    # page roster crawl. Tie-break on recency.
     snap = (CrawlSnapshot.objects
             .filter(kind="competitor")
             .filter(Q(target_domain__iexact=bare) |
                     Q(parent_domain__iexact=bare))
             .annotate(n=Count("pages")).filter(n__gt=0)
-            .order_by("-started_at").first())
+            .order_by("-n", "-started_at").first())
     if snap is None:
         return Response({
             "available": False, "domain": bare,
@@ -649,10 +758,7 @@ def competitor_content_clusters(request: Request, domain: str):
 
     qs = CrawlerPageResult.objects.filter(snapshot=snap)
     pages_crawled = qs.count()
-    rows = list(
-        qs.filter(status_code="200")
-        .values("url", "title", "headings_json", "word_count")
-    )
+    rows = _annotated_cluster_rows(qs.filter(status_code="200"))
 
     # Segregation follows THEIR page structure, not our topic rules:
     #   1. Claude-Code-generated per-domain spec (written by the smart
@@ -2762,6 +2868,120 @@ def competitor_walk_pause_view(request):
     new_value = bool(raw)
     SystemSetting.set_value("competitor_walk_paused", new_value)
     return Response({"paused": new_value})
+
+
+def _active_walk_tasks() -> list[dict]:
+    """Inspect Celery for in-flight competitor/content walk tasks.
+
+    Returns one entry per running task: {task_id, name, domain}. Empty
+    when the broker is unreachable or nothing is running (never raises —
+    the status panel must degrade gracefully).
+    """
+    out: list[dict] = []
+    try:
+        from config.celery import app
+        active = app.control.inspect(timeout=2.0).active() or {}
+    except Exception:  # noqa: BLE001
+        return out
+    for _worker, tasks in active.items():
+        for t in tasks or []:
+            name = t.get("name") or ""
+            if name not in (
+                "seo_ai.walk_competitor",
+                "seo_ai.walk_competitor_roster",
+                "seo_ai.crawl_own_content",
+            ):
+                continue
+            args = t.get("args") or []
+            domain = ""
+            if isinstance(args, (list, tuple)) and args:
+                domain = str(args[0])
+            out.append({"task_id": t.get("id") or "", "name": name,
+                        "domain": domain})
+    return out
+
+
+@api_view(["GET"])
+def competitor_walk_status_view(_request):
+    """GET /api/v1/seo/competitors/walk-status/ — live competitor-walk
+    state for the dashboard control panel.
+
+    Reports which task(s) are running, the domain each is crawling, that
+    domain's live page count (rows land as the spider scrapes), whether
+    the operator pause flag is set, and the most recently touched
+    competitor snapshots. Polled every few seconds by the UI.
+    """
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot, SystemSetting
+
+    active = _active_walk_tasks()
+    # Attach a live page count per running domain (newest snapshot).
+    for a in active:
+        dom = (a.get("domain") or "").lower().lstrip("www.")
+        if not dom:
+            a["pages"] = None
+            continue
+        snap = (CrawlSnapshot.objects
+                .filter(target_domain__icontains=dom.split(".")[0])
+                .annotate(n=Count("pages")).order_by("-started_at").first())
+        a["pages"] = int(snap.n) if snap else 0
+
+    running_snaps = [{
+        "domain": s.target_domain,
+        "kind": s.kind,
+        "pages": int(s.n or 0),
+        "started_at": s.started_at.isoformat() if s.started_at else None,
+    } for s in (CrawlSnapshot.objects
+                .filter(status="running")
+                .annotate(n=Count("pages")).order_by("-started_at")[:10])]
+
+    return Response({
+        "is_running": bool(active) or bool(running_snaps),
+        "paused": SystemSetting.get_bool("competitor_walk_paused", default=False),
+        "active_tasks": active,
+        "running_snapshots": running_snaps,
+    })
+
+
+@api_view(["POST"])
+def competitor_walk_stop_view(_request):
+    """POST /api/v1/seo/competitors/walk-stop/ — stop competitor walks.
+
+    Sets the pause flag (so the roster halts between domains and the
+    03:00 cron stays off) AND revokes any in-flight walk tasks with
+    terminate=True so the current domain crawl is killed now, not after
+    it finishes. Snapshots already written stay in the DB (partial
+    coverage is kept, never rolled back).
+    """
+    from apps.crawler.models import SystemSetting
+
+    SystemSetting.set_value("competitor_walk_paused", True)
+    active = _active_walk_tasks()
+    revoked: list[str] = []
+    try:
+        from config.celery import app
+        for a in active:
+            tid = a.get("task_id")
+            if tid:
+                app.control.revoke(tid, terminate=True)
+                revoked.append(tid)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"stopped": False, "paused": True,
+                         "error": f"revoke failed: {exc}"[:200],
+                         "revoked": revoked}, status=502)
+
+    # Mark any orphaned running snapshots stopped so history reads true.
+    try:
+        from apps.crawler.models import CrawlSnapshot
+        CrawlSnapshot.objects.filter(status="running").update(status="stopped")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return Response({"stopped": True, "paused": True,
+                     "revoked_tasks": revoked,
+                     "message": f"Stopped {len(revoked)} running walk(s); "
+                                "pause flag set."})
 
 
 @api_view(["GET"])
