@@ -757,6 +757,40 @@ def compare_page_structures(
 
 
 @_safe
+def technical_audit_url(url: str, check_broken_links: bool = False) -> dict[str, Any]:
+    """FULL technical SEO audit of ONE URL (ours, a competitor's, or any
+    URL). DB-first: if the URL was already crawled it audits the stored
+    data; if not, it LIVE-CRAWLS the page right now. Runs a live Core Web
+    Vitals test (PageSpeed mobile + desktop, lab + CrUX field), and
+    checks against standard on-page SEO guidelines: title/meta length,
+    single-H1, heading structure, per-image alt text (lists the images
+    missing alt), internal/external links, canonical, noindex, thin
+    content, schema, HTTPS, response time. Returns a 0-100 score plus a
+    prioritised findings list where every finding has the drawback AND a
+    concrete recommendation. Set check_broken_links=true to also probe
+    the page's links for 4xx/5xx (slower). Use when the user pastes a URL
+    and asks 'technical audit', 'check this page', 'is this page SEO-
+    healthy', 'LCP of this page', 'which images miss alt', or 'broken
+    links on this page'."""
+    from ..services.technical_audit import audit_url
+    return audit_url(url, check_broken_links=bool(check_broken_links))
+
+
+@_safe
+def compare_technical_audit(our_url: str,
+                            competitor_urls: list[str] | None = None) -> dict[str, Any]:
+    """Compare the TECHNICAL audit of OUR page against up to 5 competitor
+    pages, side by side — score, title/meta, H1/H2/H3 counts, internal/
+    external links, image alt coverage, schema, and mobile LCP for each.
+    DB-first; any URL not already crawled is live-crawled on the spot.
+    Use for product-to-product / page-to-page technical comparison:
+    'compare our term page with HDFC's technically', 'how does our ULIP
+    page stack up against ICICI on SEO'."""
+    from ..services.technical_audit import compare_urls
+    return compare_urls(our_url, competitor_urls or [])
+
+
+@_safe
 def get_ai_bot_hits(limit: int = 50) -> dict[str, Any]:
     """Recent verified AI-bot hits on Bajaj pages (GPTBot, ClaudeBot,
     PerplexityBot, Google-Extended, Bytespider, etc.). Returns
@@ -2194,6 +2228,8 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "crawl_page": crawl_page,
     "crawl_pages": crawl_pages,
     "compare_page_structures": compare_page_structures,
+    "technical_audit_url": technical_audit_url,
+    "compare_technical_audit": compare_technical_audit,
 }
 
 
@@ -2269,6 +2305,13 @@ CHAT_TOOL_SCHEMAS: list[dict[str, Any]] = [
        "Content-gap compare: live-crawl our page + up to 5 rival pages; side-by-side structure + heading topics rivals cover that we don't.",
        {"our_url": _STR, "competitor_urls": {"type": "array", "items": _STR}},
        required=["our_url", "competitor_urls"]),
+    _f("technical_audit_url",
+       "FULL technical SEO audit of ONE URL (DB-first, live-crawls if missing): live CWV (mobile+desktop), title/meta/H1/alt/canonical/schema/HTTPS checks vs SEO guidelines, 0-100 score + findings with recommendations. check_broken_links=true also probes links for 4xx/5xx.",
+       {"url": _STR, "check_broken_links": _BOOL}, required=["url"]),
+    _f("compare_technical_audit",
+       "Compare OUR page's technical audit vs up to 5 competitor pages side-by-side (score, tags, links, alt, LCP). DB-first, live-crawls misses.",
+       {"our_url": _STR, "competitor_urls": {"type": "array", "items": _STR}},
+       required=["our_url"]),
     # ── Competitors ───────────────────────────────────────────────
     _f("list_competitors_crawled",
        "Every competitor domain the Scrapy walker has visited, with live page counts + status."),

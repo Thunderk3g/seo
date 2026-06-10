@@ -42,6 +42,8 @@ from .views import (
     gap_pipeline_status,
     competitor_content_clusters,
     content_crawl_view,
+    technical_audit_url_view,
+    technical_audit_site_view,
     gsc_dashboard,
     gsc_index_reconciliation,
     inhouse_content_clusters,
@@ -63,6 +65,10 @@ urlpatterns = [
     # Content-page crawl button: POST = queue own-site content crawl,
     # GET = latest kind='content' snapshot status for polling.
     path("content/crawl/", content_crawl_view, name="content-crawl"),
+    # Technical audit — single URL (DB-first, live-crawl on miss; JSON or
+    # ?format=xlsx) and whole-site rollup over the latest own snapshot.
+    path("technical-audit/", technical_audit_url_view, name="technical-audit-url"),
+    path("technical-audit/site/", technical_audit_site_view, name="technical-audit-site"),
     # Same deterministic topic segregation, run over one competitor's
     # latest crawl (clusters + totals + URL hierarchy; no CWV).
     path("competitors/<str:domain>/content-clusters/",

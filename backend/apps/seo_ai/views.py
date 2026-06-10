@@ -639,6 +639,104 @@ def inhouse_content_clusters(request: Request):
 
 
 @api_view(["GET"])
+def technical_audit_url_view(request: Request):
+    """GET /api/v1/seo/technical-audit/?url=<u>[&broken=1][&format=xlsx]
+
+    JSON technical audit of one URL (DB-first, live-crawl on miss), or an
+    XLSX download with format=xlsx. The chat tool calls the same engine.
+    """
+    from django.http import HttpResponse
+
+    from .services.technical_audit import audit_url
+
+    url = (request.query_params.get("url") or "").strip()
+    if not url:
+        return Response({"ok": False, "error": "url query param required"},
+                        status=400)
+    check_broken = request.query_params.get("broken") in ("1", "true", "yes")
+    audit = audit_url(url, check_broken_links=check_broken)
+
+    # NB: query param is ``export`` not ``format`` — ``format`` is a
+    # reserved DRF content-negotiation param (would 404 before us).
+    if request.query_params.get("export") == "xlsx":
+        if not audit.get("ok"):
+            return Response(audit, status=502)
+        from .services.technical_audit_xlsx import build_single_url_xlsx
+        data = build_single_url_xlsx(audit)
+        from urllib.parse import urlparse as _up
+        host = (_up(audit.get("url") or "").netloc or "page").replace(".", "_")
+        resp = HttpResponse(
+            data,
+            content_type="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet")
+        resp["Content-Disposition"] = (
+            f'attachment; filename="technical_audit_{host}.xlsx"')
+        return resp
+
+    return Response(audit, status=200 if audit.get("ok") else 502)
+
+
+@api_view(["GET"])
+def technical_audit_site_view(request: Request):
+    """GET /api/v1/seo/technical-audit/site/?limit=N[&format=xlsx]
+
+    Whole-site technical audit over the latest Bajaj/content snapshot's
+    stored pages (no live crawling — reads the DB). JSON rollup or XLSX.
+    Capped at ``limit`` pages (default 300) to bound CWV-free audit cost.
+    """
+    from django.db.models import Count
+    from django.http import HttpResponse
+
+    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
+    from .services.technical_audit import audit_url
+
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", 300)), 2000))
+    except (TypeError, ValueError):
+        limit = 300
+
+    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-n", "-started_at").first())
+    if snap is None:
+        return Response({"ok": False, "error": "no own-site crawl yet"})
+
+    urls = list(CrawlerPageResult.objects
+                .filter(snapshot=snap, status_code="200")
+                .values_list("url", flat=True)[:limit])
+    # DB-backed audit, CWV off for the bulk site pass (single-page CWV is
+    # the on-demand path) — keeps this fast and quota-free.
+    audits = [audit_url(u, include_cwv=False) for u in urls]
+    ok_audits = [a for a in audits if a.get("ok")]
+
+    if request.query_params.get("export") == "xlsx":
+        from .services.technical_audit_xlsx import build_site_xlsx
+        label = (f"{snap.kind} snapshot · {len(ok_audits)} pages · "
+                 f"{snap.started_at.isoformat() if snap.started_at else ''}")
+        data = build_site_xlsx(ok_audits, snapshot_label=label)
+        resp = HttpResponse(
+            data,
+            content_type="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet")
+        resp["Content-Disposition"] = (
+            'attachment; filename="technical_audit_site.xlsx"')
+        return resp
+
+    avg = (round(sum(a["score"] for a in ok_audits) / len(ok_audits), 1)
+           if ok_audits else 0)
+    return Response({
+        "ok": True,
+        "snapshot": {"id": str(snap.id), "kind": snap.kind,
+                     "pages_audited": len(ok_audits)},
+        "avg_score": avg,
+        "worst_pages": sorted(
+            ({"url": a["url"], "score": a["score"],
+              "critical": a["counts"]["critical"]}
+             for a in ok_audits), key=lambda x: x["score"])[:25],
+    })
+
+
+@api_view(["GET"])
 def competitor_content_clusters(request: Request, domain: str):
     """GET /api/v1/seo/competitors/<domain>/content-clusters/ — content
     segregation for one competitor, clustered by THEIR OWN page
