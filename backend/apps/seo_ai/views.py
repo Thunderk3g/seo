@@ -507,13 +507,19 @@ def _inhouse_clusters_from_crawl():
     except Exception:  # noqa: BLE001 — crawler app missing/migrating
         return None
 
-    # Latest own-site snapshot that actually has pages — skips empty/
-    # duplicate snapshots left behind by rejected re-starts. Prefers the
-    # dedicated CONTENT crawl (body_text + zoned structure from the
-    # Content-page button) over the nightly technical crawl when newer.
-    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
+    # Own-site snapshot for clustering. Prefer the dedicated CONTENT
+    # crawl (body_text + zoned headings) — that's what the clusters
+    # need; the nightly 'bajaj' technical crawl stores no headings. Pick
+    # the RICHEST content snapshot (most pages), falling back to the
+    # richest bajaj only when no content crawl exists yet. Richest, not
+    # newest, so a stray 1-page re-run never masks a full crawl.
+    snap = (CrawlSnapshot.objects.filter(kind="content")
             .annotate(n=Count("pages")).filter(n__gt=0)
-            .order_by("-started_at").first())
+            .order_by("-n", "-started_at").first())
+    if snap is None:
+        snap = (CrawlSnapshot.objects.filter(kind="bajaj")
+                .annotate(n=Count("pages")).filter(n__gt=0)
+                .order_by("-n", "-started_at").first())
     if snap is None:
         return None
     rows = _annotated_cluster_rows(
@@ -658,12 +664,16 @@ def competitor_content_clusters(request: Request, domain: str):
         return Response({"available": False, "error": "domain required"},
                         status=400)
 
+    # Pick the RICHEST snapshot (most pages), not merely the newest with
+    # pages — the gap pipeline's page-pairing sampler leaves many fresh
+    # 1-page snapshots that would otherwise mask a full multi-thousand-
+    # page roster crawl. Tie-break on recency.
     snap = (CrawlSnapshot.objects
             .filter(kind="competitor")
             .filter(Q(target_domain__iexact=bare) |
                     Q(parent_domain__iexact=bare))
             .annotate(n=Count("pages")).filter(n__gt=0)
-            .order_by("-started_at").first())
+            .order_by("-n", "-started_at").first())
     if snap is None:
         return Response({
             "available": False, "domain": bare,
