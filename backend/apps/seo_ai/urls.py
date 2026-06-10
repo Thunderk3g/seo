@@ -19,6 +19,8 @@ from .views import (
     competitor_page_detail_view,
     competitor_page_history,
     competitor_walk_pause_view,
+    competitor_walk_status_view,
+    competitor_walk_stop_view,
     page_detail_view,
     page_topic_sections_view,
     content_comparison,
@@ -231,6 +233,18 @@ urlpatterns = [
         "competitor/walk/pause/",
         competitor_walk_pause_view,
         name="competitor-walk-pause",
+    ),
+    # Live competitor-walk status (which domain is crawling now, page
+    # counts) + stop control (revoke in-flight walks + set pause flag).
+    path(
+        "competitors/walk-status/",
+        competitor_walk_status_view,
+        name="competitor-walk-status",
+    ),
+    path(
+        "competitors/walk-stop/",
+        competitor_walk_stop_view,
+        name="competitor-walk-stop",
     ),
     # Phase 7 — per-competitor keyword intelligence. Two sources:
     # Semrush organic ranking keywords (authoritative, cached on disk),

@@ -23,6 +23,7 @@ import { useCompetitorDashboard } from '../api/hooks/useCompetitorDashboard';
 import { useCompetitorGap } from '../api/hooks/useCompetitorGap';
 import { useLatestGapPipeline } from '../api/hooks/useGapPipeline';
 import CompetitorOverviewTab from '../components/competitors/CompetitorOverviewTab';
+import CompetitorWalkStatus from '../components/competitors/CompetitorWalkStatus';
 import CrawledCompetitorsTab from '../components/competitors/CrawledCompetitorsTab';
 import GapDetectionPipelineSection from '../components/competitors/GapDetectionPipelineSection';
 import GapDetectionSection from '../components/competitors/GapDetectionSection';
@@ -78,6 +79,8 @@ export default function CompetitorsPage() {
           </div>
         </div>
       </header>
+
+      <CompetitorWalkStatus />
 
       <QuickUrlCrawl />
 

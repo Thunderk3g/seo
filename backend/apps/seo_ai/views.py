@@ -2795,6 +2795,120 @@ def competitor_walk_pause_view(request):
     return Response({"paused": new_value})
 
 
+def _active_walk_tasks() -> list[dict]:
+    """Inspect Celery for in-flight competitor/content walk tasks.
+
+    Returns one entry per running task: {task_id, name, domain}. Empty
+    when the broker is unreachable or nothing is running (never raises —
+    the status panel must degrade gracefully).
+    """
+    out: list[dict] = []
+    try:
+        from config.celery import app
+        active = app.control.inspect(timeout=2.0).active() or {}
+    except Exception:  # noqa: BLE001
+        return out
+    for _worker, tasks in active.items():
+        for t in tasks or []:
+            name = t.get("name") or ""
+            if name not in (
+                "seo_ai.walk_competitor",
+                "seo_ai.walk_competitor_roster",
+                "seo_ai.crawl_own_content",
+            ):
+                continue
+            args = t.get("args") or []
+            domain = ""
+            if isinstance(args, (list, tuple)) and args:
+                domain = str(args[0])
+            out.append({"task_id": t.get("id") or "", "name": name,
+                        "domain": domain})
+    return out
+
+
+@api_view(["GET"])
+def competitor_walk_status_view(_request):
+    """GET /api/v1/seo/competitors/walk-status/ — live competitor-walk
+    state for the dashboard control panel.
+
+    Reports which task(s) are running, the domain each is crawling, that
+    domain's live page count (rows land as the spider scrapes), whether
+    the operator pause flag is set, and the most recently touched
+    competitor snapshots. Polled every few seconds by the UI.
+    """
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot, SystemSetting
+
+    active = _active_walk_tasks()
+    # Attach a live page count per running domain (newest snapshot).
+    for a in active:
+        dom = (a.get("domain") or "").lower().lstrip("www.")
+        if not dom:
+            a["pages"] = None
+            continue
+        snap = (CrawlSnapshot.objects
+                .filter(target_domain__icontains=dom.split(".")[0])
+                .annotate(n=Count("pages")).order_by("-started_at").first())
+        a["pages"] = int(snap.n) if snap else 0
+
+    running_snaps = [{
+        "domain": s.target_domain,
+        "kind": s.kind,
+        "pages": int(s.n or 0),
+        "started_at": s.started_at.isoformat() if s.started_at else None,
+    } for s in (CrawlSnapshot.objects
+                .filter(status="running")
+                .annotate(n=Count("pages")).order_by("-started_at")[:10])]
+
+    return Response({
+        "is_running": bool(active) or bool(running_snaps),
+        "paused": SystemSetting.get_bool("competitor_walk_paused", default=False),
+        "active_tasks": active,
+        "running_snapshots": running_snaps,
+    })
+
+
+@api_view(["POST"])
+def competitor_walk_stop_view(_request):
+    """POST /api/v1/seo/competitors/walk-stop/ — stop competitor walks.
+
+    Sets the pause flag (so the roster halts between domains and the
+    03:00 cron stays off) AND revokes any in-flight walk tasks with
+    terminate=True so the current domain crawl is killed now, not after
+    it finishes. Snapshots already written stay in the DB (partial
+    coverage is kept, never rolled back).
+    """
+    from apps.crawler.models import SystemSetting
+
+    SystemSetting.set_value("competitor_walk_paused", True)
+    active = _active_walk_tasks()
+    revoked: list[str] = []
+    try:
+        from config.celery import app
+        for a in active:
+            tid = a.get("task_id")
+            if tid:
+                app.control.revoke(tid, terminate=True)
+                revoked.append(tid)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"stopped": False, "paused": True,
+                         "error": f"revoke failed: {exc}"[:200],
+                         "revoked": revoked}, status=502)
+
+    # Mark any orphaned running snapshots stopped so history reads true.
+    try:
+        from apps.crawler.models import CrawlSnapshot
+        CrawlSnapshot.objects.filter(status="running").update(status="stopped")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return Response({"stopped": True, "paused": True,
+                     "revoked_tasks": revoked,
+                     "message": f"Stopped {len(revoked)} running walk(s); "
+                                "pause flag set."})
+
+
 @api_view(["GET"])
 def competitor_crawls_list_view(_request):
     """List every competitor domain we've crawled (or are currently
