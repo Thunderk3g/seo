@@ -255,18 +255,29 @@ def walk_competitor_task(
         except Exception as exc:  # noqa: BLE001
             logger.warning("sitemap discover failed for %s (%s)", domain, exc)
             urls = []
-        if not urls:
-            # No sitemap → fall back to homepage walk so we still pull
-            # *something*. We try a few common homepage variants because
-            # some sites only respond to one (e.g. an apex-only host
-            # refuses the www subdomain, or vice versa). The Scrapy walk
-            # filters non-host links anyway, so a couple of extra seeds
-            # is cheap insurance against a single 404 wiping the run.
+        # Fall back to a deep Playwright walk not only when the sitemap is
+        # empty, but when it's suspiciously THIN (< threshold). Several
+        # insurers (HDFC, SBI) serve a JS-rendered or soft-404 HTML page
+        # at /sitemap.xml, so discovery returns a handful of junk URLs and
+        # the crawl short-circuits at 6 pages. A link-walk from the
+        # homepage via real Chromium pulls hundreds instead. Override the
+        # threshold with COMPETITOR_SITEMAP_MIN_URLS (0 disables).
+        import os as _os
+        thin_threshold = int(
+            _os.environ.get("COMPETITOR_SITEMAP_MIN_URLS", "25") or 0
+        )
+        if len(urls) < max(0, thin_threshold):
+            # No / thin sitemap → fall back to homepage walk so we still
+            # pull *something*. We try a few common homepage variants
+            # because some sites only respond to one (apex vs www). The
+            # Scrapy walk filters non-host links anyway, so a couple of
+            # extra seeds is cheap insurance against a single 404.
             logger.info(
-                "%s: no sitemap URLs found, falling back to walk mode", domain,
+                "%s: sitemap gave %d URL(s) (< %d) — falling back to "
+                "Playwright walk mode", domain, len(urls), thin_threshold,
             )
             mode = "walk"
-            fallback_path = "sitemap_empty"
+            fallback_path = "sitemap_empty" if not urls else "sitemap_thin"
             candidate_seeds = seeds or [
                 f"https://{domain}/",
                 f"https://www.{domain}/" if not domain.startswith("www.") else f"https://{domain.removeprefix('www.')}/",
@@ -275,8 +286,10 @@ def walk_competitor_task(
             # De-duplicate while preserving order — set() would scramble it.
             seen: set[str] = set()
             seeds = [s for s in candidate_seeds if s and not (s in seen or seen.add(s))]
-            max_depth = max_depth or 2
-            max_pages = max_pages or 500
+            # Depth 4 / 2000 pages — deep enough to map a full insurer
+            # site by link-walking when the sitemap is useless.
+            max_depth = max_depth or 4
+            max_pages = max_pages or 2000
         else:
             sitemap_count = len(urls)
             seeds = urls
