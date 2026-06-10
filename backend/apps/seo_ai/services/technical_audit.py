@@ -116,7 +116,41 @@ def _structure_from_row(row) -> dict[str, Any]:
         "hreflang_count": int(getattr(row, "hreflang_count", 0) or 0),
         "hreflang_invalid_codes": list(getattr(row, "hreflang_invalid_codes", []) or []),
         "hreflang_has_x_default": bool(getattr(row, "hreflang_has_x_default", False)),
+        # Security / AMP / accessibility / mixed-content — already crawled.
+        "has_mixed_content": bool(getattr(row, "has_mixed_content", False)),
+        "is_amp_page": bool(getattr(row, "is_amp_page", False)),
+        "amp_invalid": bool(getattr(row, "amp_invalid", False)),
+        "amp_required_missing": list(getattr(row, "amp_required_missing", []) or []),
+        "color_contrast_violations": int(getattr(row, "color_contrast_violations_count", 0) or 0),
+        "hsts": getattr(row, "hsts", "") or "",
+        "x_frame_options": getattr(row, "x_frame_options", "") or "",
+        "csp": getattr(row, "csp", "") or "",
     }
+
+
+def _canonical_verdict(s: dict) -> dict | None:
+    """Canonical CORRECTNESS, not just presence: flags cross-domain
+    canonicals and pages canonicalised away to a different URL."""
+    can = (s.get("canonical") or "").strip()
+    if not can:
+        return None
+    final = (s.get("final_url") or s.get("url") or "").strip()
+    from urllib.parse import urlparse
+    cp, fp = urlparse(can), urlparse(final)
+    can_host = (cp.netloc or "").lower().lstrip("www.")
+    final_host = (fp.netloc or "").lower().lstrip("www.")
+    if can_host and final_host and can_host != final_host:
+        return _finding("canonical_correctness", "fail", "warning",
+            f"Canonical points to a different domain ({can_host}).",
+            "Cross-domain canonicals hand all ranking signals to that domain — "
+            "confirm this is intentional, else self-canonicalise.")
+    # Path mismatch → the page declares another URL as the index version.
+    if cp.path.rstrip("/") != fp.path.rstrip("/"):
+        return _finding("canonical_correctness", "warn", "notice",
+            f"Page canonicalises to a different URL ({can[:80]}).",
+            "This page is asking Google to index a different URL instead. "
+            "Verify that's intended; otherwise point canonical at itself.")
+    return None
 
 
 def _check_broken_links(links: list[dict], *, cap: int = 40) -> list[dict]:
@@ -337,10 +371,51 @@ def _structure_findings(s: dict) -> list[dict]:
             "Use descriptive, keyword-relevant anchor text so users and crawlers "
             "understand the destination."))
 
-    # Canonical
+    # Canonical — presence + correctness
     if not s["canonical"].strip():
         out.append(_finding("canonical", "warn", "notice", "No canonical URL declared.",
             "Add a self-referencing <link rel=canonical> to avoid duplicate-content dilution."))
+    else:
+        cv = _canonical_verdict(s)
+        if cv:
+            out.append(cv)
+
+    # Mixed content (Lighthouse best-practice / security)
+    if s.get("has_mixed_content"):
+        out.append(_finding("mixed_content", "fail", "warning",
+            "Page loads insecure (HTTP) resources on an HTTPS page.",
+            "Serve all images/scripts/styles over HTTPS — mixed content is "
+            "blocked by browsers and breaks the padlock."))
+
+    # AMP validity
+    if s.get("is_amp_page") and s.get("amp_invalid"):
+        miss = ", ".join(str(x) for x in (s.get("amp_required_missing") or [])[:4])
+        out.append(_finding("amp", "fail", "warning",
+            "AMP page is invalid" + (f" (missing: {miss})" if miss else "") + ".",
+            "Fix AMP validation errors or the page won't be served from the AMP "
+            "cache."))
+
+    # Accessibility — colour contrast (axe)
+    if s.get("color_contrast_violations", 0) > 0:
+        out.append(_finding("a11y_contrast", "warn", "notice",
+            f"{s['color_contrast_violations']} colour-contrast accessibility "
+            "violation(s) (axe).",
+            "Raise text/background contrast to WCAG AA (4.5:1) — helps "
+            "accessibility and is a Lighthouse signal."))
+
+    # Security headers
+    missing_sec = []
+    if not s.get("hsts"):
+        missing_sec.append("HSTS")
+    if not s.get("x_frame_options") and "frame-ancestors" not in (s.get("csp") or "").lower():
+        missing_sec.append("X-Frame-Options/frame-ancestors")
+    if not s.get("csp"):
+        missing_sec.append("Content-Security-Policy")
+    if missing_sec:
+        out.append(_finding("security_headers", "warn", "notice",
+            "Missing security headers: " + ", ".join(missing_sec) + ".",
+            "Add HSTS, a CSP, and clickjacking protection — best-practice "
+            "hardening that some audits and browsers reward."))
 
     # noindex
     if "noindex" in s["meta_robots"].lower():
@@ -508,7 +583,9 @@ def audit_site(*, snapshot=None, limit: int = 5000) -> dict[str, Any]:
                         "indexed_status", "indexability_reason", "word_count",
                         "redirect_hops", "redirect_loop", "image_broken_count",
                         "image_oversized_count", "image_missing_alt",
-                        "image_count", "hreflang_invalid_codes", "jsonld_count")[:limit])
+                        "image_count", "hreflang_invalid_codes", "jsonld_count",
+                        "has_mixed_content", "amp_invalid",
+                        "color_contrast_violations_count")[:limit])
     total = len(rows)
     if not total:
         return {"ok": False, "error": "snapshot has no pages"}
@@ -634,6 +711,70 @@ def audit_site(*, snapshot=None, limit: int = 5000) -> dict[str, Any]:
             "Use valid ISO language(-region) codes."),
             "count": len(hl_err), "samples": [r["url"] for r in hl_err[:15]]})
 
+    # Mixed content
+    mixed = [r for r in rows if r.get("has_mixed_content")]
+    if mixed:
+        findings.append({**_finding("mixed_content", "fail", "warning",
+            f"{len(mixed)} page(s) load insecure HTTP resources on HTTPS.",
+            "Serve every asset over HTTPS."),
+            "count": len(mixed), "samples": [r["url"] for r in mixed[:15]]})
+
+    # AMP invalid
+    amp_bad = [r for r in rows if r.get("amp_invalid")]
+    if amp_bad:
+        findings.append({**_finding("amp_invalid", "warn", "warning",
+            f"{len(amp_bad)} invalid AMP page(s).",
+            "Fix AMP validation errors or they won't serve from the AMP cache."),
+            "count": len(amp_bad), "samples": [r["url"] for r in amp_bad[:15]]})
+
+    # Accessibility — colour contrast
+    a11y = [r for r in rows if (r.get("color_contrast_violations_count") or 0) > 0]
+    if a11y:
+        tot = sum(r.get("color_contrast_violations_count") or 0 for r in a11y)
+        findings.append({**_finding("a11y_contrast", "warn", "notice",
+            f"{tot} colour-contrast violation(s) across {len(a11y)} page(s).",
+            "Raise text/background contrast to WCAG AA (4.5:1)."),
+            "count": len(a11y), "samples": [r["url"] for r in a11y[:15]]})
+
+    # ── Wired-in site-graph services (orphans, link equity, near-dup) ──
+    # These read the latest crawl graph; wrapped so a missing CSV / empty
+    # graph degrades gracefully instead of failing the whole audit.
+    extras: dict[str, Any] = {}
+    try:
+        from apps.crawler.services import pagerank as _pr
+        pr_sum = _pr.summary()
+        extras["link_equity"] = pr_sum
+        orphans = _pr.orphans(max_in_degree=0)
+        if orphans:
+            findings.append({**_finding("orphan_pages", "warn", "warning",
+                f"{len(orphans)} orphan page(s) — crawled but with no internal "
+                "inbound links.",
+                "Add internal links from relevant pages so crawlers and link "
+                "equity can reach them (or remove if obsolete)."),
+                "count": len(orphans),
+                "samples": [o.get("url") for o in orphans[:15]]})
+    except Exception as exc:  # noqa: BLE001
+        logger.info("technical_audit site: pagerank wiring skipped: %s", exc)
+
+    try:
+        from apps.crawler.services import near_dup as _nd
+        nd_sum = _nd.summary()
+        extras["near_duplicates"] = nd_sum
+        clusters = _nd.top_clusters(20)
+        dup_pages = sum(int(c.get("cluster_size", 0)) for c in clusters)
+        if clusters:
+            findings.append({**_finding("near_duplicate_content", "warn", "warning",
+                f"{len(clusters)} near-duplicate cluster(s) covering ~{dup_pages} "
+                "pages.",
+                "Consolidate or differentiate near-duplicate pages; canonicalise "
+                "variants to one primary URL."),
+                "count": len(clusters),
+                "samples": [
+                    f"{c.get('cluster_size')}× — {(c.get('representative_title') or '')[:60]}"
+                    for c in clusters[:15]]})
+    except Exception as exc:  # noqa: BLE001
+        logger.info("technical_audit site: near_dup wiring skipped: %s", exc)
+
     crit = sum(1 for f in findings if f["severity"] == "critical")
     warn = sum(1 for f in findings if f["severity"] == "warning")
     notice = sum(1 for f in findings if f["severity"] == "notice")
@@ -649,7 +790,10 @@ def audit_site(*, snapshot=None, limit: int = 5000) -> dict[str, Any]:
         "totals": {"broken_images": broken_img, "oversized_images": oversized_img,
                    "images_missing_alt": missing_alt,
                    "duplicate_titles": len(dup_titles),
-                   "redirect_chains": len(chains), "errors": len(errs)},
+                   "redirect_chains": len(chains), "errors": len(errs),
+                   "mixed_content": len(mixed), "amp_invalid": len(amp_bad)},
+        "link_equity": extras.get("link_equity"),
+        "near_duplicates": extras.get("near_duplicates"),
         "counts": {"critical": crit, "warning": warn, "notice": notice},
         "findings": findings,
     }
