@@ -289,7 +289,11 @@ COMPETITOR = {
             "economictimes.indiatimes.com,livemint.com,forbes.com,"
             # allianz.com = global Allianz parent (Bajaj Allianz is OUR
             # brand, not a rival). Not an Indian life-insurer competitor.
-            "allianz.com",
+            "allianz.com,"
+            # baliconline.in = Bajaj's OWN online-sales domain (BALIC),
+            # not a rival. sales.baliconline.in was wrongly crawled as a
+            # competitor.
+            "baliconline.in",
         ).split(",")
         if d.strip()
     ],
