@@ -5,7 +5,6 @@ import ChatPage from './pages/ChatPage';
 import GscPage from './pages/GscPage';
 import SemrushPage from './pages/SemrushPage';
 import AdobePage from './pages/AdobePage';
-import AdobeSeoJoinPage from './pages/AdobeSeoJoinPage';
 import BrandMonitorPage from './pages/BrandMonitorPage';
 import MetaAdsPage from './pages/MetaAdsPage';
 import ContentPage from './pages/ContentPage';
@@ -23,10 +22,7 @@ import CompetitorDetailPage from './pages/CompetitorDetailPage';
 import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 import PageDetailPage from './pages/PageDetailPage';
 import ContentWriterV2Page from './pages/ContentWriterV2Page';
-import CustodiansPage from './pages/CustodiansPage';
-import BriefingsPage from './pages/BriefingsPage';
 import GeoPage from './pages/GeoPage';
-import CompetitorChangesPage from './pages/CompetitorChangesPage';
 
 export default function App() {
   return (
@@ -42,7 +38,6 @@ export default function App() {
             <Route path="/gsc" component={GscPage} />
             <Route path="/semrush" component={SemrushPage} />
             <Route path="/adobe" component={AdobePage} />
-            <Route path="/adobe/seo-join" component={AdobeSeoJoinPage} />
             <Route path="/brand-monitor" component={BrandMonitorPage} />
             {/* Our own Bajaj Life Meta ads — isolated from competitor
                 sections so the ad-library detail page for any
@@ -88,14 +83,8 @@ export default function App() {
             {/* V2 — SERP-discovery-driven page revamp. New flow lives
                 in apps/seo_ai/content_writer/ (separate dir). */}
             <Route path="/content-writer-v2" component={ContentWriterV2Page} />
-            {/* DataCustodians — our domain + competitor roster + SiteDiffer. */}
-            <Route path="/custodians" component={CustodiansPage} />
-            {/* Briefings — Orchestrator V2 headline + biggest signals. */}
-            <Route path="/briefings" component={BriefingsPage} />
             {/* GEO score — Generative Engine Optimization rollup. */}
             <Route path="/geo-score" component={GeoPage} />
-            {/* ChangeWatcher feed — daily competitor change events. */}
-            <Route path="/competitor-changes" component={CompetitorChangesPage} />
             {/* Phase 2 — Ahrefs-style Page Explorer with sortable/
                 filterable URL inventory over the latest crawl. */}
             <Route path="/crawler/pages" component={PageExplorerPage} />
