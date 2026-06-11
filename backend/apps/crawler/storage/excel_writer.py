@@ -33,6 +33,7 @@ from . import url_classifier
 
 # ── Bajaj brand palette ────────────────────────────────────────────────────
 BRAND_NAVY = "003DA5"
+HEADER_NAVY = "002C6E"   # darker Bajaj navy — used for table/KPI headers
 BRAND_GOLD = "FDB913"
 OK_GREEN = "34A853"
 OK_GREEN_LT = "E6F4EA"
@@ -40,18 +41,22 @@ ERR_RED = "EA4335"
 ERR_RED_LT = "FCE8E6"
 WARN_ORANGE_LT = "FEF7E0"
 ZEBRA = "F8F9FA"
+KPI_BG = "EEF3FB"        # light blue KPI card background
 WHITE = "FFFFFF"
 TEXT_DARK = "202124"
 TEXT_MUTED = "5F6368"
 
 _HEADER_FONT = Font(name="Calibri", size=11, bold=True, color=WHITE)
-_SUBHEAD_FONT = Font(name="Calibri", size=10, bold=True, color=TEXT_DARK)
-_TITLE_FONT = Font(name="Calibri", size=20, bold=True, color=BRAND_NAVY)
+_SUBHEAD_FONT = Font(name="Calibri", size=10, bold=True, color=HEADER_NAVY)
+_TITLE_FONT = Font(name="Calibri", size=20, bold=True, color=HEADER_NAVY)
 _SUB_FONT = Font(name="Calibri", size=11, color=TEXT_MUTED)
 _KPI_LABEL = Font(name="Calibri", size=10, bold=True, color=TEXT_MUTED)
-_KPI_VALUE = Font(name="Calibri", size=20, bold=True, color=BRAND_NAVY)
+_KPI_VALUE = Font(name="Calibri", size=20, bold=True, color=HEADER_NAVY)
 
-_HEADER_FILL = PatternFill("solid", fgColor=BRAND_NAVY)
+# Dark-blue header fill used for every table + KPI header across the
+# bundle AND individual reports.
+_HEADER_FILL = PatternFill("solid", fgColor=HEADER_NAVY)
+_KPI_FILL = PatternFill("solid", fgColor=KPI_BG)
 _ACCENT_FILL = PatternFill("solid", fgColor=BRAND_GOLD)
 _ZEBRA_FILL = PatternFill("solid", fgColor=ZEBRA)
 _OK_FILL = PatternFill("solid", fgColor=OK_GREEN_LT)
@@ -173,38 +178,64 @@ def _build_summary(ws: Worksheet, totals: dict) -> None:
         ws.cell(row=4, column=c).fill = _ACCENT_FILL
     ws.row_dimensions[4].height = 4
 
+    pages = totals["pages_crawled"] or 0
+    ok = totals["ok_pages"] or 0
+    errs = totals["total_errors"] or 0
+    ok_pct = f"{round(100 * ok / pages)}%" if pages else "—"
+    err_pct = f"{round(100 * errs / pages)}%" if pages else "—"
+    # Two KPI rows — headline counts on top, derived health % below.
     cards = [
-        ("Pages Crawled", totals["pages_crawled"]),
-        ("OK (200)", totals["ok_pages"]),
-        ("Total Errors", totals["total_errors"]),
+        ("Pages Crawled", pages),
+        ("OK (200)", ok),
+        ("Total Errors", errs),
         ("404 Errors", totals["errors_404"]),
         ("Discovered Edges", totals["discovered_edges"]),
     ]
+    cards2 = [
+        ("OK rate", ok_pct),
+        ("Error rate", err_pct),
+        ("HTTP errors", totals["errors_http"]),
+        ("Console issues", totals["console_entries"]),
+        ("Avg resp (ms)", totals.get("avg_response_ms", "—")),
+    ]
     for i, (label, value) in enumerate(cards):
         col = 2 + i
-        ws.cell(row=6, column=col, value=label).font = _KPI_LABEL
-        ws.cell(row=6, column=col).alignment = _CENTER
+        lc = ws.cell(row=6, column=col, value=label)
+        lc.font = _KPI_LABEL
+        lc.alignment = _CENTER
+        lc.fill = _KPI_FILL
         vc = ws.cell(row=7, column=col, value=value)
         vc.font = _KPI_VALUE
         vc.alignment = _CENTER
-        for r in (6, 7, 8):
-            c = ws.cell(row=r, column=col)
-            c.border = Border(left=_THIN, right=_THIN, top=_THIN if r == 6 else None,
-                              bottom=_THIN if r == 8 else None)
-        ws.row_dimensions[6].height = 22
-        ws.row_dimensions[7].height = 32
-        ws.row_dimensions[8].height = 4
+        vc.fill = _KPI_FILL
+        for r in (6, 7):
+            ws.cell(row=r, column=col).border = _BORDER
+    for i, (label, value) in enumerate(cards2):
+        col = 2 + i
+        lc = ws.cell(row=9, column=col, value=label)
+        lc.font = _KPI_LABEL
+        lc.alignment = _CENTER
+        lc.fill = _KPI_FILL
+        vc = ws.cell(row=10, column=col, value=value)
+        vc.font = Font(name="Calibri", size=16, bold=True, color=HEADER_NAVY)
+        vc.alignment = _CENTER
+        vc.fill = _KPI_FILL
+        for r in (9, 10):
+            ws.cell(row=r, column=col).border = _BORDER
+    ws.row_dimensions[6].height = 20
+    ws.row_dimensions[7].height = 30
+    ws.row_dimensions[9].height = 18
+    ws.row_dimensions[10].height = 26
 
-    ws["B10"] = "Error breakdown"
-    ws["B10"].font = _SUBHEAD_FONT
-    ws.append([])
+    ws["B13"] = "Error breakdown"
+    ws["B13"].font = _SUBHEAD_FONT
     brk_headers = ["Category", "Count"]
     breakdown = [
         ("404 Not Found", totals["errors_404"]),
         ("HTTP Error (non-404)", totals["errors_http"]),
         ("Console Errors (in source)", totals["console_entries"]),
     ]
-    start_row = 12
+    start_row = 15
     for i, h in enumerate(brk_headers):
         cell = ws.cell(row=start_row, column=2 + i, value=h)
         cell.font = _HEADER_FONT
@@ -232,7 +263,7 @@ def _build_summary(ws: Worksheet, totals: dict) -> None:
         chart.height = 9
         chart.width = 14
         chart.dataLabels = DataLabelList(showPercent=True)
-        ws.add_chart(chart, "E10")
+        ws.add_chart(chart, "E13")
 
 
 RAW_SHEETS: list[tuple[str, str, str | None, str | None]] = [
@@ -245,6 +276,137 @@ RAW_SHEETS: list[tuple[str, str, str | None, str | None]] = [
     ("Console Log", "crawl_console_log.csv", None, None),
     ("Discovered Edges", "crawl_discovered.csv", None, None),
 ]
+
+
+def _kpi_strip(ws: Worksheet, start_row: int, cards: list[tuple[str, object]]) -> int:
+    """Render a horizontal KPI card strip (label over value, light-blue
+    card bg, dark border). Returns the next free row."""
+    for i, (label, value) in enumerate(cards):
+        col = 1 + i
+        lc = ws.cell(row=start_row, column=col, value=label)
+        lc.font = _KPI_LABEL
+        lc.alignment = _CENTER
+        lc.fill = _KPI_FILL
+        lc.border = _BORDER
+        vc = ws.cell(row=start_row + 1, column=col, value=value)
+        vc.font = _KPI_VALUE
+        vc.alignment = _CENTER
+        vc.fill = _KPI_FILL
+        vc.border = _BORDER
+    ws.row_dimensions[start_row].height = 20
+    ws.row_dimensions[start_row + 1].height = 30
+    return start_row + 3
+
+
+def _table_kpis(headers: list[str], rows: list[list[str]]) -> list[tuple[str, object]]:
+    """Derive at-a-glance KPIs from a table's own columns."""
+    total = len(rows)
+    cards: list[tuple[str, object]] = [("Rows", total)]
+    if "status_code" in headers:
+        i = headers.index("status_code")
+        ok = sum(1 for r in rows if i < len(r) and r[i] == "200")
+        e404 = sum(1 for r in rows if i < len(r) and r[i] == "404")
+        err = sum(1 for r in rows if i < len(r) and r[i] and not r[i].startswith("2"))
+        cards += [("OK (200)", ok), ("404", e404), ("Errors", err),
+                  ("OK %", f"{round(100 * ok / total)}%" if total else "—")]
+    elif "status" in headers:
+        i = headers.index("status")
+        ok = sum(1 for r in rows if i < len(r) and r[i] == "OK")
+        cards += [("OK", ok), ("Not OK", total - ok)]
+    if "subdomain" in headers:
+        i = headers.index("subdomain")
+        subs = {r[i] for r in rows if i < len(r) and r[i]}
+        cards.append(("Subdomains", len(subs)))
+    return cards[:6]
+
+
+def build_single_table_report(
+    key: str, label: str, headers: list[str], rows: list[list[str]],
+    output_path: Path,
+    *, status_col: str | None = None, code_col: str | None = None,
+) -> Path:
+    """One styled sheet for an INDIVIDUAL report download: dark-blue
+    title + KPI dashboard strip + the data table with dark header,
+    zebra rows, conditional status fills, freeze panes and auto-filter.
+    Mirrors the bundle styling so single-table downloads look the same.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (label or key)[:31].replace("/", "-").replace(":", "-") or "Report"
+    ws.sheet_view.showGridLines = False
+
+    ncols = max(1, len(headers))
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=min(ncols, 8))
+    ws.cell(row=1, column=1, value=f"Bajaj Life · {label or key}").font = _TITLE_FONT
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=min(ncols, 8))
+    ws.cell(row=2, column=1,
+            value=f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ·  "
+                  f"{len(rows):,} rows").font = _SUB_FONT
+
+    next_row = _kpi_strip(ws, 4, _table_kpis(headers, rows))
+
+    # Data table below the KPI strip.
+    if not headers:
+        ws.cell(row=next_row, column=1, value="(no data)").font = _SUB_FONT
+        wb.save(output_path)
+        return output_path
+
+    header_row = next_row
+    for ci, h in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=ci, value=h)
+        c.font = _HEADER_FONT
+        c.fill = _HEADER_FILL
+        c.alignment = _CENTER
+        c.border = _BORDER
+
+    status_idx = headers.index(status_col) + 1 if status_col and status_col in headers else None
+    code_idx = headers.index(code_col) + 1 if code_col and code_col in headers else None
+    idx_idx = headers.index("indexed_status") + 1 if "indexed_status" in headers else None
+
+    for ri, row in enumerate(rows, start=header_row + 1):
+        padded = (row + [""] * (len(headers) - len(row)))[: len(headers)]
+        base_fill = _ZEBRA_FILL if (ri - header_row) % 2 == 0 else None
+        for ci in range(1, len(headers) + 1):
+            cell = ws.cell(row=ri, column=ci, value=padded[ci - 1])
+            cell.alignment = _LEFT
+            cell.border = _BORDER
+            cell.font = Font(name="Calibri", size=10, color=TEXT_DARK)
+            if base_fill:
+                cell.fill = base_fill
+        if status_idx:
+            v = padded[status_idx - 1]
+            sc = ws.cell(row=ri, column=status_idx)
+            if v == "OK":
+                sc.fill = _OK_FILL
+                sc.font = Font(name="Calibri", size=10, bold=True, color=OK_GREEN)
+            elif v and v != "pending":
+                sc.fill = _ERR_FILL
+                sc.font = Font(name="Calibri", size=10, bold=True, color=ERR_RED)
+        if code_idx:
+            v = padded[code_idx - 1]
+            sc = ws.cell(row=ri, column=code_idx)
+            if v == "200":
+                sc.font = Font(name="Calibri", size=10, bold=True, color=OK_GREEN)
+            elif v.startswith(("4", "5")):
+                sc.fill = _ERR_FILL
+                sc.font = Font(name="Calibri", size=10, bold=True, color=ERR_RED)
+        if idx_idx:
+            v = padded[idx_idx - 1]
+            sc = ws.cell(row=ri, column=idx_idx)
+            if v == "indexed":
+                sc.fill = _OK_FILL
+            elif v == "not_indexed":
+                sc.fill = _ERR_FILL
+
+    last_row = header_row + len(rows)
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    ws.auto_filter.ref = (
+        f"A{header_row}:{get_column_letter(len(headers))}{max(last_row, header_row)}"
+    )
+    _fit_columns(ws, headers, rows)
+    wb.save(output_path)
+    return output_path
 
 
 def build_report(output_path: Path | None = None) -> Path:
@@ -436,7 +598,7 @@ def _compute_breakdown(headers: list[str],
 
 def _build_category_pivot(ws: Worksheet, breakdown: dict) -> None:
     """Render the category × indexed pivot block on the Summary sheet."""
-    start_row = 20
+    start_row = 24
     ws.cell(row=start_row, column=2, value="Category breakdown").font = _SUBHEAD_FONT
 
     headers = ["Subdomain", "Category", "Crawled", "OK", "404",
@@ -555,6 +717,9 @@ def _build_subdomain_overview(ws: Worksheet, sub: str,
                 c.border = _BORDER
                 if ri % 2 == 0:
                     c.fill = _ZEBRA_FILL
+        # Auto-filter the problem table so the operator can re-slice it.
+        ws.auto_filter.ref = f"B{block}:E{block + len(problems)}"
+        ws.freeze_panes = ws.cell(row=block + 1, column=2)
 
 
 def _compute_totals(res_hdr: list[str], res_rows: list[list[str]]) -> dict:
@@ -563,12 +728,26 @@ def _compute_totals(res_hdr: list[str], res_rows: list[list[str]]) -> dict:
         return len(rows)
 
     ok = 0
+    avg_rt = "—"
     if res_hdr:
         try:
             idx = res_hdr.index("status_code")
             ok = sum(1 for r in res_rows if idx < len(r) and r[idx] == "200")
         except ValueError:
             pass
+        if "response_time_ms" in res_hdr:
+            rti = res_hdr.index("response_time_ms")
+            vals = []
+            for r in res_rows:
+                if rti < len(r):
+                    try:
+                        v = int(r[rti] or 0)
+                    except ValueError:
+                        continue
+                    if v > 0:
+                        vals.append(v)
+            if vals:
+                avg_rt = round(sum(vals) / len(vals))
     return {
         "pages_crawled": len(res_rows),
         "ok_pages": ok,
@@ -577,6 +756,7 @@ def _compute_totals(res_hdr: list[str], res_rows: list[list[str]]) -> dict:
         "errors_http": count("crawl_errors_httperror.csv"),
         "console_entries": count("crawl_console_log.csv"),
         "discovered_edges": count("crawl_discovered.csv"),
+        "avg_response_ms": avg_rt,
     }
 
 
@@ -961,10 +1141,10 @@ def _add_summary_charts(ws, res_hdr: list[str], res_rows: list[list[str]]) -> No
         else -1
     )
 
-    # Find an empty row below the existing pivot. Iterate up to row 50
+    # Find an empty row below the existing pivot. Iterate up to row 80
     # safely — the pivot block never approaches that depth.
-    start_row = 32
-    while ws.cell(row=start_row, column=1).value is not None and start_row < 80:
+    start_row = 40
+    while ws.cell(row=start_row, column=1).value is not None and start_row < 90:
         start_row += 1
 
     if status_idx >= 0:

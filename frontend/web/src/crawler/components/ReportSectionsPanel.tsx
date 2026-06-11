@@ -67,8 +67,16 @@ function useAsync<T>(fn: () => Promise<T>): { data: T | null; error: string | nu
 }
 
 // ── per-section DETAIL components (each self-contained) ─────────────────────
+const SUBDOMAIN_LABELS: Record<string, string> = {
+  all: 'All',
+  www: 'www',
+  branch: 'Branch',
+  investmentcorner: 'Investment Corner',
+};
+
 function BrokenLinksDetail() {
   const { data: broken } = useAsync(() => crawlerApi.reportBrokenLinks());
+  const [sub, setSub] = useState<string>('all');
   return (
     <section style={{ ...card, borderColor: 'var(--red,#c0392b)' }}>
       <h2 style={{ ...h2, color: 'var(--red,#c0392b)' }}><Icon name="link_off" /> Broken Links — with proof of source</h2>
@@ -80,10 +88,40 @@ function BrokenLinksDetail() {
             {stat(broken.linked_targets ?? 0, 'Linked from pages')}
             {stat(broken.total_links ?? 0, 'Broken link instances')}
           </div>
+          {/* Subdomain filter — split 404s into www / branch / investment
+              corner. Only shows subdomains that actually have broken URLs. */}
+          {(() => {
+            const bs = broken.by_subdomain || {};
+            const subs = ['all', ...Object.keys(SUBDOMAIN_LABELS).filter((k) => k !== 'all' && bs[k])];
+            if (subs.length <= 2) return null; // only www → no point in chips
+            return (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '0 0 10px' }}>
+                {subs.map((k) => {
+                  const count = k === 'all' ? broken.total_targets : (bs[k]?.targets ?? 0) + (bs[k]?.orphan ?? 0);
+                  const active = sub === k;
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setSub(k)}
+                      style={{
+                        border: '1px solid ' + (active ? 'var(--red,#c0392b)' : 'var(--border,#e2e6ee)'),
+                        background: active ? 'var(--red,#c0392b)' : '#fff',
+                        color: active ? '#fff' : '#334155',
+                        borderRadius: 999, padding: '3px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                      }}
+                    >
+                      {SUBDOMAIN_LABELS[k] || k} <span style={{ opacity: 0.8 }}>({count})</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
           <p style={{ fontSize: 12, color: 'var(--muted,#6b7280)', margin: '0 0 10px' }}>
             Each broken URL lists exactly which page links to it, the anchor text, section and zone — hand this to the dev/AEM team as-is.
           </p>
-          {broken.targets.map((t) => (
+          {broken.targets.filter((t) => sub === 'all' || (t.subdomain || 'www') === sub).map((t) => (
             <details key={t.url} style={{ border: '1px solid var(--border,#e2e6ee)', borderRadius: 8, marginBottom: 8 }}>
               <summary style={{ padding: '8px 10px', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 {badge(t.status, 'var(--red,#c0392b)')}
