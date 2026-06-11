@@ -57,6 +57,28 @@ _INFRASTRUCTURE_HOSTS = {
 _INFRA_DISCOUNT = 0.2
 
 
+def _blocklist() -> set[str]:
+    """Non-competitor domains (advisory blogs, dictionaries, aggregators)
+    that must be fully EXCLUDED from the competitor leaderboard — not just
+    discounted. Operator-curated; read from settings.COMPETITOR.blocklist."""
+    return {
+        _normalise_host(d)
+        for d in (getattr(settings, "COMPETITOR", {}) or {}).get("blocklist", [])
+        if d
+    }
+
+
+def _curated_roster() -> list[str]:
+    """The real insurer peer set — used as the BACKUP competitor list when
+    LLM/SERP discovery produces nothing (no API keys) so the deep crawl
+    still targets genuine rivals instead of an empty/junk set."""
+    return [
+        _normalise_host(d)
+        for d in (getattr(settings, "COMPETITOR", {}) or {}).get("roster", [])
+        if d
+    ]
+
+
 def _bare(domain: str) -> str:
     bare = re.sub(r"^www\d?\.", "", (domain or "").lower())
     return bare.split("/")[0]
@@ -162,15 +184,40 @@ def execute(*, run: GapPipelineRun, domain: str, top_n: int = 10) -> dict[str, A
             score[c_host] += 2.0
             queries_for[c_host].add(str(r.query_id))
 
-    # ── infra discount + sort ────────────────────────────────────────
+    # ── blocklist filter + infra discount + sort ─────────────────────
+    blocked = _blocklist()
     final: list[tuple[str, float]] = []
+    dropped: list[str] = []
     for host, raw_score in score.items():
+        # Hard-exclude non-competitor junk (ditto/investopedia/policyx/...)
+        # so it's never crawled — saves crawl time + tokens.
+        if host in blocked or any(host.endswith("." + b) for b in blocked):
+            dropped.append(host)
+            continue
         s = raw_score
         if host in _INFRASTRUCTURE_HOSTS:
             s *= _INFRA_DISCOUNT
         final.append((host, s))
     final.sort(key=lambda x: x[1], reverse=True)
     top = final[: max(1, int(top_n))]
+
+    # ── BACKUP roster fallback ────────────────────────────────────────
+    # When discovery yields nothing (no LLM/SERP keys → empty score map),
+    # fall back to the curated insurer roster so the deep crawl still
+    # targets real rivals instead of crawling nothing (or junk).
+    used_fallback = False
+    if not top:
+        roster = [_r for _r in _curated_roster() if not _is_us(_r, focus)]
+        if roster:
+            top = [(h, 0.0) for h in roster[: max(1, int(top_n))]]
+            used_fallback = True
+            logger.info(
+                "competitor_aggregation: no discovery signals — using "
+                "curated backup roster (%d competitors)", len(top),
+            )
+    if dropped:
+        logger.info("competitor_aggregation: blocked %d non-competitor "
+                    "domain(s): %s", len(dropped), ", ".join(sorted(set(dropped))[:10]))
 
     # ── persist ──────────────────────────────────────────────────────
     GapCompetitor.objects.filter(run=run).delete()
@@ -204,4 +251,6 @@ def execute(*, run: GapPipelineRun, domain: str, top_n: int = 10) -> dict[str, A
         "competitor_count": len(top),
         "top_domain": top[0][0] if top else "",
         "considered_domains": len(final),
+        "blocked_domains": len(set(dropped)),
+        "used_backup_roster": used_fallback,
     }

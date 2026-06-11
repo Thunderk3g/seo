@@ -406,27 +406,11 @@ def _crawl_domain(
     )
 
 
-def _ours_outcome_from_db(domain: str) -> _CrawlOutcome | None:
-    """Build OUR side of the comparison from the DB instead of live-
-    crawling our own site through the competitor machinery.
-
-    Operator rule (2026-06-10): the competitor pipeline must NOT crawl
-    bajajlifeinsurance.com — the dedicated content crawl (kind='content')
-    and the nightly engine (kind='bajaj') already store everything.
-    This maps the latest own-site snapshot's rows onto CompetitorPage
-    objects so ``_build_profile`` produces the identical profile shape.
-    Returns None when no own-site snapshot exists yet (caller falls
-    back to the old live crawl as a last resort).
-    """
-    from django.db.models import Count
-
-    from apps.crawler.models import CrawlSnapshot, CrawlerPageResult
-
-    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
-            .annotate(n=Count("pages")).filter(n__gt=0)
-            .order_by("-started_at").first())
-    if snap is None:
-        return None
+def _pages_from_snapshot(snap) -> list[CompetitorPage]:
+    """Map a snapshot's HTTP-200 rows onto CompetitorPage objects so
+    ``_build_profile`` produces the same profile shape for DB-backed
+    sides as for live-crawled ones."""
+    from apps.crawler.models import CrawlerPageResult
 
     rows = (CrawlerPageResult.objects
             .filter(snapshot=snap, status_code="200")
@@ -455,10 +439,15 @@ def _ours_outcome_from_db(domain: str) -> _CrawlOutcome | None:
             has_schema_org=bool(schema),
             meta_robots=r.get("meta_robots") or "",
         ))
+    return pages
+
+
+def _outcome_from_snapshot(snap, bare: str) -> _CrawlOutcome | None:
+    """Build a deep-crawl _CrawlOutcome from a stored snapshot (no live
+    crawl). Shared by both the our-side and competitor DB paths."""
+    pages = _pages_from_snapshot(snap)
     if not pages:
         return None
-
-    bare = re.sub(r"^www\d?\.", "", (domain or "").lower()).split("/")[0]
     timeout = int(settings.COMPETITOR.get("timeout_sec", 15))
     commercial_signals = {
         "pricing": _head_probe(f"https://{bare}/pricing", timeout=timeout),
@@ -473,6 +462,47 @@ def _ours_outcome_from_db(domain: str) -> _CrawlOutcome | None:
         pages_ok=len(pages),
         profile=profile,
     )
+
+
+def _ours_outcome_from_db(domain: str) -> _CrawlOutcome | None:
+    """OUR side from the DB (content/bajaj snapshot) — never a self-crawl."""
+    from django.db.models import Count
+
+    from apps.crawler.models import CrawlSnapshot
+
+    snap = (CrawlSnapshot.objects.filter(kind__in=("content", "bajaj"))
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-started_at").first())
+    if snap is None:
+        return None
+    bare = re.sub(r"^www\d?\.", "", (domain or "").lower()).split("/")[0]
+    return _outcome_from_snapshot(snap, bare)
+
+
+def _competitor_outcome_from_db(domain: str) -> _CrawlOutcome | None:
+    """COMPETITOR side from the DB — read the RICHEST existing competitor
+    snapshot (the roster walk's data) instead of re-crawling live.
+
+    This is the operator's "AI identifies competitors → crawl engine
+    crawls (once)" model: the gap pipeline reuses what the roster walk
+    already crawled rather than hammering rivals again (which also
+    crashed the dev backend). Returns None when no snapshot exists, so
+    the caller can fall back to a (bounded) live crawl for a brand-new
+    competitor the roster hasn't reached yet.
+    """
+    from django.db.models import Count
+    from django.db.models import Q
+
+    from apps.crawler.models import CrawlSnapshot
+
+    bare = re.sub(r"^www\d?\.", "", (domain or "").lower()).split("/")[0]
+    snap = (CrawlSnapshot.objects.filter(kind="competitor")
+            .filter(Q(target_domain__iexact=bare) | Q(parent_domain__iexact=bare))
+            .annotate(n=Count("pages")).filter(n__gt=0)
+            .order_by("-n", "-started_at").first())
+    if snap is None:
+        return None
+    return _outcome_from_snapshot(snap, bare)
 
 
 def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:
@@ -543,15 +573,24 @@ def execute(*, run: GapPipelineRun, domain: str) -> dict[str, Any]:
 
     for comp in competitors:
         try:
-            outcome = _crawl_domain(
-                domain=comp.domain,
-                sitemap_adapter=sitemap_adapter,
-                crawler=crawler,
-                pages_per_domain=pages_per_domain,
-                timeout=timeout,
-                # Operator rule: no bulk competitor CWV (PSI quota).
-                enrich_cwv=_COMPETITOR_CWV_ENRICH,
-            )
+            # DB-FIRST: reuse the roster walk's crawl of this competitor
+            # instead of re-crawling live. Only live-crawl (bounded) when
+            # the roster hasn't reached this domain yet. This stops the
+            # gap pipeline from re-hammering rivals (which crashed the
+            # backend) and aligns with "crawl once, compare many".
+            outcome = _competitor_outcome_from_db(comp.domain)
+            if outcome is None:
+                logger.info("deep_crawl: no DB snapshot for %s — bounded "
+                            "live crawl", comp.domain)
+                outcome = _crawl_domain(
+                    domain=comp.domain,
+                    sitemap_adapter=sitemap_adapter,
+                    crawler=crawler,
+                    pages_per_domain=pages_per_domain,
+                    timeout=timeout,
+                    # Operator rule: no bulk competitor CWV (PSI quota).
+                    enrich_cwv=_COMPETITOR_CWV_ENRICH,
+                )
             GapDeepCrawl.objects.create(
                 run=run,
                 competitor=comp,

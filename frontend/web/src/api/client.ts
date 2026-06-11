@@ -50,15 +50,27 @@ export async function apiFetch<T = unknown>(
   }
 
   const url = buildUrl(path, query);
+  // Hard request timeout so a slow/overloaded backend surfaces as an
+  // error (which the UI renders with a retry) instead of leaving the
+  // component stuck on "Loading…" forever. 45s is generous for the
+  // heaviest report scans; most calls return in well under a second.
+  const controller = new AbortController();
+  const timeoutMs = (init as { timeoutMs?: number }).timeoutMs ?? 45_000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
+    const aborted = (err as Error).name === 'AbortError';
     throw new ApiError(
-      `Network error contacting ${url}: ${(err as Error).message}`,
+      aborted
+        ? `Request to ${url} timed out after ${Math.round(timeoutMs / 1000)}s (backend slow or down).`
+        : `Network error contacting ${url}: ${(err as Error).message}`,
       0,
       null
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   const contentType = res.headers.get('content-type') || '';
