@@ -4,6 +4,7 @@ import HealthScoreCard from '../components/HealthScoreCard';
 import LiveLogPanel from '../components/LiveLogPanel';
 import RecentPagesTable from '../components/RecentPagesTable';
 import StatCard from '../components/StatCard';
+import SubdomainToggles from '../components/SubdomainToggles';
 import CrawlStatsPanel from '../components/CrawlStatsPanel';
 import InternalLinkingPanel from '../components/InternalLinkingPanel';
 import { crawlerApi, type CrawlerLogMessage, type CrawlerSummary } from '../api';
@@ -140,6 +141,8 @@ export default function CrawlerDashboard() {
           Download Excel Report
         </a>
       </div>
+
+      <SubdomainToggles running={!!status?.is_running} />
 
       <ControlBar
         running={!!status?.is_running}

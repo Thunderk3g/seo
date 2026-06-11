@@ -61,15 +61,95 @@ def status_view(_request):
         stats = STATE.stats.as_dict()
         visited_count = len(STATE.visited)
         queue_count = len(STATE.queue)
+    # Surface the on-demand subdomain toggle so the dashboard can show
+    # the current scope without a second round-trip.
+    try:
+        from .conf import CRAWLABLE_SUBDOMAINS
+        from .models import SystemSetting
+        valid = {v["host"] for v in CRAWLABLE_SUBDOMAINS.values()}
+        enabled_subdomains = [
+            h for h in (SystemSetting.get_value("crawler_subdomains", []) or [])
+            if h in valid
+        ]
+    except Exception:  # noqa: BLE001
+        enabled_subdomains = []
     return Response({
         "is_running": STATE.is_running,
         "should_stop": STATE.should_stop,
         "seed": settings.seed_url,
         "allowed_domains": sorted(settings.allowed_domains),
+        "enabled_subdomains": sorted(enabled_subdomains),
         "stats": stats,
         "visited_count": visited_count,
         "queue_count": queue_count,
     })
+
+
+@api_view(["GET", "POST"])
+def subdomains_view(request):
+    """On-demand subdomain crawl scope.
+
+    GET  → the available toggleable subdomains + which are enabled now.
+    POST → set them. Body either:
+             {"enabled": ["branch", "investmentcorner"]}   (full set), or
+             {"key": "branch", "enabled": true}            (single flip).
+    Persisted in the ``crawler_subdomains`` SystemSetting as a list of
+    exact hosts; the next crawl Start reads it. Blocked while a crawl is
+    running so scope can't change mid-run.
+    """
+    from .conf import CRAWLABLE_SUBDOMAINS
+    from .models import SystemSetting
+
+    def _current_hosts() -> list[str]:
+        valid = {v["host"] for v in CRAWLABLE_SUBDOMAINS.values()}
+        return [h for h in (SystemSetting.get_value("crawler_subdomains", []) or [])
+                if h in valid]
+
+    def _payload():
+        enabled = set(_current_hosts())
+        return {
+            "available": [
+                {"key": k, "host": v["host"], "label": v["label"],
+                 "enabled": v["host"] in enabled}
+                for k, v in CRAWLABLE_SUBDOMAINS.items()
+            ],
+            "enabled_hosts": sorted(enabled),
+        }
+
+    if request.method == "GET":
+        return Response(_payload())
+
+    if STATE.is_running:
+        return Response(
+            {"ok": False, "message": "Cannot change subdomain scope while a "
+             "crawl is running. Stop it first, or wait for it to finish."},
+            status=409)
+
+    body = request.data or {}
+    hosts = set(_current_hosts())
+    if "key" in body:                       # single toggle
+        key = str(body.get("key"))
+        if key not in CRAWLABLE_SUBDOMAINS:
+            return Response({"ok": False, "message": f"unknown subdomain '{key}'"},
+                            status=400)
+        host = CRAWLABLE_SUBDOMAINS[key]["host"]
+        if bool(body.get("enabled")):
+            hosts.add(host)
+        else:
+            hosts.discard(host)
+    elif "enabled" in body:                 # full set by key list
+        keys = body.get("enabled") or []
+        if not isinstance(keys, list):
+            return Response({"ok": False, "message": "'enabled' must be a list"},
+                            status=400)
+        hosts = {CRAWLABLE_SUBDOMAINS[k]["host"] for k in keys
+                 if k in CRAWLABLE_SUBDOMAINS}
+    else:
+        return Response({"ok": False, "message": "body must include 'key' or 'enabled'"},
+                        status=400)
+
+    SystemSetting.set_value("crawler_subdomains", sorted(hosts))
+    return Response({"ok": True, **_payload()})
 
 
 @api_view(["POST"])
@@ -209,6 +289,28 @@ def download_csv_view(request, key: str):
     if not path.exists():
         return JsonResponse({"error": "File not yet generated"}, status=404)
     filters = _extract_filters(request)
+
+    # Styled single-table XLSX download (dark-blue header, KPI dashboard
+    # strip, auto-filter) — same look as the bundle. ?export=xlsx.
+    if request.query_params.get("export") == "xlsx":
+        data = repo.read_csv(key, filters=filters or None)
+        headers = data.get("headers") or []
+        rows = data.get("rows") or []   # already list-of-lists per headers
+        import tempfile
+
+        from .storage.excel_writer import build_single_table_report
+        status_col = "status" if "status" in headers else None
+        code_col = "status_code" if "status_code" in headers else None
+        tmp = Path(tempfile.gettempdir()) / meta["file"].replace(".csv", ".xlsx")
+        build_single_table_report(
+            key, meta["label"], headers, rows, tmp,
+            status_col=status_col, code_col=code_col)
+        return FileResponse(
+            open(tmp, "rb"), as_attachment=True,
+            filename=meta["file"].replace(".csv", ".xlsx"),
+            content_type="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet")
+
     if not filters:
         # No filters — stream the raw file untouched (fastest path, no parse).
         return FileResponse(

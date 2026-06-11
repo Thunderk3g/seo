@@ -12,6 +12,8 @@ urlpatterns = [
     path("status", views.status_view, name="status"),
     path("start", views.start_view, name="start"),
     path("stop", views.stop_view, name="stop"),
+    # On-demand subdomain crawl scope (branch / investment corner).
+    path("subdomains", views.subdomains_view, name="subdomains"),
 
     # Data access
     path("summary", views.summary_view, name="summary"),

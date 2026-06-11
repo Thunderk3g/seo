@@ -83,6 +83,14 @@ class CrawlerSettings:
             ["www.bajajlifeinsurance.com"],
         )
     )
+    # Extra origins to ALSO seed + harvest sitemaps from, beyond
+    # ``seed_url``. Used by the on-demand subdomain toggle (branch.* /
+    # investmentcorner.*): ``run_crawl`` populates this from the
+    # ``crawler_subdomains`` SystemSetting at crawl start so those
+    # subdomains are reached even when www doesn't link to them. Empty by
+    # default → www-only crawl (unchanged behaviour).
+    extra_seeds: List[str] = field(default_factory=list)
+
     user_agent: str = field(
         default_factory=lambda: _env_str(
             "USER_AGENT",
@@ -263,6 +271,24 @@ class CrawlerSettings:
     def legacy_data_path(self) -> Path:
         """Pre-existing crawl outputs to seed from on first boot (optional)."""
         return PROJECT_ROOT.parent / "data_complete"
+
+
+# ── On-demand subdomain crawl (Crawler Dashboard toggle) ─────────────
+# The base crawl is www-only. These subdomains are crawled ONLY when the
+# operator enables them on the dashboard (persisted in the
+# ``crawler_subdomains`` SystemSetting). Key = stable id used by the API
+# + UI; value = the exact host admitted into ``allowed_domains``.
+BASE_CRAWL_HOST = "www.bajajlifeinsurance.com"
+CRAWLABLE_SUBDOMAINS: dict[str, dict[str, str]] = {
+    "branch": {
+        "host": "branch.bajajlifeinsurance.com",
+        "label": "Branch locator",
+    },
+    "investmentcorner": {
+        "host": "investmentcorner.bajajlifeinsurance.com",
+        "label": "Investment Corner",
+    },
+}
 
 
 _singleton: CrawlerSettings | None = None

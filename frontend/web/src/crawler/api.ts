@@ -45,11 +45,26 @@ export interface CrawlerStats {
   finished_at: number | null;
 }
 
+export interface SubdomainOption {
+  key: string;
+  host: string;
+  label: string;
+  enabled: boolean;
+}
+
+export interface SubdomainsResponse {
+  available: SubdomainOption[];
+  enabled_hosts: string[];
+  ok?: boolean;
+  message?: string;
+}
+
 export interface CrawlerStatus {
   is_running: boolean;
   should_stop: boolean;
   seed: string;
   allowed_domains: string[];
+  enabled_subdomains?: string[];
   stats: CrawlerStats;
   visited_count: number;
   queue_count: number;
@@ -322,6 +337,13 @@ export const crawlerApi = {
     request<TreeResponse>(`/tree?max_depth=${maxDepth}&max_nodes=${maxNodes}`),
   start: () => request<ActionResponse>('/start', { method: 'POST' }),
   stop: () => request<ActionResponse>('/stop', { method: 'POST' }),
+  // On-demand subdomain crawl scope (branch / investment corner).
+  subdomains: () => request<SubdomainsResponse>('/subdomains'),
+  setSubdomain: (key: string, enabled: boolean) =>
+    request<SubdomainsResponse>('/subdomains', {
+      method: 'POST',
+      body: JSON.stringify({ key, enabled }),
+    }),
   logs: (cursor: number | null, limit = 500) => {
     const qs = new URLSearchParams();
     if (cursor !== null) qs.set('cursor', String(cursor));
@@ -330,6 +352,11 @@ export const crawlerApi = {
   },
   downloadUrl: (key: string, filters?: ReportFilters) =>
     `${BASE}/download/${key}${filterQuery(filters)}`,
+  // Styled single-table XLSX (dark-blue header + KPI dashboard + filter).
+  downloadXlsxUrl: (key: string, filters?: ReportFilters) => {
+    const q = filterQuery(filters);
+    return `${BASE}/download/${key}${q ? q + '&' : '?'}export=xlsx`;
+  },
   xlsxUrl: () => `${BASE}/reports/xlsx`,
   refreshGscCoverage: () =>
     request<GscRefreshResponse>('/gsc/coverage/refresh', { method: 'POST' }),
@@ -996,10 +1023,12 @@ export const crawlerApi = {
       targets: Array<{
         url: string;
         status: string;
+        subdomain?: string;
         source_count: number;
         sources: Array<{ page: string; anchor: string; section: string; zone: string; kind: string }>;
       }>;
-      orphan_broken?: Array<{ url: string; status: string }>;
+      orphan_broken?: Array<{ url: string; status: string; subdomain?: string }>;
+      by_subdomain?: Record<string, { targets: number; links: number; orphan: number }>;
     }>('/report/broken-links'),
 
   reportRobots: () =>
