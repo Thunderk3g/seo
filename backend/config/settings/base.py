@@ -263,11 +263,33 @@ COMPETITOR = {
         d.strip().lower().lstrip("www.")
         for d in os.environ.get(
             "COMPETITOR_ROSTER",
-            # axismaxlife.com (Max Life rebranded to Axis Max Life, 2024) —
-            # the old maxlifeinsurance.com only yielded redirect stubs.
+            # Curated real Indian life-insurer peer set (operator-confirmed
+            # 2026-06-12). axismaxlife.com = Max Life rebrand. This is also
+            # the BACKUP roster the gap pipeline falls back to when no LLM/
+            # SERP keys are set (so we crawl real rivals, not whatever junk
+            # a SERP surfaces).
             "iciciprulife.com,hdfclife.com,axismaxlife.com,"
             "tataaia.com,sbilife.co.in,kotaklife.com,pnbmetlife.com,"
-            "adityabirlasunlifeinsurance.com",
+            "adityabirlasunlifeinsurance.com,bandhanlife.com,"
+            "canarahsbclife.com,licindia.in,indiafirstlife.com",
+        ).split(",")
+        if d.strip()
+    ],
+    # Domains that are NOT competitors and must NEVER be crawled even if a
+    # SERP/LLM surfaces them: advisory blogs, finance dictionaries, and
+    # comparison aggregators that waste crawl time + tokens. Operator named
+    # ditto/investopedia/policyx; the rest are obvious non-insurers. Extend
+    # via COMPETITOR_BLOCKLIST (comma-separated).
+    "blocklist": [
+        d.strip().lower().lstrip("www.")
+        for d in os.environ.get(
+            "COMPETITOR_BLOCKLIST",
+            "ditto.in,investopedia.com,policyx.com,coverfox.com,"
+            "bankbazaar.com,paisabazaar.com,cleartax.in,groww.in,"
+            "economictimes.indiatimes.com,livemint.com,forbes.com,"
+            # allianz.com = global Allianz parent (Bajaj Allianz is OUR
+            # brand, not a rival). Not an Indian life-insurer competitor.
+            "allianz.com",
         ).split(",")
         if d.strip()
     ],
