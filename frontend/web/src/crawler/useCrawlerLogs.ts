@@ -13,7 +13,7 @@ import { crawlerApi, type CrawlerLogMessage } from './api';
 // working without changes.
 export function useCrawlerLogs(
   onMessage: (msg: CrawlerLogMessage) => void,
-  ms = 1000,
+  ms = 1500,
 ): void {
   const cbRef = useRef(onMessage);
   cbRef.current = onMessage;
@@ -22,8 +22,16 @@ export function useCrawlerLogs(
     let alive = true;
     let cursor: number | null = null;
     let firstTick = true;
+    let timer: ReturnType<typeof setTimeout>;
 
+    // Self-scheduling setTimeout loop (NOT setInterval): the next poll is
+    // queued only AFTER the current one settles. setInterval fires on a
+    // fixed clock even while a request is still in flight, so a backend
+    // that lags behind the 1s tick (e.g. busy crawling) accumulates
+    // unbounded pending requests until the browser dies with
+    // ERR_INSUFFICIENT_RESOURCES. This caps concurrency at one request.
     const tick = async () => {
+      let delay = ms;
       try {
         const r = await crawlerApi.logs(cursor);
         if (!alive) return;
@@ -41,15 +49,16 @@ export function useCrawlerLogs(
           cbRef.current(m);
         }
       } catch {
-        /* swallow transient errors; next tick retries */
+        delay = ms * 3; // back off when the backend is unreachable/slow
+      } finally {
+        if (alive) timer = setTimeout(tick, delay);
       }
     };
 
     tick();
-    const id = setInterval(tick, ms);
     return () => {
       alive = false;
-      clearInterval(id);
+      clearTimeout(timer);
     };
   }, [ms]);
 }
