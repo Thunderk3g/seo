@@ -260,6 +260,18 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
                 domain, len(urls), total_timeout, self.playwright_enabled,
             )
 
+            # Optional proxy: when COMPETITOR.proxy_url is set, export it as
+            # HTTP(S)_PROXY so Scrapy's built-in HttpProxyMiddleware routes
+            # every request through it — the only way to reach Akamai/CF
+            # rivals (ICICI) from a datacenter IP. Empty → direct, as before.
+            sub_env = os.environ.copy()
+            proxy_url = (django_settings.COMPETITOR.get("proxy_url") or "").strip()
+            if proxy_url:
+                sub_env["HTTP_PROXY"] = proxy_url
+                sub_env["HTTPS_PROXY"] = proxy_url
+                sub_env["http_proxy"] = proxy_url
+                sub_env["https_proxy"] = proxy_url
+
             try:
                 subprocess.run(
                     cmd,
@@ -267,6 +279,7 @@ class CompetitorCrawlerScrapy(CompetitorCrawler):
                     timeout=total_timeout,
                     check=False,
                     capture_output=True,
+                    env=sub_env,
                 )
             except subprocess.TimeoutExpired:
                 log.warning(
