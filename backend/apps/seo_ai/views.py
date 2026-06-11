@@ -226,26 +226,30 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
             "text": "",
         } for h in headings]
 
+    # Template chrome (mega-menu / footer headings repeated site-wide) is
+    # stripped from sections so they show real content, and topic matching
+    # uses page-specific text (URL + title + H1) only — never the full
+    # heading list, which on AEM pages carries the whole nav and would
+    # otherwise drag every page into every topic.
+    boilerplate = _boilerplate_headings(rows)
     clusters: list[dict] = []
     clustered_urls: set[str] = set()
     for tid, tname, kws in _CONTENT_TOPIC_RULES:
         kws_l = [k.lower() for k in kws]
         pages = []
         for r in rows:
-            headings = r.get("headings_json") or []
+            url_l = (r.get("url") or "").lower()
             title_l = (r.get("title") or "").lower()
-            matched = []
-            for h in headings:
-                ht = (h.get("text") or "").strip()
-                if ht and any(k in ht.lower() for k in kws_l):
-                    matched.append(h)
-            if not matched and not any(k in title_l for k in kws_l):
+            h1_l = " ".join(
+                (h.get("text") or "")
+                for h in (r.get("headings_json") or [])
+                if h.get("level") == 1
+            ).lower()
+            hay = f"{url_l} {title_l} {h1_l}"
+            if not any(k in hay for k in kws_l):
                 continue
-            secs = matched if matched else headings[:6]
             clustered_urls.add(r["url"])
-            entry = _cluster_page_entry(r)
-            entry["sections"] = _sections(secs)
-            pages.append(entry)
+            pages.append(_cluster_page_entry(r, boilerplate))
         if not pages:
             continue
         pages.sort(key=lambda p: -p["words"])
@@ -263,7 +267,7 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
     # with no title/headings (operator rule: segregate, never remove).
     leftovers = [r for r in rows if r["url"] not in clustered_urls]
     if leftovers:
-        pages = [_cluster_page_entry(r) for r in leftovers]
+        pages = [_cluster_page_entry(r, boilerplate) for r in leftovers]
         pages.sort(key=lambda p: -p["words"])
         clusters.append({
             "id": "uncategorised",
@@ -279,13 +283,50 @@ def _clusters_from_rows(rows: list[dict]) -> tuple[list[dict], dict]:
     return clusters, heading_totals
 
 
-def _cluster_page_entry(r: dict) -> dict:
+def _boilerplate_headings(
+    rows: list[dict], *, min_ratio: float = 0.30, min_pages: int = 12
+) -> set[str]:
+    """Detect the site's template chrome — heading texts that repeat on a
+    large fraction of pages (mega-menu, footer, "For NRI Customers",
+    "Branch Locator", …). Competitor templates render the full nav into
+    every page's ``headings_json``; without stripping it the per-page
+    "sections" are all nav and none of the real content. Returns the set
+    of normalised (lowercased) heading texts to treat as boilerplate.
+    Small corpora (< ``min_pages``) get no filtering — not enough signal."""
+    from collections import Counter
+
+    n = len(rows)
+    if n < min_pages:
+        return set()
+    cnt: Counter = Counter()
+    for r in rows:
+        seen = {
+            (h.get("text") or "").strip().lower()
+            for h in (r.get("headings_json") or [])
+        }
+        seen.discard("")
+        cnt.update(seen)
+    threshold = max(min_pages // 2, int(n * min_ratio))
+    return {t for t, c in cnt.items() if c >= threshold}
+
+
+def _cluster_page_entry(r: dict, boilerplate: set[str] | None = None) -> dict:
     """One cluster page row — the mini per-page report: heading counts,
     internal/external link counts and image count ride along (sourced
     from jsonb_array_length annotations on the queryset when present)
-    so the UI shows page structure without opening the detail view."""
+    so the UI shows page structure without opening the detail view.
+
+    ``boilerplate`` (normalised heading texts that repeat site-wide) is
+    stripped from the displayed sections so they show the page's REAL
+    content headings, not the template nav/footer that every page carries.
+    """
+    boilerplate = boilerplate or set()
     all_headings = r.get("headings_json") or []
-    headings = all_headings[:6]
+    content_headings = [
+        h for h in all_headings
+        if (h.get("text") or "").strip().lower() not in boilerplate
+    ]
+    headings = content_headings[:8]
     return {
         "key": r["url"],
         "name": _content_page_label(r),
@@ -359,10 +400,21 @@ def _load_competitor_cluster_spec(domain: str) -> dict | None:
         return None
 
 
-def _clusters_from_spec(rows: list[dict], spec: dict) -> list[dict]:
+def _clusters_from_spec(
+    rows: list[dict], spec: dict, boilerplate: set[str] | None = None
+) -> list[dict]:
     """Apply a Claude-generated per-domain spec: URL-pattern matches
-    first (their site structure), keyword matches against title +
-    headings second. Unclaimed pages → uncategorised, never dropped."""
+    first (their site structure), keyword matches against PAGE-SPECIFIC
+    text second — the URL, the <title>, and the H1 only.
+
+    We deliberately do NOT scan the full heading list: competitor pages
+    embed a mega-menu / footer that renders every product name
+    ("Term Insurance Plans", "For NRI Customers", …) into ``headings_json``
+    on EVERY page, so a keyword-against-all-headings match claimed every
+    page for every topic (e.g. 741 phantom "NRI" pages). URL + title + H1
+    are page-specific and don't carry the nav, so they cluster precisely.
+    A page may still match several topics (a /investment/ulip page is both
+    Investment and ULIP) — that's intended. Unclaimed → uncategorised."""
     clusters: list[dict] = []
     clustered: set[str] = set()
     for c in spec.get("clusters", []):
@@ -371,21 +423,21 @@ def _clusters_from_spec(rows: list[dict], spec: dict) -> list[dict]:
         pages = []
         for r in rows:
             url_l = (r["url"] or "").lower()
-            title_l = (r.get("title") or "").lower()
             hit = any(p in url_l for p in pats)
             if not hit and kws:
-                if any(k in title_l for k in kws):
-                    hit = True
-                else:
-                    hit = any(
-                        k in (h.get("text") or "").lower()
-                        for h in (r.get("headings_json") or [])
-                        for k in kws
-                    )
+                # Page-specific haystack: title + H1 text only (nav-free).
+                title_l = (r.get("title") or "").lower()
+                h1_l = " ".join(
+                    (h.get("text") or "")
+                    for h in (r.get("headings_json") or [])
+                    if h.get("level") == 1
+                ).lower()
+                hay = f"{title_l} {h1_l}"
+                hit = any(k in hay for k in kws)
             if not hit:
                 continue
             clustered.add(r["url"])
-            pages.append(_cluster_page_entry(r))
+            pages.append(_cluster_page_entry(r, boilerplate))
         if not pages:
             continue
         pages.sort(key=lambda p: -p["words"])
@@ -400,7 +452,7 @@ def _clusters_from_spec(rows: list[dict], spec: dict) -> list[dict]:
         })
     leftovers = [r for r in rows if r["url"] not in clustered]
     if leftovers:
-        pages = sorted((_cluster_page_entry(r) for r in leftovers),
+        pages = sorted((_cluster_page_entry(r, boilerplate) for r in leftovers),
                        key=lambda p: -p["words"])
         clusters.append({
             "id": "uncategorised",
@@ -415,7 +467,9 @@ def _clusters_from_spec(rows: list[dict], spec: dict) -> list[dict]:
     return clusters
 
 
-def _clusters_by_url_structure(rows: list[dict]) -> list[dict]:
+def _clusters_by_url_structure(
+    rows: list[dict], boilerplate: set[str] | None = None
+) -> list[dict]:
     """Default competitor segregation — THEIR site's own structure, not
     our topic rules: group by first URL path segment (each rival's IA
     names its own clusters), with pages that have no title AND no
@@ -441,7 +495,7 @@ def _clusters_by_url_structure(rows: list[dict]) -> list[dict]:
 
     clusters: list[dict] = []
     for seg, seg_rows in by_seg.items():
-        pages = sorted((_cluster_page_entry(r) for r in seg_rows),
+        pages = sorted((_cluster_page_entry(r, boilerplate) for r in seg_rows),
                        key=lambda p: -p["words"])
         clusters.append({
             "id": seg,
@@ -454,7 +508,7 @@ def _clusters_by_url_structure(rows: list[dict]) -> list[dict]:
         })
     clusters.sort(key=lambda c: -c["page_count"])
     if no_content:
-        pages = sorted((_cluster_page_entry(r) for r in no_content),
+        pages = sorted((_cluster_page_entry(r, boilerplate) for r in no_content),
                        key=lambda p: -p["words"])
         clusters.append({
             "id": "no_title_no_headings",
@@ -764,14 +818,19 @@ def competitor_content_clusters(request: Request, domain: str):
     #   1. Claude-Code-generated per-domain spec (written by the smart
     #      clustering pass after a crawl populates the DB), else
     #   2. the competitor's own URL structure (first path segment).
+    # Strip the site's template chrome (mega-menu / footer headings that
+    # repeat on most pages) so per-page "sections" show real content, not
+    # nav. Computed once over the whole snapshot, shared by both builders.
+    boilerplate = _boilerplate_headings(rows)
+
     spec = _load_competitor_cluster_spec(bare)
     if spec:
-        clusters = _clusters_from_spec(rows, spec)
+        clusters = _clusters_from_spec(rows, spec, boilerplate)
         cluster_source = (
             f"claude_spec ({spec.get('generated_at') or 'undated'})"
         )
     else:
-        clusters = _clusters_by_url_structure(rows)
+        clusters = _clusters_by_url_structure(rows, boilerplate)
         cluster_source = "url_structure_auto"
 
     # Heading totals for the summary chips (rules not applied here).
