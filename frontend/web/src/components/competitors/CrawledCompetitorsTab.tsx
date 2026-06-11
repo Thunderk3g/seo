@@ -276,7 +276,8 @@ function WalkPauseToggle() {
 }
 
 export default function CrawledCompetitorsTab() {
-  const { data, isLoading, isError, error } = useCompetitorCrawls();
+  const { data, isLoading, isError, error, refetch, isFetching } =
+    useCompetitorCrawls();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const groups = useMemo(
@@ -289,9 +290,23 @@ export default function CrawledCompetitorsTab() {
   }
   if (isError) {
     return (
-      <div className="seo-error">
-        Failed to load crawled competitors:{' '}
-        {error instanceof Error ? error.message : 'unknown error'}
+      <div className="seo-error" style={{ display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
+        <span>
+          Failed to load crawled competitors:{' '}
+          {error instanceof Error ? error.message : 'unknown error'}
+        </span>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          style={{
+            background: '#0072ce', color: '#fff', border: 'none',
+            borderRadius: 8, padding: '6px 14px', fontWeight: 700,
+            fontSize: 12.5, cursor: isFetching ? 'default' : 'pointer',
+          }}
+        >
+          {isFetching ? 'Retrying…' : 'Retry'}
+        </button>
       </div>
     );
   }
