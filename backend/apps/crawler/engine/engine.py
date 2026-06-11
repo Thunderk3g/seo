@@ -65,7 +65,18 @@ def _collect_sitemap_urls(session, robots_sitemaps: list[str]) -> list[str]:
     urls: list[str] = []
     p = urlparse(settings.seed_url)
     origin = f"{p.scheme}://{p.netloc}"
-    sources = list(robots_sitemaps) + [origin + g for g in _SITEMAP_GUESSES]
+    # Harvest sitemaps from the seed origin AND any enabled subdomain
+    # origins (on-demand subdomain crawl) so branch.*/investmentcorner.*
+    # pages are discovered even when www never links to them.
+    origins = [origin]
+    for raw in getattr(settings, "extra_seeds", []) or []:
+        sp = urlparse(raw)
+        sub_origin = f"{sp.scheme}://{sp.netloc}"
+        if sub_origin not in origins:
+            origins.append(sub_origin)
+    sources = list(robots_sitemaps)
+    for o in origins:
+        sources += [o + g for g in _SITEMAP_GUESSES]
     for sm in sources:
         if sm in seen:
             continue
@@ -93,7 +104,7 @@ def _seed(session, rp, robots_sitemaps) -> int:
     with STATE.lock:
         STATE.sitemap_urls.update(normalize(u) for u in sitemap_urls if u)
     added = 0
-    for raw in [settings.seed_url, *sitemap_urls]:
+    for raw in [settings.seed_url, *(getattr(settings, "extra_seeds", []) or []), *sitemap_urls]:
         url = _eligible(normalize(raw), rp)
         if url and _enqueue(url, None, 0):
             added += 1
@@ -304,6 +315,40 @@ def _limit_reached() -> bool:
     return settings.max_pages > 0 and STATE.stats.crawled >= settings.max_pages
 
 
+def _apply_subdomain_scope() -> None:
+    """Set this run's allowed_domains + extra_seeds from the operator's
+    on-demand subdomain toggle (``crawler_subdomains`` SystemSetting).
+
+    Base host (www) is always allowed. Each enabled subdomain is added as
+    an EXACT host (so only branch/investmentcorner are admitted — not
+    auth.*, buy.*, etc.) plus a homepage seed so it's reached even when
+    www doesn't link to it. Empty/unset → www-only (unchanged).
+    """
+    from ..conf import BASE_CRAWL_HOST, CRAWLABLE_SUBDOMAINS
+
+    enabled_hosts: list[str] = []
+    try:
+        from ..models import SystemSetting
+        raw = SystemSetting.get_value("crawler_subdomains", []) or []
+        valid_hosts = {v["host"] for v in CRAWLABLE_SUBDOMAINS.values()}
+        enabled_hosts = [h for h in raw if h in valid_hosts]
+    except Exception as exc:  # noqa: BLE001 - DB down → www-only
+        log.info("crawler_subdomains read failed (%s) — www-only", exc)
+        enabled_hosts = []
+
+    settings.allowed_domains = [BASE_CRAWL_HOST, *enabled_hosts]
+    settings.extra_seeds = [f"https://{h}/" for h in enabled_hosts]
+    if enabled_hosts:
+        log.info("subdomain scope: crawling www + %s", ", ".join(enabled_hosts))
+        log_bus.post({
+            "type": "info",
+            "message": "Subdomain crawl enabled: " + ", ".join(enabled_hosts),
+            "timestamp": datetime.now().isoformat(),
+        })
+    else:
+        log.info("subdomain scope: www-only")
+
+
 def run_crawl() -> None:
     """Top-level crawl runner. Blocks until the frontier is drained or stop requested.
 
@@ -315,6 +360,16 @@ def run_crawl() -> None:
     """
     STATE.is_running = True
     STATE.should_stop = False
+    # On-demand subdomain scope: the base crawl is www-only; the operator
+    # can enable branch.*/investmentcorner.* on the dashboard (persisted
+    # in the ``crawler_subdomains`` SystemSetting). Apply it here, in the
+    # worker process, right before crawling so this run's allowed_domains
+    # + extra seeds reflect the current toggle. Mutating the module-level
+    # ``settings`` is safe — bajaj_crawl runs one crawl at a time.
+    try:
+        _apply_subdomain_scope()
+    except Exception as exc:  # noqa: BLE001 - never block the crawl on this
+        log.warning("subdomain scope apply failed (%s) — www-only", exc)
     # Phase 3 — start a CrawlSnapshot row so dual-written CrawlerPage-
     # Result records know which run they belong to. Silently no-ops
     # when Postgres is down; legacy CSV path keeps working.

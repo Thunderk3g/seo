@@ -87,6 +87,9 @@ export default function CrawlerReportDetail() {
           <a className="btn btn-ghost" href={crawlerApi.downloadUrl(key, filters)}>
             <Icon name="download" /> {chips.length ? 'Filtered CSV' : 'CSV'}
           </a>
+          <a className="btn btn-ghost" href={crawlerApi.downloadXlsxUrl(key, filters)}>
+            <Icon name="grid_on" /> {chips.length ? 'Filtered XLSX' : 'XLSX'}
+          </a>
           <a className="btn btn-accent" href={crawlerApi.xlsxUrl()}>
             <Icon name="insert_chart" /> Full XLSX
           </a>

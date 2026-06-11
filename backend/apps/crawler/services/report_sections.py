@@ -26,6 +26,7 @@ from urllib.parse import urljoin, urlparse
 from ..conf import settings
 from ..engine.url_utils import normalize
 from ..storage import repository as repo
+from ..storage import url_classifier
 
 SOFT_404_WORDS = 100          # mirror audits.detectors_phase_c.soft_404_after_render
 _SAMPLE_CAP = 300             # max rows returned per section sample
@@ -239,8 +240,21 @@ def _compute_broken_links() -> dict:
                         })
 
     total_links = sum(len(v) for v in proofs.values())
+
+    # Tag every broken target with the subdomain it lives on (www /
+    # branch / investmentcorner) so the report can split 404s per
+    # subdomain — same proof (source page + anchor) as the www view,
+    # just bucketed by host. external/unknown hosts fall back to "www".
+    def _sub(u: str) -> str:
+        try:
+            s = (url_classifier.classify(u) or {}).get("subdomain") or "www"
+        except Exception:  # noqa: BLE001
+            s = "www"
+        return s if s in ("www", "branch", "investmentcorner") else "www"
+
     targets = [
         {"url": u, "status": broken.get(u, "404"),
+         "subdomain": _sub(u),
          "source_count": len(srcs), "sources": srcs[:50]}
         for u, srcs in proofs.items()
     ]
@@ -249,8 +263,20 @@ def _compute_broken_links() -> dict:
 
     # Broken targets with NO discovered on-page link (came via sitemap/redirect)
     orphan_broken = [
-        {"url": u, "status": s} for u, s in broken.items() if u not in proofs
+        {"url": u, "status": s, "subdomain": _sub(u)}
+        for u, s in broken.items() if u not in proofs
     ]
+
+    # Per-subdomain rollup: broken-URL count + broken-link-instance count.
+    by_subdomain: dict[str, dict] = {}
+    for t in targets:
+        b = by_subdomain.setdefault(
+            t["subdomain"], {"targets": 0, "links": 0, "orphan": 0})
+        b["targets"] += 1
+        b["links"] += t["source_count"]
+    for o in orphan_broken:
+        by_subdomain.setdefault(
+            o["subdomain"], {"targets": 0, "links": 0, "orphan": 0})["orphan"] += 1
 
     return {
         "total_targets": len(broken),
@@ -258,6 +284,7 @@ def _compute_broken_links() -> dict:
         "total_links": total_links,
         "targets": targets,
         "orphan_broken": orphan_broken[:_SAMPLE_CAP],
+        "by_subdomain": by_subdomain,
     }
 
 
