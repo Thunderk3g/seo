@@ -78,12 +78,39 @@ _DEFAULT_SITEMAP_PATHS = (
 )
 
 
+def _host_variants(bare_host: str) -> list[str]:
+    """Both ``www.`` and apex forms of a host, www first.
+
+    Many insurers (Kotak, PNB MetLife) serve robots.txt / sitemap.xml ONLY
+    on ``www.`` — the apex returns an HTML redirect page that fails XML
+    parsing. Trying both forms (www first, the more common host for these
+    CMSes) is the difference between 0 URLs and the full sitemap.
+    """
+    bare = re.sub(r"^www\d?\.", "", bare_host)
+    return [f"www.{bare}", bare]
+
+
+def _is_sitemap_loc(loc: str) -> bool:
+    """True when a <loc> points at another sitemap file (``.xml`` /
+    ``.xml.gz``) rather than a content page. HDFC Life ships a
+    non-standard index — a ``<urlset>`` whose <loc>s are ``.xml``
+    sub-sitemaps — so we must recurse into these, not treat them as pages.
+    """
+    p = loc.lower().split("?", 1)[0].split("#", 1)[0]
+    return p.endswith(".xml") or p.endswith(".xml.gz")
+
+
 def _default_sitemap_candidates(bare_host: str) -> list[str]:
     """Build the fallback sitemap-URL list for one host (no robots.txt hit).
-    Tries every known CMS / SEO-plugin path before giving up — handles
-    WP / Yoast / Drupal / handcrafted sitemap conventions in one pass.
+    Tries every known CMS / SEO-plugin path on BOTH the ``www.`` and apex
+    host before giving up — handles WP / Yoast / Drupal / handcrafted
+    sitemap conventions, and hosts that only answer on one of www/apex.
     """
-    return [f"https://{bare_host}{p}" for p in _DEFAULT_SITEMAP_PATHS]
+    return [
+        f"https://{h}{p}"
+        for h in _host_variants(bare_host)
+        for p in _DEFAULT_SITEMAP_PATHS
+    ]
 
 
 @dataclass
@@ -135,6 +162,12 @@ class SitemapXMLAdapter:
         self._session.headers.update(
             {"User-Agent": self.user_agent, "Accept": "application/xml, text/xml, */*"}
         )
+        # Optional proxy (default ""): lets sitemap discovery reach
+        # Akamai/Cloudflare-blocked rivals through the same residential /
+        # scraper-API endpoint the competitor crawler uses. No-op empty.
+        _proxy = (cfg.get("proxy_url") or "").strip()
+        if _proxy:
+            self._session.proxies.update({"http": _proxy, "https": _proxy})
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -230,21 +263,29 @@ class SitemapXMLAdapter:
     # ── internals ────────────────────────────────────────────────────
 
     def _candidates_from_robots(self, host: str) -> list[str]:
-        try:
-            resp = self._session.get(
-                f"https://{host}/robots.txt",
-                timeout=self.timeout_sec,
-                verify=self._verify,
-            )
-        except requests.RequestException as exc:
-            logger.info("robots.txt fetch %s failed: %s", host, exc)
-            return []
-        if resp.status_code != 200:
-            return []
+        """Collect ``Sitemap:`` directives from robots.txt, trying BOTH the
+        ``www.`` and apex host. Some insurers only declare the sitemap on
+        one of the two — we union both and de-dupe."""
         out: list[str] = []
-        for line in resp.text.splitlines():
-            if line.lower().startswith("sitemap:"):
-                out.append(line.split(":", 1)[1].strip())
+        seen: set[str] = set()
+        for h in _host_variants(host):
+            try:
+                resp = self._session.get(
+                    f"https://{h}/robots.txt",
+                    timeout=self.timeout_sec,
+                    verify=self._verify,
+                )
+            except requests.RequestException as exc:
+                logger.info("robots.txt fetch %s failed: %s", h, exc)
+                continue
+            if resp.status_code != 200:
+                continue
+            for line in resp.text.splitlines():
+                if line.lower().startswith("sitemap:"):
+                    u = line.split(":", 1)[1].strip()
+                    if u and u not in seen:
+                        seen.add(u)
+                        out.append(u)
         return out
 
     def _walk(
@@ -289,10 +330,21 @@ class SitemapXMLAdapter:
             return True
 
         if tag == "urlset":
-            count = sum(
-                1 for child in root if _strip_ns(child.tag) == "url"
+            locs = []
+            for child in root:
+                if _strip_ns(child.tag) != "url":
+                    continue
+                loc = child.findtext(f"{_SITEMAP_NS}loc") or child.findtext("loc")
+                locs.append((loc or "").strip())
+            xml_locs = [l for l in locs if l and _is_sitemap_loc(l)]
+            # Non-standard index (HDFC Life): a <urlset> of .xml sub-sitemaps.
+            if xml_locs and len(xml_locs) >= max(1, len(locs) // 2):
+                for x in xml_locs:
+                    self._walk(x, summary, seen=seen, depth=depth + 1)
+                return True
+            summary.total_url_count += sum(
+                1 for l in locs if l and not _is_sitemap_loc(l)
             )
-            summary.total_url_count += count
             return True
 
         # Unknown root tag — try a defensive count of any <url>-like leaves.
@@ -313,8 +365,10 @@ class SitemapXMLAdapter:
         if depth > _MAX_DEPTH:
             return
         for sm_url in candidates:
-            if sm_url in seen or len(out) >= _MAX_SUBSITEMAPS:
+            if len(out) >= _MAX_SUBSITEMAPS:
                 return
+            if sm_url in seen:
+                continue
             seen.add(sm_url)
             body = self._fetch_xml(sm_url)
             if body is None:
@@ -334,8 +388,24 @@ class SitemapXMLAdapter:
                         nested.append(loc.strip())
                 self._collect_leaf_sitemaps(nested, out, seen, depth=depth + 1)
             elif tag == "urlset":
-                # Leaf — record so discover_urls() can pull <loc> entries.
-                out.append(sm_url)
+                # Standard leaf: a <urlset> of content pages. BUT some
+                # sites (HDFC Life) ship a non-standard index — a <urlset>
+                # whose <loc>s point at .xml sub-sitemaps. Detect that and
+                # recurse instead of recording 6 ".xml" URLs as pages.
+                locs = []
+                for child in root:
+                    if _strip_ns(child.tag) != "url":
+                        continue
+                    loc = child.findtext(f"{_SITEMAP_NS}loc") or child.findtext("loc")
+                    if loc:
+                        locs.append(loc.strip())
+                xml_locs = [l for l in locs if _is_sitemap_loc(l)]
+                if xml_locs and len(xml_locs) >= max(1, len(locs) // 2):
+                    self._collect_leaf_sitemaps(
+                        xml_locs, out, seen, depth=depth + 1
+                    )
+                else:
+                    out.append(sm_url)
 
     def _iter_locs(self, sitemap_url: str):
         """Yield <loc> URLs from a single leaf sitemap. Returns nothing
@@ -351,12 +421,12 @@ class SitemapXMLAdapter:
             return
         for url_el in root.iter(f"{_SITEMAP_NS}url"):
             loc = url_el.findtext(f"{_SITEMAP_NS}loc")
-            if loc:
+            if loc and not _is_sitemap_loc(loc.strip()):
                 yield loc
         # Defensive: some sitemaps lack the namespace declaration.
         for url_el in root.iter("url"):
             loc = url_el.findtext("loc")
-            if loc:
+            if loc and not _is_sitemap_loc(loc.strip()):
                 yield loc
 
     def _fetch_xml(self, url: str) -> bytes | None:

@@ -27,6 +27,11 @@ urlpatterns = [
          name="report-external-links"),
     path("report/soft-404", views.report_soft_404_view, name="report-soft-404"),
     path("report/cwv", views.report_cwv_view, name="report-cwv"),
+    # Content cluster tree (Product -> Page-type -> pages). Powers the
+    # CompetitorContentClusterSection (per-domain) AND the Bajaj-side tree
+    # (no domain -> latest Bajaj snapshot). Route was dropped in a cleanup
+    # while the view + frontend still call it — restored so both render.
+    path("content/clusters", views.content_clusters_view, name="content-clusters"),
     # Restored 2026-06-05: dashboard health widget (view body was kept).
     path("health-score", views.health_score_view, name="health-score"),
     path("tables", views.tables_list_view, name="tables"),

@@ -24,11 +24,8 @@ interface NavItem {
 
 const PRIMARY_NAV: NavItem[] = [
   { id: 'chat', label: 'Assistant', icon: 'analytics', path: '/' },
-  { id: 'briefings', label: 'Weekly Briefing', icon: 'analytics', path: '/briefings' },
   { id: 'reports', label: 'Reports', icon: 'pages', path: '/reports' },
   { id: 'content-writer-v2', label: 'Content Writer (SERP)', icon: 'zap', path: '/content-writer-v2' },
-  { id: 'custodians', label: 'Data Custodians', icon: 'analytics', path: '/custodians' },
-  { id: 'competitor-changes', label: 'Competitor Changes', icon: 'issues', path: '/competitor-changes' },
   { id: 'geo-score', label: 'GEO Score', icon: 'zap', path: '/geo-score' },
 ];
 
@@ -36,7 +33,6 @@ const DATA_SOURCE_NAV: NavItem[] = [
   { id: 'gsc', label: 'Search Console', icon: 'analytics', path: '/gsc' },
   { id: 'semrush', label: 'SEMrush Keywords', icon: 'pages', path: '/semrush' },
   { id: 'adobe', label: 'Adobe Analytics', icon: 'analytics', path: '/adobe' },
-  { id: 'adobe-seo-join', label: 'SEO × Adobe', icon: 'zap', path: '/adobe/seo-join' },
   { id: 'brand-monitor', label: 'Brand Mentions', icon: 'analytics', path: '/brand-monitor' },
   // Our own Meta ad library, kept separate from each competitor's section.
   { id: 'meta-ads', label: 'Our Meta Ads', icon: 'zap', path: '/meta-ads' },

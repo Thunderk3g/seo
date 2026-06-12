@@ -4,12 +4,10 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     SEORunViewSet,
     adobe_dashboard,
-    adobe_seo_join,
     brand_mentions_dashboard,
     brand_mentions_refresh,
     chat_stream,
     competitor_dashboard,
-    competitor_changes,
     competitor_crawls_list_view,
     competitor_detail_view,
     competitor_gap_detection,
@@ -28,13 +26,8 @@ from .views import (
     content_writer_v2_detail,
     content_writer_v2_list,
     content_writer_v2_start,
-    custodian_adobe,
-    custodian_layout,
-    custodian_structure_gaps,
-    custodian_summary,
     design_brief_compose,
     geo_score,
-    orchestrator_v2_run,
     visual_audit_capture,
     gap_pipeline_detail,
     gap_pipeline_latest,
@@ -78,7 +71,6 @@ urlpatterns = [
     path("gsc/", gsc_dashboard, name="gsc-dashboard"),
     path("semrush/", semrush_dashboard, name="semrush-dashboard"),
     path("adobe/", adobe_dashboard, name="adobe-dashboard"),
-    path("adobe/seo-join/", adobe_seo_join, name="adobe-seo-join"),
     # Brand mentions — third-party sites talking about Bajaj.
     # Pulls from RSS + SerpAPI daily (+ CC monthly in v2). Same
     # vendor-pattern as Adobe/Meta-Ads — adapter → view → page.
@@ -132,12 +124,6 @@ urlpatterns = [
         content_comparison,
         name="content-comparison",
     ),
-    # Day 3 — Orchestrator V2 (custodian pyramid synthesis).
-    path(
-        "orchestrate/",
-        orchestrator_v2_run,
-        name="orchestrate",
-    ),
     # VisualAuditAgent — Playwright screenshot capture + (optional)
     # multimodal LLM review. The capture step is unconditional;
     # analysis is gated on VISUAL_LLM_PROVIDER env.
@@ -160,35 +146,6 @@ urlpatterns = [
         "geo/score/",
         geo_score,
         name="geo-score",
-    ),
-    # Day 3 — DataCustodians + SiteDiffer + StructureAgent + AdobeAgent.
-    path(
-        "custodians/summary/",
-        custodian_summary,
-        name="custodian-summary",
-    ),
-    path(
-        "custodians/structure-gaps/",
-        custodian_structure_gaps,
-        name="custodian-structure-gaps",
-    ),
-    path(
-        "custodians/adobe/",
-        custodian_adobe,
-        name="custodian-adobe",
-    ),
-    path(
-        "custodians/layout/",
-        custodian_layout,
-        name="custodian-layout",
-    ),
-    # Phase G — ChangeWatcher: cross-snapshot competitor changes.
-    # ``/changes`` lists recent events (filter by domain / kind /
-    # limit). ``/history`` shows per-URL revision timeline.
-    path(
-        "competitor/changes/",
-        competitor_changes,
-        name="competitor-changes",
     ),
     path(
         "competitor/history/",

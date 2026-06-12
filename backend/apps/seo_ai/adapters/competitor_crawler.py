@@ -433,6 +433,9 @@ class CompetitorCrawler:
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._verify = _resolve_competitor_ssl_verify(cfg.get("ssl_verify", ""))
+        # Optional proxy (default ""): routes blocked rivals (Akamai/CF)
+        # through a residential / scraper-API endpoint. No-op when empty.
+        self.proxy_url = (cfg.get("proxy_url") or "").strip()
         if self._verify is False:
             try:
                 import urllib3
@@ -818,6 +821,10 @@ class CompetitorCrawler:
                 if s is None:
                     s = requests.Session()
                     s.headers.update({"User-Agent": self.user_agent, "Accept": "text/html,*/*"})
+                    if self.proxy_url:
+                        s.proxies.update(
+                            {"http": self.proxy_url, "https": self.proxy_url}
+                        )
                     self._sessions[host] = s
         return s
 

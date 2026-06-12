@@ -289,7 +289,11 @@ COMPETITOR = {
             "economictimes.indiatimes.com,livemint.com,forbes.com,"
             # allianz.com = global Allianz parent (Bajaj Allianz is OUR
             # brand, not a rival). Not an Indian life-insurer competitor.
-            "allianz.com",
+            "allianz.com,"
+            # baliconline.in = Bajaj's OWN online-sales domain (BALIC),
+            # not a rival. sales.baliconline.in was wrongly crawled as a
+            # competitor.
+            "baliconline.in",
         ).split(",")
         if d.strip()
     ],
@@ -317,6 +321,16 @@ COMPETITOR = {
     # to "false" because the Debian trust store doesn't include the
     # corporate MITM root that intercepts competitor HTTPS traffic.
     "ssl_verify": os.environ.get("COMPETITOR_SSL_VERIFY", "").strip(),
+    # Optional outbound proxy for competitor fetches (requests + Scrapy +
+    # sitemap discovery). DEFAULT EMPTY → no proxy, behaviour unchanged.
+    # Akamai/Cloudflare-protected rivals (e.g. ICICI Prudential) return
+    # 403 "Access Denied" to any datacenter IP — robots.txt, sitemap.xml
+    # and every page alike — so they cannot be crawled from the VM
+    # directly. Set this to a residential / mobile proxy or a scraper-API
+    # endpoint (e.g. "http://user:pass@gate.smartproxy.com:7000") and
+    # those hosts become crawlable with no other change. When empty every
+    # request goes direct exactly as before.
+    "proxy_url": os.environ.get("COMPETITOR_PROXY_URL", "").strip(),
     # Hard byte cap on the response body. ``0`` (or negative) disables
     # the cap entirely — needed for the AEM-vs-competitor content
     # comparison view, which wants the full body of every sampled page.
