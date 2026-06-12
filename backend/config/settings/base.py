@@ -142,20 +142,25 @@ LLM = {
         # both is harmless; the pool dedupes.
         "api_key": os.environ.get("GROQ_API_KEY", ""),
         "base_url": os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
-        "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+        # Default llama-3.3-70b-versatile: it has a 12k-TPM free-tier
+        # bucket, vs 8k for every gpt-oss model. The chat agent ships 34
+        # tool schemas (~2.3k tokens) on EVERY call, so a multi-round
+        # data turn easily reaches ~11k tokens — which 413s ("request too
+        # large") on any 8k model no matter how many API keys you pool
+        # (keys spread *frequency*, not single-request *size*). 12k clears
+        # it. Override with GROQ_MODEL.
+        "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
         "max_tokens": int(os.environ.get("GROQ_MAX_TOKENS", "4096")),
         "temperature": float(os.environ.get("GROQ_TEMPERATURE", "0.2")),
-        # 413 fallback chain — GPT-family only by default. Per operator
-        # direction: when the primary model 413s, downshift to the
-        # smaller GPT model rather than swapping over to Llama (which
-        # changes voice / style and has even smaller TPM buckets on
-        # free tier — landed us in an 8b-instant 6k-TPM trap on the
-        # chat assistant). The real second-line defence is the chat
-        # router's tool-result truncation, NOT this list.
-        # Comma-separated. Empty = no model fallback at all.
+        # 413 fallback: downshift to gpt-oss-120b only. Do NOT add
+        # llama-3.1-8b-instant here — it has a SMALLER 6k-TPM bucket, so
+        # falling to it on a 413 makes things worse (the old "8b trap").
+        # Primary is already the highest free-tier TPM model, so the real
+        # 413 defence is the chat router's per-request token-budget trim
+        # (GROQ_TPM_LIMIT), not this list. Comma-sep; empty = no fallback.
         "fallback_models": os.environ.get(
             "GROQ_FALLBACK_MODELS",
-            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
         ),
     },
     "anthropic": {

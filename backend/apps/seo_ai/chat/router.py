@@ -55,6 +55,63 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 # model knows it was cut off and can re-ask with narrower params.
 _TOOL_RESULT_MAX_CHARS = 2400
 
+# Hard per-request token budget so a multi-round turn never trips Groq's
+# free-tier 413 ("request too large", 8000 TPM). The model gets the fixed
+# tool-schema overhead (~2.3k tokens) + system prompt on EVERY call, and
+# the conversation grows each tool round — so without trimming, round 3-4
+# of a data-heavy turn crosses 8000 and the whole turn dies. We cap the
+# message list (system kept intact, older messages content-stubbed) so
+# system + schemas + history + response reserve stays under the limit.
+_GROQ_TPM_LIMIT = int(__import__("os").environ.get("GROQ_TPM_LIMIT", "8000"))
+_RESPONSE_RESERVE_TOKENS = 1200
+# Rough tool-schema overhead, measured once at import (chars/4 heuristic).
+try:
+    _TOOLS_OVERHEAD_TOKENS = len(json.dumps(CHAT_TOOL_SCHEMAS)) // 4
+except Exception:  # noqa: BLE001
+    _TOOLS_OVERHEAD_TOKENS = 2400
+# Tokens left for system + conversation after schemas + response reserve.
+_MAX_CONVO_TOKENS = max(
+    1500, _GROQ_TPM_LIMIT - _TOOLS_OVERHEAD_TOKENS - _RESPONSE_RESERVE_TOKENS
+)
+
+
+def _est_tokens(msg: dict[str, Any]) -> int:
+    """Cheap token estimate for one message (~4 chars/token)."""
+    return len(json.dumps(msg, default=str)) // 4
+
+
+def _fit_token_budget(convo: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Trim ``convo`` so the request fits under the free-tier TPM cap.
+
+    Leading system messages are kept verbatim. Remaining messages are kept
+    newest-first while they fit the budget; older ones are CONTENT-STUBBED
+    (not removed) so assistant<->tool pairing stays valid for the API while
+    their token weight drops to near zero. Guarantees no 413 regardless of
+    how long the turn or history grows.
+    """
+    n_sys = 0
+    while n_sys < len(convo) and convo[n_sys].get("role") == "system":
+        n_sys += 1
+    head, tail = convo[:n_sys], convo[n_sys:]
+    budget = _MAX_CONVO_TOKENS - sum(_est_tokens(m) for m in head)
+    running = 0
+    keep = [False] * len(tail)
+    for i in range(len(tail) - 1, -1, -1):  # newest first
+        t = _est_tokens(tail[i])
+        if running + t <= budget:
+            keep[i] = True
+            running += t
+    out = list(head)
+    for i, m in enumerate(tail):
+        if keep[i]:
+            out.append(m)
+        else:
+            stub = dict(m)  # preserve role + tool_calls; shrink content only
+            if stub.get("content"):
+                stub["content"] = "[older context trimmed to fit token budget]"
+            out.append(stub)
+    return out
+
 
 def _truncate_tool_result(result: Any) -> str:
     """Stringify a tool result and cap it at ``_TOOL_RESULT_MAX_CHARS``.
@@ -129,6 +186,9 @@ class ChatRouter:
             assistant_tool_calls: list[dict[str, Any]] = []
             finish_reason = ""
 
+            # Trim to the TPM budget BEFORE every call — convo grows each
+            # round, so this is what keeps us off the 413 cliff.
+            convo = _fit_token_budget(convo)
             for chunk in self.provider.stream_complete(
                 convo,
                 tools=CHAT_TOOL_SCHEMAS,
