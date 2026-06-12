@@ -23,6 +23,7 @@ import CompetitorPageDetailPage from './pages/CompetitorPageDetailPage';
 import PageDetailPage from './pages/PageDetailPage';
 import ContentWriterV2Page from './pages/ContentWriterV2Page';
 import GeoPage from './pages/GeoPage';
+import NotFoundPage from './pages/NotFoundPage';
 
 export default function App() {
   return (
@@ -89,7 +90,7 @@ export default function App() {
                 filterable URL inventory over the latest crawl. */}
             <Route path="/crawler/pages" component={PageExplorerPage} />
             <Route>
-              <div style={{ padding: 24 }}>Not found</div>
+              <NotFoundPage />
             </Route>
           </Switch>
         </main>
