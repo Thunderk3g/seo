@@ -53,7 +53,7 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 # 6-8k TPM bucket on Groq's free tier. Tool results that exceed the
 # cap get serialised, then truncated with a trailing marker so the
 # model knows it was cut off and can re-ask with narrower params.
-_TOOL_RESULT_MAX_CHARS = 4000
+_TOOL_RESULT_MAX_CHARS = 2400
 
 
 def _truncate_tool_result(result: Any) -> str:
